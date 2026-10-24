@@ -1,0 +1,119 @@
+{
+  "id": "gemini",
+  "name": "Gemini Code Assist",
+  "version": "0.1.0",
+  "api_level": 2,
+  "description": "把宿主的 OpenAI 兼容请求转发到 Google Gemini Code Assist 的 Cloud Code 后端（https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse，失败时切 sandbox 端点）。上游用的是 Gemini generateContent 包一层 Cloud Code 信封，本插件负责 OpenAI <-> 该协议的转换、SSE 流式回传与折叠、以及 Google OAuth 授权码登录与续期。凭据由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护），不经宿主环境变量传入。",
+  "author": "",
+  "homepage": "https://cloud.google.com/gemini/docs/codeassist/overview",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "quota",
+    "refresh",
+    "login_oauth",
+    "egress",
+    "identity_request"
+  ],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": [
+      "daily-cloudcode-pa.googleapis.com",
+      "daily-cloudcode-pa.sandbox.googleapis.com",
+      "oauth2.googleapis.com",
+      "www.googleapis.com",
+      "accounts.google.com"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [
+    {
+      "id": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "context_length": 1000000,
+      "tools": true,
+      "vision": true,
+      "thinking": [
+        "low",
+        "medium",
+        "high",
+        "tiered"
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash-low",
+      "name": "Gemini 3.8 Flash（低）",
+      "context_length": 1000000,
+      "tools": true,
+      "vision": true,
+      "thinking": [
+        "low"
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash-medium",
+      "name": "Gemini 3.8 Flash（中）",
+      "context_length": 1000000,
+      "tools": true,
+      "vision": true,
+      "thinking": [
+        "medium"
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash-high",
+      "name": "Gemini 3.8 Flash（高）",
+      "context_length": 1000000,
+      "tools": true,
+      "vision": true,
+      "thinking": [
+        "high"
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash-tiered",
+      "name": "Gemini 3.8 Flash（自适应）",
+      "context_length": 1000000,
+      "tools": true,
+      "vision": true,
+      "thinking": [
+        "tiered"
+      ]
+    }
+  ],
+  "login": {
+    "methods": [
+      "oauth"
+    ],
+    "reads_local_state": false,
+    "requires_app": false,
+    "auto_refresh": true,
+    "notes": "Google 已安装应用 OAuth（loopback 回调 http://localhost:<port>/oauth-callback，带 PKCE S256），scope 含 cloud-platform 与 cclog；另有粘贴 code/回调 URL 的兜底路径。若 Google 判定该 client 非 public client，需在宿主环境设置 AIWORKGATE_GEMINI_CLIENT_SECRET（只读环境变量、不落盘；缺失时交换会返回 501 并说明）。凭据 DPAPI 加密保存在插件数据目录。"
+  },
+  "quota": {
+    "poll_minutes": 30
+  },
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "gemini-plugin.exe",
+    "args": []
+  }
+}

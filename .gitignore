@@ -1,0 +1,55 @@
+# Build and runtime artifacts
+build/
+.gotmp/
+.devtmp/
+runtime/
+*.exe
+*.test.exe
+*.log
+
+# Shell-accident leftovers
+=ro
+CUsers*
+tmp-smoke*.py
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Frontend dependencies and generated reports
+web/node_modules/
+web/visual-report/
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# signing keys
+*.key
+
+# Internal engineering records (local paths, account fingerprints, acceptance runs)
+_acl-recovery/
+docs/_lane-*
+docs/_note-*
+docs/_p0-*
+docs/_ref/
+docs/_report-*
+docs/_scout-*
+docs/acceptance-*
+docs/audit-*
+docs/evidence*
+docs/handoff-*
+docs/review-*
+docs/verify-*
+docs/决策台账-*
+docs/对比-*
+docs/审计报告-*
+docs/评估报告-*
+
+# Internal planning notes
+plans/
+
+# One-off local rollback script (hard-coded local runtime paths)
+scripts/rollback-eac-plugin.ps1

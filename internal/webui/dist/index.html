@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>AIWorkGate</title>
+    <script>
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('aiworkgate.theme')
+          var theme = stored === 'light' || stored === 'dark' ? stored : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          document.documentElement.dataset.theme = theme
+        } catch (e) {
+          document.documentElement.dataset.theme = 'light'
+        }
+        try {
+          var motion = localStorage.getItem('aiworkgate.motion')
+          var reduce = motion === 'reduced' || (motion !== 'full' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+          document.documentElement.dataset.motion = reduce ? 'reduced' : 'full'
+        } catch (e) {
+          document.documentElement.dataset.motion = 'full'
+        }
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-BU72ffst.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/api-CruQjWVQ.js">
+    <link rel="modulepreload" crossorigin href="/assets/runtime-dom.esm-bundler-D4mSKQLc.js">
+    <link rel="modulepreload" crossorigin href="/assets/vue-router-D5-Tl0ZO.js">
+    <link rel="modulepreload" crossorigin href="/assets/_plugin-vue_export-helper-DlAUqK2U.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-DxdtXg4_.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

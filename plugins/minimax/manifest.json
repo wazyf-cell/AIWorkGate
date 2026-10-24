@@ -1,0 +1,110 @@
+{
+  "id": "minimax",
+  "name": "MiniMax Code",
+  "version": "0.1.0",
+  "api_level": 2,
+  "description": "把宿主的 OpenAI 兼容请求转发到 MiniMax Code 的 agent 后端（https://agent.minimax.cn/mavis/api/v1/llm/v1/messages）。上游说的是 Anthropic Messages 协议并以 SSE 流式回答，本插件负责 OpenAI <-> Anthropic 双向转换、把流折成一次性补全、以及 OAuth 设备码登录（/oauth2/device/code + PKCE，后台轮询 /oauth2/token，处理 pending/slow_down/denied/expired）与 refresh_token 续期或粘贴 access_token。可按账号读取宿主写入的 egress.json，把上游调用路由到本地代理出口（blocked/strict 下失败关闭）。凭据由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护），不经宿主环境变量传入。",
+  "author": "",
+  "homepage": "https://agent.minimax.cn",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "quota",
+    "refresh",
+    "login_oauth",
+    "login_paste_code",
+    "egress"
+  ],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": [
+      "agent.minimax.cn",
+      "account.minimax.cn"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [
+    {
+      "id": "MiniMax-M3.1-Flash-Preview",
+      "name": "M3.1-Flash-Preview",
+      "context_length": 1000000,
+      "tools": true,
+      "vision": true,
+      "thinking": [
+        "default",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ]
+    },
+    {
+      "id": "MiniMax-M3",
+      "name": "M3",
+      "context_length": 1000000,
+      "tools": true,
+      "vision": true,
+      "thinking": [
+        "on",
+        "none"
+      ]
+    },
+    {
+      "id": "MiniMax-M2.7-highspeed",
+      "name": "M2.7-highspeed",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "adaptive"
+      ]
+    },
+    {
+      "id": "MiniMax-M2.7",
+      "name": "M2.7",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "adaptive"
+      ]
+    }
+  ],
+  "login": {
+    "methods": [
+      "oauth",
+      "paste_code"
+    ],
+    "reads_local_state": false,
+    "requires_app": false,
+    "auto_refresh": true,
+    "notes": "OAuth 设备码（RFC 8628）+ PKCE；/oauth2/device/code 取 code，浏览器打开 verification_uri_complete 授权，插件后台按 interval 轮询 /oauth2/token（处理 HTTP 400 的 authorization_pending/slow_down/access_denied/expired_token），成功后 DPAPI 落库；也可粘贴 access_token。续期走 /oauth2/token 的 refresh_token 授权。"
+  },
+  "quota": {
+    "poll_minutes": 30
+  },
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "minimax-plugin.exe",
+    "args": []
+  }
+}

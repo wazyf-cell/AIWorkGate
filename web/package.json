@@ -1,0 +1,26 @@
+{
+  "name": "aiworkgate-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && node scripts/check-style-debt.mjs && vite build && node scripts/visual/check.mjs",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "check:style": "node scripts/check-style-debt.mjs",
+    "check:visual": "node scripts/visual/check.mjs",
+    "check:visual:update": "node scripts/visual/check.mjs --update",
+    "check": "npm run typecheck && npm run check:style && npm run check:visual"
+  },
+  "dependencies": {
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.0",
+    "typescript": "~5.7.3",
+    "vite": "^7.0.0",
+    "vue-tsc": "^3.0.0"
+  }
+}

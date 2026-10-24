@@ -1,0 +1,72 @@
+{
+  "id": "officeace",
+  "name": "OfficeAce",
+  "version": "0.3.1",
+  "api_level": 2,
+  "description": "读取本机 OfficeAce 登录态（storage.sqlite 与 Windows 凭据管理器），账号/积分/模型来自本机 API，推理直连华为云 MaaS；只读，不写入 OfficeAce 任何文件",
+  "author": "",
+  "homepage": "",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "checkin",
+    "quota",
+    "login_local_state",
+    "refresh",
+    "egress"
+  ],
+  "permissions": {
+    "read_paths": [
+      "%PROGRAMFILES%\\OfficeAce",
+      "%LOCALAPPDATA%\\Programs\\OfficeAce",
+      "E:\\Program\\OfficeAce\\program\\OfficeAce",
+      "E:\\Program\\OfficeAce",
+      "%USERPROFILE%\\.office-claw"
+    ],
+    "launch_apps": [],
+    "network_domains": [
+      "*.huaweicloud-agentarts.com",
+      "iam.myhuaweicloud.com",
+      "127.0.0.1"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [],
+  "login": {
+    "methods": [
+      "local_state"
+    ],
+    "reads_local_state": true,
+    "requires_app": false,
+    "auto_refresh": false,
+    "notes": "只读 storage.sqlite 与 Windows 凭据管理器；新版 OfficeAce 的 providerStateRef 会自动解析；额度/领取需要本机服务运行；默认不自动续期"
+  },
+  "checkin": {
+    "default_time": "09:10"
+  },
+  "quota": {
+    "poll_minutes": 30
+  },
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "officeace-plugin.exe",
+    "args": []
+  }
+}

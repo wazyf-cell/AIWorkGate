@@ -1,0 +1,44 @@
+{
+  "id": "raccoon",
+  "name": "Raccoon（商汤）",
+  "version": "0.2.0",
+  "api_level": 2,
+  "description": "把宿主的 OpenAI 兼容请求转发到 Raccoon（商汤，https://xiaohuanxiong.com 的 /api/web/llm/v2）。上游说 OpenAI chat 协议且只支持流式，本插件强制 stream 并在客户端要非流式时聚合 SSE；请求体按上游策略在本地卡 10MB。登录：二维码扫码（login_oauth）——插件生成 code，返回本地二维码页 http://127.0.0.1:<port>/qr/<sid>，并轮询上游 login_with_qrcode_code，扫码确认后自动落库；短信登录需要阿里云滑块验证码 + 手机号 AES 密钥，本插件不持有。凭据由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护）。",
+  "author": "",
+  "homepage": "https://xiaohuanxiong.com",
+  "os": ["windows"],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "refresh",
+    "login_oauth",
+    "egress",
+    "identity_request"
+  ],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": ["xiaohuanxiong.com"],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": { "strict": false },
+  "models": [
+    { "id": "sn-sensenova-6-8-flash", "name": "SenseNova-6.8-Flash · 免费", "context_length": 256000, "tools": true, "vision": true, "thinking": ["on", "off"] },
+    { "id": "sn-sensenova-6-8-flash-lite", "name": "SenseNova-6.8-Flash-Lite · 免费", "context_length": 256000, "tools": true, "vision": true, "thinking": ["on", "off"] },
+    { "id": "sn-glm-5-3", "name": "GLM-5-3 · x0.75", "context_length": 1000000, "tools": true, "thinking": ["on", "off"] }
+  ],
+  "login": {
+    "methods": ["oauth"],
+    "reads_local_state": false,
+    "requires_app": true,
+    "auto_refresh": true,
+    "notes": "二维码扫码：用 Raccoon（商汤小浣熊）手机 App 扫插件返回的本地二维码页；插件轮询 login_with_qrcode_code，5 分钟有效。短信登录需要未持有的 AES 手机号密钥，不支持。"
+  },
+  "quota": { "poll_minutes": 0 },
+  "concurrency": { "suggested": 2 },
+  "rules": { "packs": [] },
+  "startup": { "mode": "always", "idle_timeout_s": 600 },
+  "entry": { "exe": "raccoon-plugin.exe", "args": [] }
+}

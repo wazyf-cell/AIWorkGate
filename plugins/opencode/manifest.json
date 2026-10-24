@@ -1,0 +1,58 @@
+{
+  "id": "opencode",
+  "name": "OpenCode",
+  "version": "0.1.0",
+  "api_level": 2,
+  "description": "把宿主的 OpenAI 兼容请求转发到 OpenCode 的免费推理通道（https://opencode.ai/inference/v1）。匿名通道的凭证是上写字面量 public（官方 CLI 没有 key 时也用它），因此不登录也能用免费模型。请求头必须带 v2 形状的 User-Agent 与四个同值的 session 标识（x-opencode-session / x-opencode-session-id / x-session-affinity / x-session-id），payload 必须内建 read/shell 两个门禁占位工具，否则上游按 403 FreeTierError 拒绝。模型能力（图片/思考档位/上下文窗口）取自远端 models.dev 的 opencode 条目。凭据由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护），不经宿主环境变量传入。",
+  "author": "",
+  "homepage": "https://opencode.ai",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "refresh",
+    "login_api_key",
+    "identity_request",
+    "egress"
+  ],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": [
+      "opencode.ai",
+      "models.dev"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [],
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "login": {
+    "methods": [
+      "api_key"
+    ],
+    "reads_local_state": false,
+    "requires_app": false,
+    "auto_refresh": false,
+    "notes": "匿名通道默认可用（凭据字面量 public）；付费 key 以 sk- 开头，粘贴后 DPAPI 加密保存在插件数据目录"
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "opencode-plugin.exe",
+    "args": []
+  }
+}

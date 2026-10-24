@@ -1,0 +1,58 @@
+{
+  "id": "autoglm",
+  "name": "AutoGLM（智谱）",
+  "version": "0.1.0",
+  "api_level": 2,
+  "description": "把宿主的 OpenAI 兼容请求转发到 AutoGLM。cn 区走 https://autoglm-acceleration-api.zhipuai.cn，global 区走 https://autoglm-api.autoglm.ai。聊天有三条通道：窄通道 proxy（/autoclaw-proxy/proxy/autoclaw/v1/chat/completions）、沙箱直连（sandbox_endpoint + /v1/chat/completions）、以及 relay（/api/events 事件流 + /api/electron/agent/send）。凭据由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护），不经宿主环境变量传入。",
+  "author": "",
+  "homepage": "https://autoglm.zhipuai.cn",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "checkin",
+    "quota",
+    "refresh",
+    "egress",
+    "login_oauth"
+  ],
+  "permissions": {
+    "read_paths": [
+      "%USERPROFILE%\\.openclaw-autoclaw"
+    ],
+    "launch_apps": [],
+    "network_domains": [
+      "autoglm-acceleration-api.zhipuai.cn",
+      "autoglm-api.autoglm.ai"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [],
+  "checkin": {
+    "default_time": "09:00"
+  },
+  "quota": {
+    "poll_minutes": 30
+  },
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "autoglm-plugin.exe",
+    "args": []
+  }
+}

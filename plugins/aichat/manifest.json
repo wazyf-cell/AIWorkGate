@@ -1,0 +1,25 @@
+{
+  "id": "aichat",
+  "name": "AI Work 助手（转发）",
+  "version": "0.1.0",
+  "api_level": 2,
+  "description": "把宿主的请求转发到本机独立 GUI「AI Work 助手」(127.0.0.1, 默认端口 17864)。本插件不托管 A 的进程：A 由 HKCU Run 自启、自带端口与自己的 sqlite kv。base_url 与 api_key 由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护），不经宿主环境变量传入。",
+  "author": "",
+  "homepage": "",
+  "os": ["windows"],
+  "capabilities": ["upstream", "accounts"],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": ["127.0.0.1"],
+    "use_proxy": false,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": { "strict": false },
+  "models": [],
+  "concurrency": { "suggested": 2 },
+  "rules": { "packs": [] },
+  "startup": { "mode": "always", "idle_timeout_s": 600 },
+  "entry": { "exe": "aichat-plugin.exe", "args": [] }
+}

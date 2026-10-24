@@ -1,0 +1,10 @@
+node_modules/
+*.local
+.vite/
+
+# Visual regression gate artifacts.
+# Baselines (visual-baseline/) are NOT ignored — they are the checked-in truth the
+# gate compares against, so changing them is a deliberate, reviewable act.
+# visual-report/ is per-run scratch: actual shots and diff images that only exist
+# to explain a failure.
+visual-report/

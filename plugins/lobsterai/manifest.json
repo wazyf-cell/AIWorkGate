@@ -1,0 +1,166 @@
+{
+  "id": "lobsterai",
+  "name": "LobsterAI（有道）",
+  "version": "0.1.0",
+  "api_level": 2,
+  "description": "把宿主的 OpenAI 兼容请求转发到 LobsterAI（有道，https://lobsterai-server.youdao.com 的 /api/proxy/v1/chat/completions）。上游说 OpenAI chat 协议且只支持流式（stream:false 会 500），本插件强制 stream 并在客户端要非流式时聚合 SSE。凭据由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护）。登录是门户 OAuth：插件给出真实登录 URL，用户在浏览器完成后把 code POST 给 /admin/exchange，无需任何硬编码密钥。",
+  "author": "",
+  "homepage": "https://lobsterai.youdao.com",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "refresh",
+    "login_oauth",
+    "egress",
+    "identity_request"
+  ],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": [
+      "lobsterai-server.youdao.com",
+      "lobsterai.youdao.com",
+      "api-overmind.youdao.com"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "name": "deepseek-v4-flash",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "name": "deepseek-v4-pro",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "MiniMax-M3",
+      "name": "MiniMax-M3",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "MiniMax-M2.7",
+      "name": "MiniMax-M2.7",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "qwen3.7-max",
+      "name": "qwen3.7-max",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "qwen3.7-plus",
+      "name": "qwen3.7-plus",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "qwen3.6-plus",
+      "name": "qwen3.6-plus",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "qwen3.5-plus-2026-04-20",
+      "name": "qwen3.5-plus-2026-04-20",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "name": "kimi-k2.7-code",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "name": "kimi-k2.7-code-highspeed",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "kimi-k2.6",
+      "name": "kimi-k2.6",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "kimi-k2.5",
+      "name": "kimi-k2.5",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "doubao-seed-2-1-pro-260628",
+      "name": "doubao-seed-2-1-pro-260628",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "doubao-seed-2-1-turbo-260628",
+      "name": "doubao-seed-2-1-turbo-260628",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "doubao-seed-2-0-code-preview-260215",
+      "name": "doubao-seed-2-0-code-preview-260215",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "glm-5.2",
+      "name": "glm-5.2",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "glm-5.1",
+      "name": "glm-5.1",
+      "context_length": 131072,
+      "tools": true
+    },
+    {
+      "id": "glm-5v-turbo",
+      "name": "glm-5v-turbo",
+      "context_length": 131072,
+      "tools": true,
+      "vision": true
+    },
+    {
+      "id": "glm-5",
+      "name": "glm-5",
+      "context_length": 131072,
+      "tools": true
+    }
+  ],
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "lobsterai-plugin.exe",
+    "args": []
+  }
+}

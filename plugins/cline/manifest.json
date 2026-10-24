@@ -1,0 +1,64 @@
+{
+  "id": "cline",
+  "name": "Cline",
+  "version": "0.1.0",
+  "api_level": 2,
+  "description": "把宿主的 OpenAI 兼容请求转发到 Cline 网关（https://api.cline.bot/api/v1/chat/completions）。鉴权走 WorkOS：访问令牌必须以字面量前缀 workos: 拼进 Authorization，缺前缀会被上游当匿名拒掉。登录用 WorkOS 设备码流程（POST https://api.workos.com/user_management/authorize/device，按 interval 轮询 /user_management/authenticate，处理 authorization_pending/slow_down/access_denied/expired_token），拿到的 accessToken/refreshToken 再 POST /api/v1/auth/register 注册成 Cline 会话并落库，续期走 /api/v1/auth/refresh。也支持粘贴 access_token。可按账号读取宿主写入的 egress.json，把上游调用路由到本地代理出口（blocked/strict 下失败关闭）。每个请求必须带 Cline 客户端四头（HTTP-Referer/X-Title/X-IS-MULTIROOT/X-CLIENT-TYPE）。模型目录来自 /api/v1/ai/cline/recommended-models 与 /api/v1/models。凭据由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护），不经宿主环境变量传入。",
+  "author": "",
+  "homepage": "https://cline.bot",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "refresh",
+    "login_oauth",
+    "login_paste_code",
+    "egress"
+  ],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": [
+      "api.cline.bot",
+      "api.workos.com",
+      "authkit.cline.bot",
+      "models.dev"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [],
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "login": {
+    "methods": [
+      "oauth",
+      "paste_code"
+    ],
+    "reads_local_state": false,
+    "requires_app": false,
+    "auto_refresh": true,
+    "notes": "WorkOS 设备码授权（浏览器里输 code），或直接粘贴 accessToken；DPAPI 加密保存在插件数据目录"
+  },
+  "quota": {
+    "poll_minutes": 0
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "cline-plugin.exe",
+    "args": []
+  }
+}

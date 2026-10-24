@@ -1,0 +1,33 @@
+{
+  "id": "hello",
+  "name": "Hello 模板插件",
+  "version": "0.1.0",
+  "api_level": 1,
+  "description": "AIWorkGate 最小插件模板：一个模型、非流式/流式对话、tools 回显",
+  "author": "",
+  "homepage": "",
+  "os": ["windows"],
+  "capabilities": ["upstream"],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": [],
+    "use_proxy": false,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": { "strict": false },
+  "models": [
+    {
+      "id": "hello-chat",
+      "name": "Hello Chat",
+      "context_length": 8192,
+      "tools": true,
+      "vision": false
+    }
+  ],
+  "concurrency": { "suggested": 2 },
+  "rules": { "packs": [] },
+  "startup": { "mode": "on_demand", "idle_timeout_s": 300 },
+  "entry": { "exe": "hello-plugin.exe", "args": [] }
+}

@@ -1,0 +1,138 @@
+{
+  "id": "zcode",
+  "name": "ZCode（智谱）",
+  "version": "0.2.0",
+  "api_level": 2,
+  "description": "把宿主的 OpenAI 兼容请求转发到 ZCode。两条真实路由：本机客户端登录态里的 coding-plan api-key 走 https://api.z.ai/api/anthropic（Anthropic Messages），桌面 JWT 走 https://zcode.z.ai 的 zcode-plan 端点；本插件负责 OpenAI <-> Anthropic 双向转换。local_state 读取 %USERPROFILE%\\.zcode\\v2\\credentials.json（AES-256-GCM 信封，只读），先用上游校验再落库；凭据由插件自持（DATA_DIR\\accounts.dat，DPAPI 保护）。",
+  "author": "",
+  "homepage": "https://zcode.z.ai",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "login_local_state",
+    "login_paste_code",
+    "identity_request",
+    "egress"
+  ],
+  "permissions": {
+    "read_paths": [
+      "%USERPROFILE%\\.zcode\\v2\\credentials.json"
+    ],
+    "launch_apps": [],
+    "network_domains": [
+      "zcode.z.ai",
+      "api.z.ai"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [
+    {
+      "id": "glm-5.3",
+      "name": "GLM-5.3",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM-5.3-Flash",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    {
+      "id": "glm-5.2",
+      "name": "GLM-5.2",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    {
+      "id": "glm-5.1",
+      "name": "GLM-5.1",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "medium"
+      ]
+    },
+    {
+      "id": "glm-5",
+      "name": "GLM-5",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "medium"
+      ]
+    },
+    {
+      "id": "glm-4.7",
+      "name": "GLM-4.7",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "medium"
+      ]
+    },
+    {
+      "id": "glm-4.6",
+      "name": "GLM-4.6",
+      "context_length": 200000,
+      "tools": true,
+      "vision": false,
+      "thinking": [
+        "medium"
+      ]
+    }
+  ],
+  "login": {
+    "methods": [
+      "local_state",
+      "paste_code"
+    ],
+    "reads_local_state": true,
+    "requires_app": true,
+    "auto_refresh": false,
+    "notes": "local_state 只读本机 ZCode 客户端凭据并用上游校验；paste_code 粘贴 token/回调地址，提交时同样先校验。不会写入客户端任何文件。"
+  },
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "zcode-plugin.exe",
+    "args": []
+  }
+}

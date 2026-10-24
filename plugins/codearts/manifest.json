@@ -1,0 +1,74 @@
+{
+  "id": "codearts",
+  "name": "CodeArts",
+  "version": "0.3.1",
+  "api_level": 2,
+  "description": "华为云 CodeArts（SNAP）账号池、每日签到与 OpenAI 兼容上游",
+  "author": "",
+  "homepage": "",
+  "os": [
+    "windows"
+  ],
+  "capabilities": [
+    "upstream",
+    "accounts",
+    "checkin",
+    "quota",
+    "login_oauth",
+    "refresh",
+    "egress",
+    "identity_request",
+    "login_paste_code",
+    "login_ide_plugin"
+  ],
+  "permissions": {
+    "read_paths": [],
+    "launch_apps": [],
+    "network_domains": [
+      "sts.cn-north-4.myhuaweicloud.com",
+      "snap-access.cn-north-4.myhuaweicloud.com",
+      "opengw.developer.huaweicloud.com",
+      "codearts.huaweicloud.com",
+      "devcloud.cn-north-4.myhuaweicloud.com",
+      "auth.huaweicloud.com"
+    ],
+    "use_proxy": true,
+    "os_identity": false,
+    "require_admin": false
+  },
+  "egress": {
+    "strict": false
+  },
+  "models": [],
+  "login": {
+    "methods": [
+      "oauth",
+      "paste_code",
+      "ide_plugin"
+    ],
+    "reads_local_state": false,
+    "requires_app": false,
+    "auto_refresh": true,
+    "notes": "浏览器 OAuth、JetBrains/IDE 插件授权、粘贴授权码；凭据 DPAPI 加密保存在插件数据目录"
+  },
+  "checkin": {
+    "default_time": "09:00"
+  },
+  "quota": {
+    "poll_minutes": 30
+  },
+  "concurrency": {
+    "suggested": 2
+  },
+  "rules": {
+    "packs": []
+  },
+  "startup": {
+    "mode": "always",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "codearts-plugin.exe",
+    "args": []
+  }
+}
