@@ -87,7 +87,7 @@ New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 $exePath = Join-Path $buildDir "aiworkgate.exe"
 
 Write-Host "==> host: go build (version $Version)"
-$ldflags = "-s -w -X aiworkgate/internal/app.Version=$Version"
+$ldflags = "-s -w -buildid= -X aiworkgate/internal/app.Version=$Version"
 $oldCgo = $env:CGO_ENABLED
 $env:CGO_ENABLED = "0"
 try {

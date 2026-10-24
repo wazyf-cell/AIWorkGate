@@ -1,0 +1,10 @@
+# Check out the same bytes on every platform: the SPA bundle is embedded into
+# the host binary, so CRLF conversion would change the build output.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.exe binary
+*.zip binary
+*.db binary
