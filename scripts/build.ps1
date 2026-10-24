@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Builds AIWorkGate: the Vue SPA, the Go host, and a portable release folder.
@@ -91,7 +91,7 @@ $ldflags = "-s -w -X aiworkgate/internal/app.Version=$Version"
 $oldCgo = $env:CGO_ENABLED
 $env:CGO_ENABLED = "0"
 try {
-    & go build -trimpath -ldflags $ldflags -o $exePath ./cmd/aiworkgate
+    & go build -trimpath -buildvcs=false -ldflags $ldflags -o $exePath ./cmd/aiworkgate
     if ($LASTEXITCODE -ne 0) { throw "go build failed with exit code $LASTEXITCODE" }
 }
 finally {

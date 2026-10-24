@@ -1,4 +1,4 @@
-# Rebuilds the host, the frontend and the requested plugins, syncs them into
+﻿# Rebuilds the host, the frontend and the requested plugins, syncs them into
 # %APPDATA%\AIWorkGate\plugins and restarts everything. Mirrors handoff section
 # P0.5 so a deployment is one reproducible command instead of ad-hoc copy-paste.
 #
@@ -35,7 +35,7 @@ foreach ($id in $Plugins) {
   try {
     go build ./... ; if ($LASTEXITCODE -ne 0) { Fail "$id`: go build ./... failed" }
     go vet ./...   ; if ($LASTEXITCODE -ne 0) { Fail "$id`: go vet failed" }
-    go build -o "$id-plugin.exe" . ; if ($LASTEXITCODE -ne 0) { Fail "$id`: go build -o failed" }
+    go build -trimpath -buildvcs=false -o "$id-plugin.exe" . ; if ($LASTEXITCODE -ne 0) { Fail "$id`: go build -o failed" }
     Remove-Item "aiworkgate-plugin-$id.exe" -ErrorAction SilentlyContinue
   } finally { Pop-Location }
   Write-Host "built $id"
@@ -50,7 +50,7 @@ if (-not $SkipWeb) {
 }
 
 # 4) Host.
-go build -o build\aiworkgate.exe ./cmd/aiworkgate ; if ($LASTEXITCODE -ne 0) { Fail 'host build failed' }
+go build -trimpath -buildvcs=false -o build\aiworkgate.exe ./cmd/aiworkgate ; if ($LASTEXITCODE -ne 0) { Fail 'host build failed' }
 
 # 5) Sync manifests + exes into the runtime directory.
 $runtime = Join-Path $env:APPDATA 'AIWorkGate\plugins'
