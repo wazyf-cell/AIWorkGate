@@ -69,6 +69,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -SkipWeb -Version 0
 
 运行 `build\AIWorkGate-0.1.0\aiworkgate.exe`，浏览器会自动打开管理页。数据目录为 `%APPDATA%\AIWorkGate`；端口 7865 被占用时顺延到 7866–7875，实际端口写入 `run\gateway.port`。
 
+### 发布包与插件
+
+Release 里的 zip 只包含**宿主 exe + 产品文档**，不含任何插件。`plugins\` 下的 12 个渠道插件源码保留在仓库里供参考和自行构建，但它们仍在完善中，不作为本版的发布物；需要时按插件目录逐个 `go build`，再在「插件」页安装该目录或 zip。宿主本身不依赖任何插件即可启动、查看管理页和接入 A。
+
 ## 开发
 
 ```powershell
@@ -97,7 +101,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-plugins.ps1   # 12 个�
 - [插件生成契约](docs/插件生成契约.md)——从源码到可安装 zip 的标准步骤、打包器、签名、安装门禁。
 - [外部 Agent 接入](docs/外部Agent接入.md)——把网关当本地 OpenAI 端点用：Key、模型命名三规则、`/v1/completions` 与 `/v1/responses` 转译、curl 示例、SSE 事件、错误码。
 - [管理接口](docs/管理接口.md)——每条 `/api/*` 的调用方：哪些页面在用、哪 5 条只给脚本/运维、哪些已删除，以及新增路由的规矩。
-- 插件接口契约：`..\插件接口契约-v0.3.md`（当前实现基线，api_level 1–2；v0.2 已被取代）。
+- [插件格式规范](docs/插件格式规范.md)——清单字段与打包格式的当前基线（api_level 1–2）。
 - 可直接改的起点：`examples\plugin-template\`；打包契约：`docs\插件生成契约.md`。
 
 ## 说明

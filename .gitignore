@@ -53,3 +53,6 @@ plans/
 
 # One-off local rollback script (hard-coded local runtime paths)
 scripts/rollback-eac-plugin.ps1
+
+# Changelogs are development history, not part of the public docs set
+docs/变更日志-*.md
