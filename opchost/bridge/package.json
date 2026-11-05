@@ -1,0 +1,18 @@
+{
+  "name": "@aiworkgate/magpie-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "aiworkgate 插件宿主桥：加载 magpie 生态 OpenCode 插件（.mjs），对宿主暴露插件契约端点",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "main": "src/main.ts",
+  "scripts": {
+    "start": "node src/main.ts",
+    "start:bun": "bun src/main.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

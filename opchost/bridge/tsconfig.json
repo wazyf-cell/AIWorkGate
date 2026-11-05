@@ -1,0 +1,20 @@
+{
+  // 仅用于编辑器/可选 tsc 检查；运行时靠 Node 24 的类型擦除（node src/main.ts）。
+  // 注意：本目录不装第三方依赖（含 @types/node），因此 `tsc --noEmit` 在缺少
+  // @types/node 时会报 process/Buffer 未定义——那是环境缺包，不是源码错误。
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts"]
+}

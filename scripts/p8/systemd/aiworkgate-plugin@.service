@@ -1,0 +1,142 @@
+# =============================================================================
+# aiworkgate 插件桥 · systemd 加固单元样例（模板，%i = 插件 id）
+#
+# 契约来源：
+#   plans/2026-11-05-magpie接入与公网部署计划.md  §P8「做什么 2」
+#   plans/2026-11-05-安全加固计划.md              §S-6「做什么 2」
+#   取舍记录：docs/p8/00-P8-实施方案与取舍.md §4.1（MemoryDenyWriteExecute vs bun JIT）
+#
+# 安装（服务器上，root 执行；先跑 p8-create-plugin-user.sh --apply）：
+#   install -D -m 0644 scripts/p8/systemd/aiworkgate-plugin@.service \
+#       /etc/systemd/system/aiworkgate-plugin@.service
+#   systemctl daemon-reload
+#   systemctl enable --now aiworkgate-plugin@opencode-trae-auth.service
+#
+# ⚠️ 生效前提：aiworkgate 宿主**不能**再用 exec 直接拉起插件子进程
+#    （子进程会继承宿主 uid，加固项全部落空）。部署形态见
+#    docs/p8/00-P8-实施方案与取舍.md §4.4「独立用户的真实缺口」。
+#
+# 语法纪律（本文件刻意遵守，勿破坏）：
+#   * 注释一律独占一行。systemd **不支持**行尾注释：`User=a  # b` 会把
+#     "a  # b" 整个当成用户名（本项目踩过同类坑）。
+#   * 同一个 key 不重复出现；重复时 systemd 静默取最后一个。
+#   * 值里含空格不需要引号（RestrictAddressFamilies=AF_INET AF_INET6 就是列表语法）。
+# =============================================================================
+
+[Unit]
+# 单元说明：%i 是插件 id 实例占位符（aiworkgate-plugin@<plugin-id>.service）
+Description=aiworkgate plugin bridge (%i)
+# 指向本地文档，便于 `systemctl status` 里直接查到取舍记录
+Documentation=file:///opt/aiworkgate/docs/p8/00-P8-实施方案与取舍.md
+# 需要网络就绪：插件启动即要发 HTTPS 请求（登录态校验/首轮模型列表）
+After=network-online.target aiworkgate.service
+Wants=network-online.target
+# 与宿主同生命周期：宿主停止时插件桥跟着停，不留孤儿进程
+PartOf=aiworkgate.service
+# 关机流程里优先停它，避免被 SIGKILL 打断正在写的运行态文件
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+# ---- 身份：独立系统用户，非 root、非宿主用户（P8-①）---------------------
+# p8-create-plugin-user.sh 创建；无登录 shell、无 home
+User=aiworkgate-plugin
+Group=aiworkgate-plugin
+# 工作目录放在宿主可写、插件组可读的 runtime 下；ProtectSystem=strict 之外的可写区
+# 由下面的 ReadWritePaths 精确放开
+WorkingDirectory=/var/lib/aiworkgate/runtime/%i
+# 凭证（Bearer token）由 systemd 以 root 读取后注入 tmpfs 上的 $CREDENTIALS_DIRECTORY，
+# **不落在插件可写的路径里**，落盘的只有 root 可读的源文件（P8-①「凭据不落盘给插件」）
+# 需要 systemd >= 247（Ubuntu 22.04 自带 249）
+LoadCredential=bridge-token:/var/lib/aiworkgate/credentials/bridge-%i.token
+Environment=AIWORKGATE_PLUGIN_ID=%i
+# ExecStart 必须是绝对路径；--token-file 指向 $CREDENTIALS_DIRECTORY 展开后的位置
+ExecStart=/opt/aiworkgate/bin/magpie-bridge --plugin-dir /var/lib/aiworkgate/plugins/%i --runtime-dir /var/lib/aiworkgate/runtime/%i --token-file ${CREDENTIALS_DIRECTORY}/bridge-token
+# 崩溃重启：插件桥是常驻服务，异常退出要自愈；不无限重启风暴
+Restart=on-failure
+RestartSec=2s
+# 停止用 SIGTERM，给 10s 收尾（写回运行态、关监听端口），超时才 SIGKILL
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+# ---- 加固：进程不能提权、不能改系统 -------------------------------------
+# 关键项 1/5：禁止通过 setuid/setgid/文件能力提权（P8-② 明确要求）
+NoNewPrivileges=yes
+# 关键项 2/5：整个文件系统只读，只有 ReadWritePaths 列出的路径可写。
+# 插件因此改不了自己的代码目录 → 供应链被投毒后无法自我固化
+ProtectSystem=strict
+# 关键项 3/5：屏蔽 /home、/root、/run/user。
+# 这不只是加固，是**故意**的：magpie 的 plugin-auth.json 就在用户 home 下，
+# 插件桥在服务器上不需要也不允许看到它（凭据由宿主注入，D-08）
+ProtectHome=yes
+# 关键项 4/5：私有 /tmp。避免插件与宿主、与其他插件通过 /tmp 文件交换数据
+PrivateTmp=yes
+# 关键项 5/5：只允许 IPv4/IPv6 套接字。
+# ⚠️ 副作用（已知并接受）：同时移除了 AF_UNIX，于是
+#   1) 任何经 journald socket（/run/systemd/journal/socket）直接写日志的库会失败；
+#      本单元用 StandardOutput=journal 由 systemd 捕管道，不受影响；
+#   2) nss-systemd 的 varlink 走 AF_UNIX，若 /etc/nsswitch.conf 的 passwd 行只写了
+#      systemd 而没有 compat/files，用户名解析可能失败。
+#      解决办法：确保 /etc/passwd 里有 aiworkgate-plugin（本卡脚本会写），
+#      并让 nsswitch 保留 files 在前。详见 docs/p8/00 §4.2。
+RestrictAddressFamilies=AF_INET AF_INET6
+# 不创建设备节点：插件不需要访问任何块/字符设备
+PrivateDevices=yes
+# 内核面：不许改 sysctl、不许加载模块、不许读内核日志、不许动 cgroup
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+# 不许改时钟、不许改主机名（防时间伪造绕过 JWT/证书校验）
+ProtectClock=yes
+ProtectHostname=yes
+# 不许创建命名空间（防 user namespace 逃逸链）
+RestrictNamespaces=yes
+# 禁实时调度（防用 FIFO 抢占宿主）
+RestrictRealtime=yes
+# 禁 setuid/setgid 位生效
+RestrictSUIDSGID=yes
+# 锁定 personality（防切到 32 位 ABI 绕过 syscall 过滤）
+LockPersonality=yes
+# ---- 冲突项：MemoryDenyWriteExecute 与 bun 的 JIT 不可兼得 --------------
+# 这里是**书面的取舍**，不是漏写（P8-② 要求「冲突时记录取舍」，见 docs/p8/00 §4.1）：
+#
+#   MemoryDenyWriteExecute=yes 会让内核拒绝所有「先写后执行」的内存映射
+#   （mprotect(PROT_WRITE|PROT_EXEC) / W^X 违规）。bun 内置 JavaScriptCore，
+#   它的 JIT 必须把生成的机器码写进可执行页 —— 开了就是 SIGSEGV 或启动即崩。
+#   同理 V8/Node 也一样（Node 有 --jitless 可绕，但 D-05 已定「用 bun」，
+#   bun 没有 --jitless 等价开关），故不采纳「换成 node --jitless」这条替代路径。
+#
+#   因此取值 = no，并用下面这些**补偿控制**抵消这一项的缺失：
+#     NoNewPrivileges / ProtectSystem=strict / ProtectHome / PrivateTmp
+#     RestrictAddressFamilies / SystemCallFilter=@system-service（seccomp）
+#     CapabilityBoundingSet=（空）/ RestrictNamespaces / LockPersonality
+#   注意：W^X 缺失只影响「恶意代码能不能就地生成 shellcode」，而这些补偿项
+#   限制的是「生成了能做什么」（提权、改盘、改内核、换协议），后者覆盖面更大。
+#   如果将来必须开 MDE：唯一可行路径是放弃 JIT（换运行时或预编译），
+#   那不是配置问题而是架构变更，必须回写决策台账，不允许就地改一行交差。
+MemoryDenyWriteExecute=no
+# 清空能力集：插件桥必须零 capability（它只是个 HTTP 代理桥）
+CapabilityBoundingSet=
+AmbientCapabilities=
+# 进程退出后清理 System V / POSIX IPC 对象
+RemoveIPC=yes
+# 默认 umask：新文件不给组/其他任何权限
+UMask=0077
+# 系统调用白名单：只给 @system-service（不含 @mount/@raw-io/@privileged/...）
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# 只允许本机架构的 syscall（挡住 32 位 ABI 绕过）
+SystemCallArchitectures=native
+# ---- 可写面：只有这两处 ------------------------------------------------
+# runtime/%i：宿主写 rules.json/egress.json，插件读；插件自己也写运行态（端口/健康戳）
+# work/%i：插件唯一的私有落盘区（0750，属主是插件用户）
+ReadWritePaths=/var/lib/aiworkgate/runtime/%i /var/lib/aiworkgate/work/%i
+# ---- 日志：交给 journald，插件不直接写文件 ------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aiworkgate-plugin-%i
+
+[Install]
+# 由宿主服务带起（enabled 时跟随 multi-user 启动；实例需显式 enable）
+WantedBy=multi-user.target

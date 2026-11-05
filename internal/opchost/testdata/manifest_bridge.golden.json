@@ -1,0 +1,33 @@
+{
+  "id": "trae-bridge",
+  "name": "Trae Bridge",
+  "version": "0.1.0",
+  "api_level": 1,
+  "description": "aiworkgate plugin contract bridge over a magpie .mjs plugin",
+  "capabilities": [
+    "accounts",
+    "checkin"
+  ],
+  "permissions": {
+    "network_domains": [
+      "trae.ai",
+      "*.trae.ai"
+    ]
+  },
+  "checkin": {},
+  "quota": {},
+  "concurrency": {},
+  "rules": {},
+  "egress": {},
+  "startup": {
+    "mode": "on_demand",
+    "idle_timeout_s": 600
+  },
+  "entry": {
+    "exe": "magpie-bridge.exe",
+    "args": [
+      "--plugin-dir",
+      "/srv/aiworkgate/plugins/trae-bridge"
+    ]
+  }
+}
