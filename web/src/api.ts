@@ -819,6 +819,10 @@ export interface UsageKpis {
   completion_tokens?: number
   credits?: number
   active_accounts?: number
+  /** D-32②：平均延迟（ms）= LatencyMSSum / requests；区间无请求时缺省（不显示 0）。 */
+  avg_latency_ms?: number
+  /** D-32②：平均首字（ms）= TTFBMSSum / TTFBCount；区间无 TTFB 样本时缺省。 */
+  avg_ttfb_ms?: number
 }
 
 export interface UsageSeriesPoint {

@@ -44,7 +44,10 @@ func Load(dir string) (Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			// P10-2：缺省值 Normalize 后再返回并写盘，避免「返回值缺省填充」与
+			// 「文件内容（redact.key_file 缺省路径）」两套不一致（首启/次启 key 漂移）。
 			cfg := Default()
+			cfg.Normalize()
 			if serr := Save(dir, cfg); serr != nil {
 				return cfg, serr
 			}

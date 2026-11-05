@@ -29,9 +29,11 @@ func TestDefault(t *testing.T) {
 			NoProxy: []string{"127.0.0.1", "localhost"},
 		},
 		Plugins: PluginsConfig{
-			Concurrency:  2,
-			StartupMode:  "always",
-			StrictEgress: false,
+			Concurrency:                 2,
+			StartupMode:                 "always",
+			StrictEgress:                false,
+			MarketUpdateIntervalMinutes: 360,
+			MarketUpdatePolicy:          "prompt",
 		},
 		Checkin: CheckinConfig{
 			DefaultTime:         "09:00",
@@ -47,6 +49,7 @@ func TestDefault(t *testing.T) {
 		},
 		Logging: LoggingConfig{DebugBody: false},
 		Gateway: GatewayConfig{DefaultPlugin: "", LegacyAFallback: true},
+		Redact:  RedactConfig{RouteAware: true}, // P10-2：新增段，缺省即默认表
 		Notify: NotifyConfig{
 			Enabled:            false,
 			Channel:            "generic",
@@ -68,7 +71,11 @@ func TestLoadMissingFileCreatesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !reflect.DeepEqual(cfg, Default()) {
+	// P10-2：Load 缺文件路径返回 Normalize 后的默认值（redact.key_file 填缺省路径），
+	// 比较目标同样 Normalize 一次，保证与文件内容一致。
+	want := Default()
+	want.Normalize()
+	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("Load() on empty dir = %+v, want Default()", cfg)
 	}
 	path := ConfigPath(dir)
@@ -115,6 +122,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	cfg.Logging.DebugBody = true
 	cfg.Gateway.CorsAllowOrigins = []string{"http://localhost:7865", "https://app.test"}
 
+	// P10-2：redact 段有 Normalize 侧缺省（key_file 空 → <dataDir>\redact.key），
+	// 与 Save 内部的 Normalize 幂等一致后，round trip 相等。
+	cfg.Normalize()
 	if err := Save(dir, cfg); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}

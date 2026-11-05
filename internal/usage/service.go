@@ -32,6 +32,11 @@ type SummaryKPI struct {
 	CompletionTokens int64   `json:"completion_tokens"`
 	Credits          float64 `json:"credits"`
 	ActiveAccounts   int64   `json:"active_accounts"`
+	// D-32②: averages derived from the already-rolled-up sums (store.UsageTotals).
+	// Both are null (omitted) when their sample count is 0 — an engineered 0
+	// would read as "instant answers" on an empty range.
+	AvgLatencyMS *float64 `json:"avg_latency_ms,omitempty"`
+	AvgTTFBMS    *float64 `json:"avg_ttfb_ms,omitempty"`
 }
 
 // SummaryPoint is one day/plugin row of the summary series.
@@ -122,6 +127,16 @@ func (s *Service) Summary(q Query) (SummaryResponse, error) {
 		CompletionTokens: totals.CompletionTokens,
 		Credits:          totals.Credits,
 		ActiveAccounts:   totals.ActiveAccounts,
+	}
+	// D-32② 零成本速赢：平均延迟/平均首字。聚合算法的输出（sums）原样使用，
+	// 只在派生时做 0 除数保护；count=0 时字段缺省，不显示 0。
+	if totals.Requests > 0 {
+		avg := float64(totals.LatencyMSSum) / float64(totals.Requests)
+		out.KPIs.AvgLatencyMS = &avg
+	}
+	if totals.TTFBCount > 0 {
+		avg := float64(totals.TTFBMSSum) / float64(totals.TTFBCount)
+		out.KPIs.AvgTTFBMS = &avg
 	}
 	for _, row := range rows {
 		out.Series = append(out.Series, SummaryPoint{

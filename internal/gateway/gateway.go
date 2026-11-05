@@ -120,6 +120,11 @@ type Options struct {
 	DefaultPlugin string
 	// LegacyA keeps the A upstream as the bare-name fallback for compatibility.
 	LegacyA bool
+
+	// Redact turns P10 request masking on: bodies are masked to the upstream
+	// (MaskJSON, Route=provider) and responses restored to the client
+	// (NewWriter). The zero value leaves forwarding untouched.
+	Redact RedactOptions
 }
 
 const (
@@ -171,6 +176,7 @@ type Gateway struct {
 	bodyCap        int
 	queueTimeout   time.Duration
 	cacheTTL       time.Duration
+	redact         RedactOptions
 	corsOrigins    atomic.Value // []string, set by SetCorsOrigins
 	defaultPlugin  string
 	legacyA        bool
@@ -272,6 +278,7 @@ func newGateway(opts Options) *Gateway {
 		bodyCap:        bodyCap,
 		queueTimeout:   queueTimeout,
 		cacheTTL:       cacheTTL,
+		redact:         opts.Redact,
 		defaultPlugin:  strings.ToLower(strings.TrimSpace(opts.DefaultPlugin)),
 		legacyA:        opts.LegacyA,
 		now:            time.Now,
@@ -348,6 +355,9 @@ type reqRecord struct {
 	// scopeRejected marks a request refused by the key's model scope / pool
 	// binding. It never reached a model, so it must not consume the quota.
 	scopeRejected bool
+	// redactLine is the P10 masking audit for this request (categories/counts/
+	// lines/elapsed, never the values), written to the API log when set.
+	redactLine string
 }
 
 // sseKeepAliveInterval is how long a streaming reply may stay silent before the
@@ -1186,6 +1196,10 @@ func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *req
 			"request body must be a JSON object")
 		return
 	}
+	// P10：入站脱敏（Route=插件 id），审计进 rec
+	red := NewWiring(g.redact)
+	rewritten = red.MaskJSONBody(rewritten, id)
+	rec.redactLine = red.AuditLine()
 
 	target := strings.TrimRight(baseURL, "/") + path
 	if r.URL.RawQuery != "" {
@@ -1196,7 +1210,7 @@ func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *req
 	if token != "" {
 		headers.Set("Authorization", "Bearer "+token)
 	}
-	g.forward(w, r, rec, target, headers, rewritten, func() {
+	g.forward(w, r, rec, target, headers, rewritten, red, func() {
 		g.fail(w, rec, http.StatusBadGateway, "upstream_unavailable", "upstream_unavailable",
 			fmt.Sprintf("插件 %s 不可达", id))
 	})
@@ -1213,8 +1227,12 @@ func (g *Gateway) forwardA(w http.ResponseWriter, r *http.Request, rec *reqRecor
 	if key := strings.TrimSpace(g.a.APIKey()); key != "" {
 		headers.Set("Authorization", "Bearer "+key)
 	}
+	// P10：内置 A 上游同样脱敏（Route="a"），审计进 rec
+	red := NewWiring(g.redact)
+	body = red.MaskJSONBody(body, "a")
+	rec.redactLine = red.AuditLine()
 	target := strings.TrimRight(strings.TrimSpace(g.a.BaseURL()), "/") + r.URL.RequestURI()
-	g.forward(w, r, rec, target, headers, body, func() {
+	g.forward(w, r, rec, target, headers, body, red, func() {
 		g.failAUnavailable(w, rec)
 	})
 }
@@ -1276,7 +1294,7 @@ func (b *idleReadBody) Close() error {
 
 // forward performs the upstream call and streams the response. onUnavailable
 // runs when no bytes were written because the upstream could not be reached.
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, rec *reqRecord, target string, headers http.Header, body []byte, onUnavailable func()) {
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, rec *reqRecord, target string, headers http.Header, body []byte, red *Wiring, onUnavailable func()) {
 	// A per-request cancel lets the idle-read watchdog abort a silent upstream
 	// without cancelling the client's own context.
 	ctx, cancel := context.WithCancel(r.Context())
@@ -1314,6 +1332,13 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, rec *reqRecord
 
 	isSSE := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") ||
 		rec.stream
+	// P10：出站回程还原——包 NewWriter（SSE 半帧持留 / 整包 Finish 还原），
+	// Finish 时机=响应结束（defer 覆盖所有退出路径）。
+	if red != nil && red.Enabled() {
+		var finish func()
+		w, finish = red.RespWriter(w)
+		defer finish()
+	}
 	w.WriteHeader(resp.StatusCode)
 	headerAt := time.Now()
 
@@ -1464,6 +1489,7 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 		CachedTokens:     rec.cached,
 		Credits:          rec.credits,
 		Error:            truncateUTF8(rec.errText, 512),
+		Redact:           rec.redactLine,
 	}
 	if !rec.firstTokenAt.IsZero() {
 		row.FirstTokenAt = rec.firstTokenAt.Format(time.RFC3339)

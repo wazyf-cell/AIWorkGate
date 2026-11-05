@@ -414,8 +414,12 @@ type APIRequestLog struct {
 	CachedTokens int64    `json:"cached_tokens,omitempty"`
 	Credits      *float64 `json:"credits,omitempty"`
 	Error        string   `json:"error,omitempty"`
-	BodyReq      string   `json:"body_req,omitempty"`
-	BodyResp     string   `json:"body_resp,omitempty"`
+	// Redact is the P10 masking audit line for the request (categories/counts/
+	// lines/elapsed, never the masked values; gateway/redact_wiring.go).
+	// Omitempty: empty when redaction is off or nothing was masked.
+	Redact   string `json:"redact,omitempty"`
+	BodyReq  string `json:"body_req,omitempty"`
+	BodyResp string `json:"body_resp,omitempty"`
 }
 
 // ProxyLog is one tunnelled CONNECT through a local egress forwarder. It

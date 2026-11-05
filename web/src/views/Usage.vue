@@ -971,6 +971,30 @@ onBeforeUnmount(() => {
         <span v-else class="stat-value">{{ kpis.active_accounts === undefined ? '—' : formatNumber(kpis.active_accounts) }}</span>
         <span class="stat-sub">区间内产生请求的账号</span>
       </section>
+      <section class="stat">
+        <span class="stat-label">平均延迟</span>
+        <span v-if="loading.summary && !summaryLoaded" class="skeleton skeleton-value"></span>
+        <span
+          v-else
+          class="stat-value"
+          :title="kpis.avg_latency_ms === undefined ? '区间内无请求样本' : exact(kpis.avg_latency_ms)"
+        >
+          {{ kpis.avg_latency_ms === undefined ? '—' : formatLatency(kpis.avg_latency_ms) }}
+        </span>
+        <span class="stat-sub">Latency 合计 ÷ 请求数</span>
+      </section>
+      <section class="stat">
+        <span class="stat-label">平均首字</span>
+        <span v-if="loading.summary && !summaryLoaded" class="skeleton skeleton-value"></span>
+        <span
+          v-else
+          class="stat-value"
+          :title="kpis.avg_ttfb_ms === undefined ? '区间内无 TTFB 样本' : exact(kpis.avg_ttfb_ms)"
+        >
+          {{ kpis.avg_ttfb_ms === undefined ? '—' : formatLatency(kpis.avg_ttfb_ms) }}
+        </span>
+        <span class="stat-sub">TTFB 合计 ÷ 有首字样本数</span>
+      </section>
     </div>
 
     <div class="tabs" role="tablist" aria-label="用量视图">

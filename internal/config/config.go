@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -58,6 +59,15 @@ const (
 	MinModelCacheMinutes = 1
 	MaxModelCacheMinutes = 1440
 	MaxRetryBackoff      = 3600
+
+	// Market update check cadence (P2-5): the default mirrors the 6h rhythm of
+	// the magpie updater. An interval of 0 disables the timer entirely.
+	DefaultMarketUpdateIntervalMinutes = 360
+	// MarketUpdatePolicyPrompt (default) records available updates but never
+	// installs them; MarketUpdatePolicyAuto is an explicit opt-in that applies
+	// updates through the rollback primitive.
+	MarketUpdatePolicyPrompt = "prompt"
+	MarketUpdatePolicyAuto   = "auto"
 )
 
 // DefaultNoProxy lists destinations that must never be sent to a proxy.
@@ -91,6 +101,7 @@ type Config struct {
 	Retention RetentionConfig `json:"retention"`
 	Logging   LoggingConfig   `json:"logging"`
 	Gateway   GatewayConfig   `json:"gateway"`
+	Redact    RedactConfig    `json:"redact"`
 	Notify    NotifyConfig    `json:"notify"`
 }
 
@@ -157,6 +168,15 @@ type PluginsConfig struct {
 	// direct selection, not an automatic failover.
 	MarketMirror string `json:"market_mirror"`
 
+	// MarketUpdateIntervalMinutes is the cadence of the market update check
+	// (P2-5). 0 disables the timer; the default (360) mirrors the 6h rhythm of
+	// the magpie updater.
+	MarketUpdateIntervalMinutes int `json:"market_update_interval_minutes"`
+	// MarketUpdatePolicy is "prompt" (default: record available updates, never
+	// install) or "auto" (explicit opt-in: apply updates through the rollback
+	// primitive). Any other value normalizes to prompt.
+	MarketUpdatePolicy string `json:"market_update_policy"`
+
 	// TrustedKeys maps a signing key id to its base64 Ed25519 public key.
 	// Empty means unsigned packages install as before. Once any key is
 	// configured every install must carry manifest.sig signed by one of these
@@ -199,6 +219,30 @@ type LoggingConfig struct {
 	DebugBody bool `json:"debug_body"`
 }
 
+// RedactConfig holds the P10 request-redaction switches (internal/redact).
+// Off by default this phase: configurable first, flipped to default-on later
+// (P10 计划：本阶段先可配后默认开)。
+type RedactConfig struct {
+	// Enabled turns request-body masking and response restoring on.
+	Enabled bool `json:"enabled"`
+	// KeyFile is where the placeholder fingerprint key is kept across restarts
+	// (redact.SetKeyPath). Empty (the default) resolves to
+	// <dataDir>\redact.key at Normalize time.
+	KeyFile string `json:"key_file"`
+	// RouteAware keeps a text masked for a provider masked for that provider
+	// across turns (sent spans, protecting the upstream prompt cache). Default
+	// true.
+	RouteAware bool `json:"route_aware"`
+	// Kinds, when non-empty, restricts masking to these personal-data kinds
+	// (SECRET/EMAIL/PHONE/…). Empty = the rules' default kind table.
+	Kinds []string `json:"kinds"`
+	// Categories, when non-empty, restricts masking to these category ids
+	// (ssn/passport/iban/birthday/mac/serial/home/userhost/ip/bucket). Empty =
+	// the default category table (internal/redact more.go Categories). When
+	// both Kinds and Categories are set, the union of the two is masked.
+	Categories []string `json:"categories"`
+}
+
 // Default returns the built-in configuration used on first run.
 func Default() Config {
 	return Config{
@@ -219,9 +263,11 @@ func Default() Config {
 			NoProxy: append([]string(nil), DefaultNoProxy...),
 		},
 		Plugins: PluginsConfig{
-			Concurrency:  DefaultConcurrency,
-			StartupMode:  StartupAlways,
-			StrictEgress: false,
+			Concurrency:                 DefaultConcurrency,
+			StartupMode:                 StartupAlways,
+			StrictEgress:                false,
+			MarketUpdateIntervalMinutes: DefaultMarketUpdateIntervalMinutes,
+			MarketUpdatePolicy:          MarketUpdatePolicyPrompt,
 		},
 		// Direct egress is recorded only when the user opts in: turning it on
 		// binds loopback listeners that plugins route through, so the shipped
@@ -246,6 +292,8 @@ func Default() Config {
 			DefaultPlugin:   "",
 			LegacyAFallback: true,
 		},
+		// Redaction is off by default this phase; Route awareness on.
+		Redact: RedactConfig{RouteAware: true},
 		Notify: NotifyConfig{
 			Enabled:            false,
 			Channel:            DefaultNotifyChannel,
@@ -276,6 +324,13 @@ func (c *Config) Normalize() {
 	c.Plugins.Concurrency = clampInt(c.Plugins.Concurrency, MinConcurr, MaxConcurr)
 	if c.Plugins.StartupMode == "" {
 		c.Plugins.StartupMode = StartupAlways
+	}
+	if c.Plugins.MarketUpdateIntervalMinutes < 0 {
+		c.Plugins.MarketUpdateIntervalMinutes = 0
+	}
+	c.Plugins.MarketUpdatePolicy = strings.ToLower(strings.TrimSpace(c.Plugins.MarketUpdatePolicy))
+	if c.Plugins.MarketUpdatePolicy != MarketUpdatePolicyAuto {
+		c.Plugins.MarketUpdatePolicy = MarketUpdatePolicyPrompt
 	}
 	if len(c.Plugins.TrustedKeys) > 0 {
 		keys := make(map[string]string, len(c.Plugins.TrustedKeys))
@@ -313,7 +368,34 @@ func (c *Config) Normalize() {
 
 	c.Gateway.CorsAllowOrigins = normalizeOriginList(c.Gateway.CorsAllowOrigins)
 	c.Gateway.DefaultPlugin = strings.ToLower(strings.TrimSpace(c.Gateway.DefaultPlugin))
+
+	// Redact: default key file lives beside the data dir; kinds/categories
+	// overrides are trimmed and deduped, empty keeps the default tables.
+	c.Redact.KeyFile = strings.TrimSpace(c.Redact.KeyFile)
+	if c.Redact.KeyFile == "" {
+		if dir, err := DataDir(); err == nil {
+			c.Redact.KeyFile = filepath.Join(dir, "redact.key")
+		}
+	}
+	c.Redact.Kinds = dedupeStrings(c.Redact.Kinds)
+	c.Redact.Categories = dedupeStrings(c.Redact.Categories)
+
 	c.normalizeNotify()
+}
+
+// dedupeStrings trims each entry, drops blanks and keeps first occurrences.
+func dedupeStrings(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // normalizeNotify folds an unknown channel to generic, drops unknown event

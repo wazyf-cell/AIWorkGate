@@ -3,6 +3,7 @@ package usage
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -148,6 +149,90 @@ func TestSummaryFilters(t *testing.T) {
 	if res.KPIs.Credits != 3 || res.KPIs.PromptTokens != 70 {
 		t.Fatalf("kpis = %+v", res.KPIs)
 	}
+}
+
+// insertDailyWithLatency inserts one usage_daily row with latency/ttfb rollups
+// (insertDaily above pins them to 0).
+func insertDailyWithLatency(t *testing.T, st *store.Store, day, pluginID, accountID, modelName string,
+	requests int64, latencyMS, ttfbMS, ttfbCount int64) {
+	t.Helper()
+	if _, err := st.DB().Exec(`INSERT INTO usage_daily
+		(day, plugin_id, account_id, model, requests, errors, prompt_tokens, completion_tokens,
+		 credits, latency_ms_sum, ttfb_ms_sum, ttfb_count)
+		VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?)
+		ON CONFLICT(day, plugin_id, account_id, model) DO UPDATE SET
+			requests = excluded.requests, latency_ms_sum = excluded.latency_ms_sum,
+			ttfb_ms_sum = excluded.ttfb_ms_sum, ttfb_count = excluded.ttfb_count`,
+		day, pluginID, accountID, modelName, requests, latencyMS, ttfbMS, ttfbCount); err != nil {
+		t.Fatalf("insert usage_daily with latency: %v", err)
+	}
+}
+
+func TestSummaryAveragesAndZeroGuard(t *testing.T) {
+	st := openTestStore(t)
+	// 2 请求延迟合计 100、1 个有 TTFB 的样本（40）；3 请求延迟合计 300、无 TTFB 样本
+	insertDailyWithLatency(t, st, "2026-10-19", "plugin:mock", "acc_1", "m1", 2, 100, 40, 1)
+	insertDailyWithLatency(t, st, "2026-10-20", "plugin:mock", "acc_1", "m2", 3, 300, 0, 0)
+
+	svc := NewService(st)
+	svc.Now = fixedNow
+	q, err := ParseQuery(url.Values{"from": {"2026-10-19"}, "to": {"2026-10-20"}}, fixedNow())
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	res, err := svc.Summary(q)
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	kpi := res.KPIs
+	if kpi.Requests != 5 {
+		t.Fatalf("requests = %d, want 5", kpi.Requests)
+	}
+	// avg_latency = (100+300)/5 = 80；avg_ttfb = 40/1 = 40（只数有 TTFB 的样本）
+	if kpi.AvgLatencyMS == nil || *kpi.AvgLatencyMS != 80 {
+		t.Fatalf("avg_latency_ms = %v, want 80", kpi.AvgLatencyMS)
+	}
+	if kpi.AvgTTFBMS == nil || *kpi.AvgTTFBMS != 40 {
+		t.Fatalf("avg_ttfb_ms = %v, want 40", kpi.AvgTTFBMS)
+	}
+
+	// 0 除保护 1：空范围 → 两个字段都缺省（JSON 里不出现）
+	empty, err := svc.Summary(mustQuery(t, url.Values{"from": {"2026-01-01"}, "to": {"2026-01-02"}}))
+	if err != nil {
+		t.Fatalf("Summary empty: %v", err)
+	}
+	if empty.KPIs.AvgLatencyMS != nil || empty.KPIs.AvgTTFBMS != nil {
+		t.Fatalf("empty range averages = %v/%v, want nil/nil", empty.KPIs.AvgLatencyMS, empty.KPIs.AvgTTFBMS)
+	}
+	j, err := json.Marshal(empty.KPIs)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(j, []byte("avg_latency_ms")) || bytes.Contains(j, []byte("avg_ttfb_ms")) {
+		t.Fatalf("empty KPI JSON leaks zero averages: %s", j)
+	}
+
+	// 0 除保护 2：有请求（延迟分母=requests，>0）但 TTFBCount=0 →
+	// 平均延迟 = 300/3 = 100 照常给出；平均首字缺省（TTFB 无样本）
+	onlyTTFBZero, err := svc.Summary(mustQuery(t, url.Values{"from": {"2026-10-20"}, "to": {"2026-10-20"}}))
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if onlyTTFBZero.KPIs.AvgLatencyMS == nil || *onlyTTFBZero.KPIs.AvgLatencyMS != 100 {
+		t.Fatalf("avg_latency only-day = %v, want 100", onlyTTFBZero.KPIs.AvgLatencyMS)
+	}
+	if onlyTTFBZero.KPIs.AvgTTFBMS != nil {
+		t.Fatalf("avg_ttfb with zero samples = %v, want nil", onlyTTFBZero.KPIs.AvgTTFBMS)
+	}
+}
+
+func mustQuery(t *testing.T, values url.Values) Query {
+	t.Helper()
+	q, err := ParseQuery(values, fixedNow())
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	return q
 }
 
 func TestCreditsAndExpirySorting(t *testing.T) {

@@ -419,6 +419,16 @@ func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, cl
 // (mod.rs:551-563, pool.rs:823-896) and Retry-After-based 429 cooldown would
 // change pinned scheduler tests.
 func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *reqRecord, body []byte, path string) {
+	// P10：入站脱敏（scheduled 主路径的共享入口；Route=rec.model 的插件前缀），
+	// 所有 attempt/hedge 共用脱敏后的 body；审计进 rec。
+	red := NewWiring(g.redact)
+	if plugin, _, ok := strings.Cut(rec.model, "/"); ok && plugin != "" {
+		body = red.MaskJSONBody(body, plugin)
+	} else {
+		body = red.MaskJSONBody(body, "")
+	}
+	rec.redactLine = red.AuditLine()
+
 	exclude := map[scheduler.AccountKey]bool{}
 	// refreshed remembers the single 401/403 self-heal spent per account.
 	refreshed := map[scheduler.AccountKey]bool{}
@@ -1192,6 +1202,12 @@ func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Resp
 	if rec.downgraded != "" {
 		dst.Set(downgradedHeader, rec.downgraded)
 	}
+	// P10：出站回程还原（scheduled 主路径；同 forward 的 NewWriter 包法）
+	if g.redact.On {
+		var finish func()
+		w, finish = NewWiring(g.redact).RespWriter(w)
+		defer finish()
+	}
 
 	w.WriteHeader(resp.StatusCode)
 	headerAt := time.Now()
@@ -1273,6 +1289,12 @@ func (g *Gateway) writeAttempt(w http.ResponseWriter, rec *reqRecord, res *upstr
 		if rec.downgraded != "" {
 			dst.Set(downgradedHeader, rec.downgraded)
 		}
+	}
+	// P10：出站回程还原（writeAttempt 缓冲整包路径）
+	if g.redact.On {
+		var finish func()
+		w, finish = NewWiring(g.redact).RespWriter(w)
+		defer finish()
 	}
 	rec.status = res.status
 	if res.errText != "" && rec.errText == "" {

@@ -29,6 +29,7 @@ import (
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/notify"
 	"aiworkgate/internal/plugins"
+	"aiworkgate/internal/redact"
 	"aiworkgate/internal/rules"
 	"aiworkgate/internal/safego"
 	"aiworkgate/internal/schedule"
@@ -111,6 +112,11 @@ type App struct {
 	// latency, cooldowns, pool health and the sticky cache; the gateway reads
 	// snapshots through schedulerSnapshot.
 	dispatch *scheduler.Scheduler
+
+	// updateTimer runs the P2-5 market update check on the config cadence.
+	// Its context is cancelled in Shutdown before the plugin manager closes.
+	updateTimer  *plugins.UpdateTimer
+	updateCancel context.CancelFunc
 
 	// egressHealth caches the recent-evidence verdict for account proxies. It
 	// feeds the scheduler's soft filter, /healthz and the account list.
@@ -219,6 +225,12 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	cfg, err := config.Load(dataDir)
 	if err != nil {
 		return nil, err
+	}
+	// P10：Load 缺文件路径上返回未 Normalize 的 cfg，这里补齐缺省
+	// （redact.key_file → <dataDir>\redact.key），随后 SetKeyPath 固定占位符指纹 key。
+	cfg.Normalize()
+	if cfg.Redact.KeyFile != "" {
+		redact.SetKeyPath(cfg.Redact.KeyFile)
 	}
 
 	a = &App{
@@ -464,6 +476,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	// the per-account assignments.
 	a.writeAllEgress()
 	a.initSchedule()
+	a.initUpdateTimer()
 
 	// 8. A (AI Work 助手) upstream adapter.
 	baseURL, aPort, discovered := resolveABaseURL(cfg, logger)
@@ -502,7 +515,9 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		// (Settings → 自定义模型); the key is read from the DPAPI store.
 		CustomModels:   a.gatewayCustomModels,
 		CustomModelKey: a.customModelKey,
+		Redact:         redactOptionsFromConfig(cfg),
 	})
+
 	// Atomic daily-quota reservation for client keys (A api_keys.rs:327-390).
 	gateway.InstallKeyUsageReserver(a.store)
 
@@ -599,6 +614,11 @@ func (a *App) Run() error {
 	if a.sched != nil {
 		a.sched.Start(context.Background())
 	}
+	if a.updateTimer != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		a.updateCancel = cancel
+		go a.updateTimer.Run(ctx)
+	}
 	a.startAIfConfigured()
 	a.logger.Info("app", "AIWorkGate ready", map[string]any{"port": a.port})
 	if a.firstRun {
@@ -658,6 +678,9 @@ func (a *App) Shutdown() error {
 		}
 		if a.sched != nil {
 			a.sched.Stop()
+		}
+		if a.updateCancel != nil {
+			a.updateCancel()
 		}
 		if a.notify != nil {
 			// Stop before secrets/logger close: a queued delivery reads the
