@@ -31,6 +31,7 @@ const version = ref('')
 const nav = [
   { to: '/', label: '概览', icon: 'overview' },
   { to: '/plugins', label: '插件', icon: 'plugins' },
+  { to: '/market', label: '市场', icon: 'market' },
   { to: '/accounts', label: '账号', icon: 'accounts' },
   { to: '/checkin', label: '签到', icon: 'checkin' },
   { to: '/usage', label: '用量', icon: 'usage' },

@@ -2562,4 +2562,128 @@ export const api = {
       )
     },
   },
+
+  /* ------------------------------------------------------------------ */
+  /* Plugin market (P2): npm / github / local 三源                        */
+  /* 契约与后端 task-15 对齐；后端未就绪时视图会给出「接口未实现」提示。   */
+  /* ------------------------------------------------------------------ */
+  market: {
+    /** q 为包名/关键词，返回 {results:[{name,version,description}]}。 */
+    search(query: string): Promise<MarketSearchResponse> {
+      return request<MarketSearchResponse>(`/market/search?q=${encodeURIComponent(query)}`)
+    },
+    /** 安装：{spec, source, localPath?} 返回 {ok, id, version}。 */
+    install(payload: MarketInstallRequest): Promise<MarketInstallResponse> {
+      return request<MarketInstallResponse>('/market/install', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+    },
+    /** 更新检查：{updates:[{id, from, to, available}]}。 */
+    updates(): Promise<MarketUpdatesResponse> {
+      return request<MarketUpdatesResponse>('/market/updates')
+    },
+    /** 已装市场包列表（形状未定稿时宽容解析）；后端未提供时回空数组。 */
+    installed(): Promise<{ packages?: MarketInstalledRow[]; items?: MarketInstalledRow[] }> {
+      return request<{ packages?: MarketInstalledRow[]; items?: MarketInstalledRow[] }>('/market/installed')
+    },
+  },
+}
+
+
+/* ------------------------------------------------------------------ */
+/* Market types + tolerant normalisers (backend task-15)                */
+/* ------------------------------------------------------------------ */
+
+export type MarketSource = "npm" | "github" | "local"
+
+export interface MarketSearchResult {
+  name: string
+  version: string
+  description?: string
+}
+
+export interface MarketSearchResponse {
+  results?: MarketSearchResult[]
+  items?: MarketSearchResult[]
+}
+
+export interface MarketInstallRequest {
+  spec: string
+  source: MarketSource
+  localPath?: string
+}
+
+export interface MarketInstallResponse {
+  ok?: boolean
+  id?: string
+  version?: string
+}
+
+export interface MarketUpdateItem {
+  id: string
+  from?: string
+  to?: string
+  /** true = 有新版可更新；"策略" 语义留给视图按 available 与策略行展示。 */
+  available?: boolean
+}
+
+export interface MarketUpdatesResponse {
+  updates?: MarketUpdateItem[]
+  items?: MarketUpdateItem[]
+}
+
+/** 已装市场包的一行；后端未定稿，字段宽容读取。 */
+export interface MarketInstalledRow {
+  id: string
+  name: string
+  version?: string
+  source?: string
+  enabled?: boolean
+}
+
+export function normalizeMarketSearch(
+  data: MarketSearchResponse | MarketSearchResult[] | null | undefined,
+): MarketSearchResult[] {
+  if (!data) return []
+  const list = Array.isArray(data) ? data : (data.results ?? data.items ?? [])
+  return list
+    .map((item) => ({
+      name: item.name,
+      version: item.version,
+      description: item.description ?? "",
+    }))
+    .filter((item) => Boolean(item.name))
+}
+
+export function normalizeMarketUpdates(
+  data: MarketUpdatesResponse | MarketUpdateItem[] | null | undefined,
+): MarketUpdateItem[] {
+  if (!data) return []
+  const list = Array.isArray(data) ? data : (data.updates ?? data.items ?? [])
+  return list
+    .map((item) => ({ id: item.id, from: item.from, to: item.to, available: item.available }))
+    .filter((item) => Boolean(item.id))
+}
+
+export function normalizeMarketInstalled(
+  data: { packages?: unknown[]; items?: unknown[] } | unknown[] | null | undefined,
+): MarketInstalledRow[] {
+  if (!data) return []
+  const list = Array.isArray(data) ? data : (data.packages ?? data.items ?? [])
+  const rows: MarketInstalledRow[] = []
+  for (const raw of list) {
+    const r = (raw ?? {}) as Record<string, unknown>
+    const name = typeof r.name === "string" ? r.name : ""
+    const id = typeof r.id === "string" ? r.id : name
+    if (!id) continue
+    rows.push({
+      id,
+      name: name || id,
+      version: typeof r.version === "string" ? r.version : "",
+      source: typeof r.source === "string" ? r.source : "",
+      enabled: typeof r.enabled === "boolean" ? r.enabled : undefined,
+    })
+  }
+  return rows
 }

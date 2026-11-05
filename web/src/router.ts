@@ -14,6 +14,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '插件', subtitle: '安装、启停与卸载独立插件' },
   },
   {
+    path: '/market',
+    name: 'market',
+    component: () => import('./views/Market.vue'),
+    meta: { title: '市场', subtitle: '三源插件市场：搜索、安装与更新检查' },
+  },
+  {
     path: '/accounts',
     name: 'accounts',
     component: () => import('./views/Accounts.vue'),

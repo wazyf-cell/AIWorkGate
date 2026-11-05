@@ -415,15 +415,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	})
 
 	// 5. Plugins.
-	a.pluginMgr = plugins.New(plugins.Options{
-		DataDir:      dataDir,
-		Config:       a.configSnapshot,
-		Store:        st,
-		Secrets:      sec,
-		Log:          logger,
-		PluginLog:    pluginLog,
-		DirectEgress: a.directEgressURL,
-	})
+	a.pluginMgr = plugins.New(a.pluginOptions(dataDir, st, sec, logger, pluginLog))
 	cleanups = append(cleanups, a.pluginMgr.Close)
 	if err := a.pluginMgr.Discover(); err != nil {
 		return nil, fmt.Errorf("app: discover plugins: %w", err)
@@ -722,6 +714,29 @@ func (a *App) Shutdown() error {
 		a.shutdownErr = errors.Join(errs...)
 	})
 	return a.shutdownErr
+}
+
+// pluginOptions assembles the plugin manager options from the current config
+// snapshot. It is a single seam so the config → plugin wiring (P8-①:
+// PluginsConfig.SandboxUser → Options.PluginUser) is testable without spawning
+// plugin children (see plugin_user_test.go).
+func (a *App) pluginOptions(
+	dataDir string,
+	st *store.Store,
+	sec *secrets.Store,
+	logger *logging.Logger,
+	pluginLog *logging.PluginLogWriter,
+) plugins.Options {
+	return plugins.Options{
+		DataDir:      dataDir,
+		Config:       a.configSnapshot,
+		Store:        st,
+		Secrets:      sec,
+		Log:          logger,
+		PluginLog:    pluginLog,
+		DirectEgress: a.directEgressURL,
+		PluginUser:   a.configSnapshot().Plugins.SandboxUser,
+	}
 }
 
 // configSnapshot returns a copy of the current configuration.

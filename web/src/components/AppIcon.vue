@@ -70,6 +70,10 @@ withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 })
       <circle cx="15" cy="7" r="2" />
       <circle cx="10" cy="17" r="2" />
     </template>
+    <template v-else-if="name === 'market'">
+      <path d="M4 8h16l-1.2 11a1.6 1.6 0 0 1-1.6 1.5H6.8A1.6 1.6 0 0 1 5.2 19L4 8z" />
+      <path d="M8.5 11V6.5a3.5 3.5 0 0 1 7 0V11" />
+    </template>
     <template v-else-if="name === 'sun'">
       <circle cx="12" cy="12" r="4" />
       <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" />

@@ -631,3 +631,18 @@ func TestEnsureDir(t *testing.T) {
 		t.Fatal("EnsureDir(\"\") returned nil error")
 	}
 }
+
+// TestPluginsSandboxUserParseAndDefault pins the P8-① opt-in config field:
+// plugins.sandbox_user parses from JSON and defaults to empty (= off).
+func TestPluginsSandboxUserParseAndDefault(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"plugins":{"sandbox_user":"aiworkgate-plugin"}}`), &cfg); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if got := cfg.Plugins.SandboxUser; got != "aiworkgate-plugin" {
+		t.Fatalf("plugins.sandbox_user = %q, want aiworkgate-plugin", got)
+	}
+	if got := Default().Plugins.SandboxUser; got != "" {
+		t.Fatalf("default plugins.sandbox_user = %q, want empty (off)", got)
+	}
+}

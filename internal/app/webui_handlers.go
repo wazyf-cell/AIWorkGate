@@ -62,6 +62,11 @@ func (a *App) webOptions() webui.Options {
 		InstallPlugin: a.installPlugin,
 		PluginAction:  a.pluginAction,
 
+		// P2-4：/api/market/{search,install,updates}（实现见 app/market.go）。
+		MarketSearch:  a.marketSearch,
+		MarketInstall: a.marketInstall,
+		MarketUpdates: a.marketUpdates,
+
 		ModelOverrides:      a.store.GetModelOverrides,
 		PutModelOverride:    a.store.PutModelOverride,
 		DeleteModelOverride: a.store.DeleteModelOverride,

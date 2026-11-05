@@ -554,6 +554,22 @@ var migrations = []migrationStep{
 			`CREATE INDEX IF NOT EXISTS idx_proxy_logs_timeline ON proxy_logs(at, id)`,
 		},
 	},
+	{ // version 11: plugin market install records (P2)
+		sql: []string{
+			// One row per plugin installed through the market (npm / local /
+			// github-spec). The row tracks the last installed version and its
+			// tarball sha256 so the update check and the audit trail have a
+			// number they can compare against, independent of plugin_settings.
+			`CREATE TABLE IF NOT EXISTS market_installs (
+				plugin_id TEXT PRIMARY KEY,
+				package TEXT NOT NULL DEFAULT '',
+				source TEXT NOT NULL DEFAULT '',
+				version TEXT NOT NULL DEFAULT '',
+				sha256 TEXT NOT NULL DEFAULT '',
+				installed_at INTEGER NOT NULL DEFAULT 0
+			)`,
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

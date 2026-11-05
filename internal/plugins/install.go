@@ -48,6 +48,18 @@ func (m *Manager) InstallDir(srcDir string) error {
 	return m.installRoot(root, manifest, false, InstallOpts{Enabled: true})
 }
 
+// InstallDirOpts is InstallDir with explicit install options. It is the entry
+// the plugin market uses: a market package is prepared into a staging directory
+// by internal/market and handed here with InstallOpts{Enabled:false}, so a
+// fresh market install lands stopped (T3) exactly like a zip upload does.
+func (m *Manager) InstallDirOpts(srcDir string, opts InstallOpts) error {
+	root, manifest, err := inspectInstallSource(srcDir)
+	if err != nil {
+		return err
+	}
+	return m.installRoot(root, manifest, false, opts)
+}
+
 // InstallOpts carries the choices an install request is allowed to make.
 // The zero value is the safe default: a fresh install lands stopped and the
 // user starts it explicitly.

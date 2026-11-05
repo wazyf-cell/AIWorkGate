@@ -757,6 +757,15 @@ func (m *Manager) Stop(id string) error {
 	return nil
 }
 
+// UpdateDirWithRollback applies srcDir as a plugin update and, when the new
+// version fails its health check, rolls back so the previous tree keeps
+// serving (P8-④; orchestration in update_rollback.go). rolledBack=true means
+// the previous copy is active again; err is non-nil when the update failed
+// pre-swap or the rollback also failed (the error names both attempts).
+func (m *Manager) UpdateDirWithRollback(ctx context.Context, id, srcDir string) (bool, error) {
+	return runUpdateRollback(ctx, id, srcDir, m)
+}
+
 // stopState stops a state that may already have been removed from the map.
 func (m *Manager) stopState(p *pluginState) {
 	m.mu.Lock()

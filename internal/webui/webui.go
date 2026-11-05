@@ -124,6 +124,20 @@ type Options struct {
 	InstallPlugin func(zipPath string, enabled bool) error
 	PluginAction  func(id, action string) error
 
+	// Market routes (P2): the plugin market. All three answer 501 when nil.
+	// MarketSearch searches the npm registry and returns the search payload
+	// {{name,version,description},...}; a malformed query should be wrapped in
+	// ErrInvalidRequest.
+	MarketSearch func(query string, limit int) (any, error)
+	// MarketInstall prepares and installs one market spec, landing the plugin
+	// stopped (T3). It returns the install payload {ok, id, version}; a bad
+	// spec, unsupported source or missing bridge executable should be wrapped
+	// in ErrInvalidRequest.
+	MarketInstall func(spec, source, localPath string) (any, error)
+	// MarketUpdates returns the update report payload {{id,from,to,available},...}
+	// for every installed market package.
+	MarketUpdates func() (any, error)
+
 	Accounts   func(pluginID string) any
 	Checkins   func(pluginID, from, to string) any
 	CheckinAll func() any
@@ -333,6 +347,9 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/secrets/lan-password", s.handleLANPassword)
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/plugins/install", s.handlePluginInstall)
+	mux.HandleFunc("/api/market/search", s.handleMarketSearch)
+	mux.HandleFunc("/api/market/install", s.handleMarketInstall)
+	mux.HandleFunc("/api/market/updates", s.handleMarketUpdates)
 	mux.HandleFunc("/api/plugins/{id}/{action}", s.handlePluginAction)
 	// The literal segment wins over {action} for every method, so POST here is
 	// answered 405 by the handler instead of "unknown plugin action: meta".

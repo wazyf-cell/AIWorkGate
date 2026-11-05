@@ -143,6 +143,20 @@ type PluginsConfig struct {
 	StartupMode  string `json:"startup_mode"`
 	StrictEgress bool   `json:"strict_egress"`
 
+	// SandboxUser is the Linux account plugin child processes are spawned under
+	// (P8-① uid isolation, internal/plugins.Options.PluginUser). Empty (the
+	// default) = off: children keep running as the host user. Opt-in semantics:
+	// when set, the host must run as root and the account must exist, otherwise
+	// the supervisor falls back to the host uid and logs a warning. Windows
+	// builds ignore it.
+	SandboxUser string `json:"sandbox_user"`
+
+	// MarketMirror selects the npm registry base for the plugin market (P2-4).
+	// Empty (the default) = the official https://registry.npmjs.org; set e.g.
+	// "https://registry.npmmirror.com" to use a domestic mirror. This is a
+	// direct selection, not an automatic failover.
+	MarketMirror string `json:"market_mirror"`
+
 	// TrustedKeys maps a signing key id to its base64 Ed25519 public key.
 	// Empty means unsigned packages install as before. Once any key is
 	// configured every install must carry manifest.sig signed by one of these
