@@ -29,6 +29,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createFileCredentialStore } from "./admin/index.ts";
+import { loadEgressFromEnv, reportDeclarationGaps } from "./egress/index.ts";
 import { loadPluginDir, ensurePluginDir } from "./loader.ts";
 import { bridgeCredentialStore, createBridgeServer } from "./server.ts";
 import type { BridgeConfig, BridgeContext } from "./types.ts";
@@ -184,12 +185,42 @@ async function main(): Promise<void> {
   // /admin/credentials 三处共用它，避免明文库与密文库争抢同名 credentials.json。
   const adminStore = createFileCredentialStore(config.dataDir);
   const credentials = bridgeCredentialStore(adminStore, config.pluginId);
-  const registry = await loadPluginDir({ dir: config.pluginDir, credentials });
+
+  // P8 出口白名单（task-14）：strict 来自宿主 AIWORKGATE_EGRESS_FILE，审计落 data-dir
+  const egressLog = (level: "info" | "warn" | "error", message: string): void => {
+    console.log(`[egress][${level}] ${message}`);
+  };
+  const egress = loadEgressFromEnv(process.env, { log: egressLog }, config.dataDir);
+  // egress.json/rules.json 里的文件级域名以插件键注册（config.ts 默认以 "bridge" 名义
+  // 注册，与宿主注入的 pluginId 不是同一个键，二者并存、互不干扰）。
+  if (egress.config.domainsFromFiles.length > 0) {
+    egress.guard.declare({
+      plugin: config.pluginId,
+      provider: "egress-file",
+      domains: egress.config.domainsFromFiles,
+    });
+  }
+
+  const registry = await loadPluginDir({
+    dir: config.pluginDir,
+    credentials,
+    egress: egress.guard,
+    pluginId: config.pluginId,
+  });
+  // 启动末：声明差距告警（egress/README 接线点 ③）。
+  // 「声明」与「实际目标」同源于 SITES 采集，正常加载为空；strict 且零声明的外联会被点名。
+  const unionDomains = [...new Set(Object.values(registry.domainsByProvider).flat())];
+  for (const gap of reportDeclarationGaps(
+    [{ plugin: config.pluginId, domains: unionDomains, strict: egress.config.strict }],
+    { [config.pluginId]: unionDomains },
+  )) {
+    console.warn(gap);
+  }
 
   const ctx: BridgeContext = { config, startedAt, registry, credentials };
   // 生产挂载：/health、Bearer 闸门、/meta、/v1/models、/v1/chat/completions、
   // admin.handle()（/admin/*、/accounts、/checkin）、兜底 404 —— 全在 server.ts 里。
-  const server = createBridgeServer(ctx, { adminStore });
+  const server = createBridgeServer(ctx, { adminStore, egressGuard: egress.guard });
 
   server.on("error", (err) => {
     console.error(`[bridge] server error: ${String(err)}`);
@@ -218,6 +249,9 @@ async function main(): Promise<void> {
     );
     console.log(
       "[bridge] endpoints:  /health(open) /meta /v1/models /v1/chat/completions /accounts /checkin /admin/*",
+    );
+    console.log(
+      `[bridge] egress:    strict=${egress.config.strict} audit=${egress.config.auditFile}`,
     );
     for (const warning of registry.warnings) {
       console.warn(`[bridge] warning: ${warning}`);

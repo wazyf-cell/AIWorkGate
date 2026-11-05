@@ -365,7 +365,24 @@ let pluginModeSid = ''
   const registry = registryFromLoad(loaded, shared, { sites: () => _internal.SITES, pluginId: 'mock-wired' })
   const h = registry.list()[0]
   check('wiring_providers', h.providerIds[0] === 'mock', JSON.stringify(h.providerIds))
-  check('wiring_capabilities', h.capabilities().includes('checkin') && h.capabilities().includes('identity_request'), JSON.stringify(h.capabilities()))
+  // task-9 能力口径：基线精确匹配 [accounts, checkin, upstream]（mock 无 auth.usage）
+  check('wiring_capabilities_baseline', JSON.stringify(h.capabilities()) === JSON.stringify(['accounts', 'checkin', 'upstream']), JSON.stringify(h.capabilities()))
+  check(
+    'wiring_capabilities_no_identity',
+    !h.capabilities().includes('identity_request') &&
+      !h.capabilities().includes('identity_os_switch') &&
+      !h.capabilities().includes('refresh') &&
+      !h.capabilities().some((c) => c.startsWith('login_')),
+    JSON.stringify(h.capabilities()),
+  )
+  // quota 是条件能力：插件带 auth.usage 才声明
+  inst.auth.usage = async () => ({})
+  const reg2 = registryFromLoad(loaded, shared, { pluginId: 'mock-wired2' })
+  check(
+    'wiring_capabilities_quota_conditional',
+    JSON.stringify(reg2.list()[0].capabilities()) === JSON.stringify(['accounts', 'checkin', 'quota', 'upstream']),
+    JSON.stringify(reg2.list()[0].capabilities()),
+  )
   check('wiring_sites', JSON.stringify(h.sites()).includes('copilot.tencent.com'))
   const started = await h.authorize('mock')
   check('wiring_authorize', typeof started.url === 'string' && started.url.startsWith('https://'), started.url)

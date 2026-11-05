@@ -26,13 +26,16 @@ import {
   createAdminRouter,
   createFileCredentialStore,
 } from "./admin/index.ts";
-import type { AdminCredential, AdminCredentialStore } from "./admin/index.ts";
+import type { AdminCredential, AdminCredentialStore, PluginSite, SitesResolver } from "./admin/index.ts";
 import { createChatHandler, sendError } from "./chat/index.ts";
 import type { AuthValue, ChatDeps, ProviderBinding } from "./chat/index.ts";
+import type { PluginHooks } from "./chat/types.ts";
+import type { EgressGuard } from "./egress/index.ts";
 import { buildHealth } from "./health.ts";
 import { bridgeCapabilities, buildMeta } from "./meta.ts";
 import { buildModels } from "./models.ts";
-import type { BridgeContext, CredentialRecord, CredentialStore, JsonValue } from "./types.ts";
+import type { LoadResultWithSites } from "./loader.ts";
+import type { BridgeContext, CredentialRecord, CredentialStore, JsonValue, OpenCodePlugin } from "./types.ts";
 import { BRIDGE_NAME, errorBody } from "./types.ts";
 
 const CHAT_PATH = "/v1/chat/completions";
@@ -103,7 +106,49 @@ export function bridgeCredentialStore(
 // chat 依赖注入（chat/ 只给接口，实现在这里）
 // ---------------------------------------------------------------------------
 
-function buildChatDeps(ctx: BridgeContext, adminStore: AdminCredentialStore): ChatDeps {
+/**
+ * P8（task-14）：把插件的 auth.loader 返回的 fetch 包上 egress 白名单守卫。
+ * 包装发生在 loader 边界（server.ts 的 getProvider），而不是 chat/upstream.ts 的
+ * fetch 调用点——后者需要同步改 chat/handler.ts（chat 作用域）才能把守卫传进去，
+ * 属于「更大的改动」；在边界包一次对 chat 完全透明，等价于「上游调用点换 wrapFetch」。
+ */
+function wrapLoaderFetch(
+  plugin: OpenCodePlugin,
+  pluginId: string,
+  providerId: string,
+  egress?: EgressGuard,
+): PluginHooks {
+  if (!egress) return plugin as unknown as PluginHooks;
+  if (!plugin.auth || typeof plugin.auth.loader !== "function") {
+    return plugin as unknown as PluginHooks;
+  }
+  const innerLoader = plugin.auth.loader as (
+    getAuth: () => Promise<unknown>,
+  ) => Promise<{ fetch?: unknown; [key: string]: unknown } | undefined>;
+  return {
+    ...plugin,
+    auth: {
+      ...plugin.auth,
+      loader: async (getAuth) => {
+        const options = await innerLoader(getAuth);
+        if (options && typeof options.fetch === "function") {
+          options.fetch = egress.wrapFetch({
+            plugin: pluginId,
+            provider: providerId,
+            fetchImpl: options.fetch as typeof fetch,
+          });
+        }
+        return options;
+      },
+    },
+  } as unknown as PluginHooks;
+}
+
+function buildChatDeps(
+  ctx: BridgeContext,
+  adminStore: AdminCredentialStore,
+  egressGuard?: EgressGuard,
+): ChatDeps {
   const auth = chatAuthStore(adminStore);
   return {
     listProviderIds: () => Object.keys(ctx.registry.providers),
@@ -114,7 +159,7 @@ function buildChatDeps(ctx: BridgeContext, adminStore: AdminCredentialStore): Ch
       return {
         providerId: rec.id,
         label: rec.name,
-        hooks: rec.plugin.plugin as unknown as ProviderBinding["hooks"],
+        hooks: wrapLoaderFetch(rec.plugin.plugin, ctx.config.pluginId, rec.id, egressGuard),
       };
     },
     getAuth: (providerId: string) => auth.get(providerId) as AuthValue | null,
@@ -190,12 +235,35 @@ export interface BridgeServerDeps {
    * （加载器的 auth.set、chat 的 getAuth、/admin/credentials 共用）。
    */
   adminStore?: AdminCredentialStore;
+  /**
+   * P8 出口白名单守卫（task-14）。chat 上游 fetch 经它包装；未给则不启用
+   * （selftest / 单测可省，生产必经 main.ts 传入）。
+   */
+  egressGuard?: EgressGuard;
 }
 
 export function createBridgeServer(ctx: BridgeContext, deps: BridgeServerDeps = {}): Server {
   const adminStore = deps.adminStore ?? createFileCredentialStore(ctx.config.dataDir);
   const log = (line: string): void => {
     console.log(line);
+  };
+
+  // P8：loader 已按 provider 采好 SITES（services 采集，含嵌套 hosts 摊平），
+  // 这里把站点变成「顶层即 URL/裸 host」的平面形态交给 admin 的 sites resolver；
+  // admin/manifest.ts 的 siteDomains 只扫顶层 http(s) URL，嵌套 hosts 不摊平会漏成空。
+  const loaded = ctx.registry as unknown as LoadResultWithSites;
+  const sites: SitesResolver = (providerId: string) => {
+    const raw = loaded.sitesByProvider?.[providerId];
+    if (!raw) return {};
+    const hosts = (raw as { hosts?: Record<string, unknown> }).hosts;
+    const flat: Record<string, unknown> = { id: raw.id ?? providerId, name: raw.name ?? providerId };
+    if (hosts && typeof hosts === "object") {
+      for (const [key, url] of Object.entries(hosts)) flat[`host_${key}`] = url;
+    }
+    if (typeof raw.webHost === "string" && raw.webHost) {
+      flat.web_host = `https://${raw.webHost}/`;
+    }
+    return { [providerId]: flat as unknown as PluginSite };
   };
 
   // 管理面：/admin/*、/accounts、/accounts/{id}（PATCH/DELETE）、/checkin、
@@ -205,6 +273,7 @@ export function createBridgeServer(ctx: BridgeContext, deps: BridgeServerDeps = 
     ...adminDepsFromBridge(ctx, {
       pluginName: BRIDGE_NAME,
       capabilities: bridgeCapabilities(ctx),
+      sites,
     }),
     credentials: adminStore,
   });
@@ -212,7 +281,7 @@ export function createBridgeServer(ctx: BridgeContext, deps: BridgeServerDeps = 
   // chat 泳道：POST /v1/chat/completions（SSE 与非流式聚合）
   const defaultProviderId = soleProviderId(ctx);
   const chat = createChatHandler({
-    deps: buildChatDeps(ctx, adminStore),
+    deps: buildChatDeps(ctx, adminStore, deps.egressGuard),
     ...(defaultProviderId ? { defaultProviderId } : {}),
   });
 

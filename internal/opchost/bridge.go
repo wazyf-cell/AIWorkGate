@@ -30,10 +30,12 @@ const (
 var bridgePluginIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,31}$`)
 
 // DefaultBridgeCapabilities are the capabilities a bridge declares when the
-// caller names none. accounts + checkin are the two endpoints the P1 scope
-// promises (D-19 check-in delegation); extend the list explicitly once the
-// bridge also serves refresh/quota/login/identity.
-var DefaultBridgeCapabilities = []string{model.CapAccounts, model.CapCheckin}
+// caller names none. The unified baseline is upstream + accounts + checkin: the
+// bridge holds/forwards the upstream base_url and api_key through the
+// /admin/upstream channel (decision Q18), serves /accounts, and delegates the
+// check-in through POST /accounts/{id}/checkin (D-19). Extend the list
+// explicitly once the bridge also serves refresh/quota/login/identity.
+var DefaultBridgeCapabilities = []string{model.CapUpstream, model.CapAccounts, model.CapCheckin}
 
 // Options describes one bridge plugin manifest.
 //

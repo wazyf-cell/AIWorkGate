@@ -33,6 +33,7 @@ import type {
   ProviderRecord,
   ProviderConfigEntry,
 } from "./types.ts";
+import type { EgressGuard } from "./egress/index.ts";
 
 // ---------------------------------------------------------------------------
 // CredentialStore（占位实现，P4 前为明文 JSON，权限 0600）
@@ -225,6 +226,66 @@ function isPluginInstance(value: unknown): value is OpenCodePlugin {
 }
 
 // ---------------------------------------------------------------------------
+// P8 出口白名单：SITES → 域名采集（task-14）
+// ---------------------------------------------------------------------------
+
+/** 只认绝对 http(s) URL 的 hostname（admin/manifest.ts 的 hostOf 同语义，本地复写避免 loader 依赖 admin）。 */
+function hostOfUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  if (!/^https?:\/\//i.test(value)) return undefined;
+  try {
+    const h = new URL(value).hostname.toLowerCase();
+    return h || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 裸 host 判定：无 scheme 的纯域名（如 webHost: "trae.cn"）。 */
+const BARE_HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+
+/**
+ * 一个 SITES site 对象里所有可能带域名的字段：URL 的 hostname + 裸 host。
+ * SITES 的 hosts.{web,auth,api,...} 是嵌套对象，必须递归采集（上限 3 层防环）。
+ */
+function domainsOfSite(site: Record<string, unknown>): string[] {
+  const out = new Set<string>();
+  const walk = (value: unknown, depth: number): void => {
+    if (depth > 3) return;
+    if (typeof value === "string") {
+      const fromUrl = hostOfUrl(value);
+      if (fromUrl) {
+        out.add(fromUrl);
+        return;
+      }
+      if (/^https?:\/\//i.test(value)) return;
+      const t = value.trim();
+      if (BARE_HOST_RE.test(t)) out.add(t.toLowerCase());
+      return;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const v of Object.values(value as Record<string, unknown>)) walk(v, depth + 1);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const v of value) walk(v, depth + 1);
+    }
+  };
+  for (const value of Object.values(site)) walk(value, 0);
+  return [...out];
+}
+
+/** 从模块命名空间里找 SITES 表：trae 导 `_internal.SITES`，别的包可能直接导 `SITES`。 */
+function sitesOfModule(mod: Record<string, unknown>): Record<string, Record<string, unknown>> {
+  const internal = mod._internal as { SITES?: unknown } | undefined;
+  const sites = internal?.SITES ?? (mod as { SITES?: unknown }).SITES;
+  if (sites && typeof sites === "object" && !Array.isArray(sites)) {
+    return sites as Record<string, Record<string, unknown>>;
+  }
+  return {};
+}
+
+// ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
 
@@ -232,12 +293,33 @@ export interface LoadOptions {
   /** --plugin-dir 解析后的绝对路径。 */
   dir: string;
   credentials: CredentialStore;
+  /**
+   * P8 出口白名单（task-14）：加载期把插件 SITES 表采出的域名以
+   * **一个插件（pluginId）全部 provider 的并集**注册进守卫。
+   * 未给 egress 时跳过白名单注册（不阻断加载）。
+   */
+  egress?: EgressGuard;
+  /** 宿主注入的插件 id（AIWORKGATE_PLUGIN_ID）；声明以它为主键。 */
+  pluginId?: string;
 }
 
-export async function loadPluginDir(opts: LoadOptions): Promise<LoadResult> {
+/**
+ * 在 LoadResult 之上附带 P8 需要的两个旁路索引（不动共享契约类型：
+ * 结构上仍是 LoadResult，可原样放进 BridgeContext.registry）。
+ */
+export interface LoadResultWithSites extends LoadResult {
+  /** provider id → 该 provider 在插件 SITES 表里采到的域名（去重、小写）。 */
+  domainsByProvider: Record<string, string[]>;
+  /** provider id → 插件模块级 SITES 的原始 site 对象（供 /admin/manifest 生成）。 */
+  sitesByProvider: Record<string, Record<string, unknown>>;
+}
+
+export async function loadPluginDir(opts: LoadOptions): Promise<LoadResultWithSites> {
   const warnings: string[] = [];
   const providers: Record<string, ProviderRecord> = {};
   const plugins: LoadedPlugin[] = [];
+  const domainsByProvider: Record<string, string[]> = {};
+  const sitesByProvider: Record<string, Record<string, unknown>> = {};
 
   const client: HostClient = {
     auth: {
@@ -256,7 +338,7 @@ export async function loadPluginDir(opts: LoadOptions): Promise<LoadResult> {
   const files = await pickEntryFiles(opts.dir);
   if (files.length === 0) {
     warnings.push(`no .mjs/.js plugin file found under ${opts.dir}`);
-    return { dir: opts.dir, providers, plugins, warnings };
+    return { dir: opts.dir, providers, plugins, warnings, domainsByProvider, sitesByProvider };
   }
 
   for (const file of files) {
@@ -266,6 +348,21 @@ export async function loadPluginDir(opts: LoadOptions): Promise<LoadResult> {
     } catch (err) {
       warnings.push(`import failed: ${file}: ${String(err)}`);
       continue;
+    }
+    let moduleSites = sitesOfModule(mod);
+    if (Object.keys(moduleSites).length === 0) {
+      // 入口可能是 OpenCode 1.x 门面（opencode.mjs 只 re-export 插件、不带 _internal）；
+      // 同目录的自包含实现 index.mjs 导出 _internal.SITES，试一把（import 有模块缓存，廉价）。
+      const sibling = path.join(path.dirname(file), "index.mjs");
+      if (sibling !== file) {
+        try {
+          moduleSites = sitesOfModule(
+            (await import(pathToFileURL(sibling).href)) as Record<string, unknown>,
+          );
+        } catch {
+          // 没有同目录 index.mjs：按无 SITES 处理，声明为空。
+        }
+      }
     }
 
     const exported = Object.entries(mod);
@@ -298,10 +395,39 @@ export async function loadPluginDir(opts: LoadOptions): Promise<LoadResult> {
       };
       providers[id] = { id, name: providerName, models, plugin: loaded };
       plugins.push(loaded);
+
+      // P8：采集该 provider 的 SITES 域名（供声明 + /admin/manifest）
+      const site = moduleSites[id];
+      if (site && typeof site === "object") {
+        sitesByProvider[id] = site;
+        domainsByProvider[id] = domainsOfSite(site);
+      } else {
+        domainsByProvider[id] = [];
+      }
+      if (Object.keys(moduleSites).length > 0 && !site) {
+        warnings.push(`egress: 模块 ${file} 有 SITES 表但找不到 provider「${id}」的站点记录，其出口域名声明为空`);
+      }
     }
   }
 
-  return { dir: opts.dir, providers, plugins, warnings };
+  // egress 声明：一个桥 = 一个插件（pluginId），全部 provider 的域名取**并集**注册。
+  // guard.declare 以 plugin 为主键，逐 provider 调用会互相覆盖，故只能合并后一次注册。
+  const pluginKey = opts.pluginId ?? "magpie-bridge";
+  if (opts.egress) {
+    const union = [...new Set(Object.values(domainsByProvider).flat())];
+    if (union.length > 0) {
+      const r = opts.egress.declare({
+        plugin: pluginKey,
+        provider: "(all)",
+        domains: union,
+      });
+      if (!r.ok) {
+        warnings.push(`egress DECLARE LOADFAIL（插件 ${pluginKey} 整组拒绝，禁外联）：${r.errors.join("; ")}`);
+      }
+    }
+  }
+
+  return { dir: opts.dir, providers, plugins, warnings, domainsByProvider, sitesByProvider };
 }
 
 /** 供 main.ts 校验目录用：目录必须存在且可读。 */

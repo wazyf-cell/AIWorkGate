@@ -20,7 +20,7 @@ func snapshotOptions() Options {
 		Version:        "0.1.0",
 		Description:    "aiworkgate plugin contract bridge over a magpie .mjs plugin",
 		APILevel:       model.MinAPILevel,
-		Capabilities:   []string{model.CapAccounts, model.CapCheckin},
+		Capabilities:   []string{model.CapUpstream, model.CapAccounts, model.CapCheckin},
 		NetworkDomains: []string{"trae.ai", "*.trae.ai"},
 		StartupMode:    model.StartupOnDemand,
 		IdleTimeoutS:   600,

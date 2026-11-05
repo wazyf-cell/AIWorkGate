@@ -160,21 +160,31 @@ GET  /v1/... 未知路由 → 404
   `json.Unmarshal` 会忽略，仅用于排障与验收。
 - `capabilities` = **桥实际能应答的契约端点**（见 §3.3）。
 
-### 3.3 能力位口径（与 Go 侧 `DefaultBridgeCapabilities` 对齐）
+### 3.3 能力位口径（Lead 裁定基线，2026-11-06，禁止改回插件钩子推导式）
+
+**基线 = [`upstream`, `accounts`, `checkin`]**（桥恒定能应答的契约端点）；
+**`quota` 仅当任一插件确有 `auth.usage` 钩子时附加**；
+**`refresh` / `login_*` / `identity_*` 一律不声明**（端点未接线，声明即骗宿主）。
 
 | 能力 | 依据 | 状态 |
 |---|---|---|
-| `upstream` | `POST /v1/chat/completions` 已挂 chat 泳道 | ✅ 声明 |
-| `accounts` | `GET /accounts` 已由 admin 落（`admin/router.ts` `handleAccounts`） | ✅ 声明 |
-| `checkin` | `/checkin` + `POST /accounts/{id}/checkin` 已落（D-19 委派） | ✅ 声明 |
-| `quota` | 额度经 `/accounts` 的 `quota` 字段透出；**仅当插件确有 `auth.usage` 才声明** | ✅ 视插件 |
+| `upstream` | `POST /v1/chat/completions` 已挂 chat 泳道 | ✅ 基线 |
+| `accounts` | `GET /accounts` 已由 admin 落（`admin/router.ts` `handleAccounts`） | ✅ 基线 |
+| `checkin` | `/checkin` + `POST /accounts/{id}/checkin` 已落（D-19 委派） | ✅ 基线 |
+| `quota` | 额度经 `/accounts` 的 `quota` 字段透出 | ⚪ 附加条件：插件有 `auth.usage` 才声明（trae 有 → `quota` 在；mock 无 → 不在） |
 | `refresh` | `POST /accounts/{id}/refresh` | ❌ **不声明**（端点未接线） |
 | `login_*` | 契约端点 `/accounts/login*` | ❌ **不声明**（登录走管理面 `/admin/signin/start`，属管理面能力不是宿主契约能力） |
 | `identity_request` / `identity_os_switch` | `POST /accounts/{id}/identity/reset` | ❌ **不声明**（D-57 透传待补） |
 
+**与 Go 侧 `DefaultBridgeCapabilities=[accounts, checkin]` 的差异**：桥的基线多了
+`upstream`、`quota` 是条件项。宿主 `HasCapability` 读的是 manifest（Go 生成器仍写
+`[accounts, checkin]`）而不是 `/meta`，所以**不影响调度**；若宿主侧也要统一口径，
+归宿主侧与 task-9 处理。
+
 规则：**只声明真正能调通的端点**——声明了宿主就会用，用不通就是骗宿主。
-`src/meta.ts` 的 `bridgeCapabilities()` 是唯一来源，`/admin/manifest` 也传它，
-两处不会打架。
+`src/meta.ts` 的 `bridgeCapabilities()`（基线常量 `BASELINE_CAPABILITIES`）是唯一来源，
+`server.ts` 已把同一个函数传进 wiring override，`/admin/manifest` 与 `/meta` 一致
+（wiring 的默认推导含 `refresh`/`identity`，但在生产路径不生效；其收尾归 task-9）。
 
 ### 3.4 `/v1/models` 样例
 
@@ -402,3 +412,34 @@ node src/main.ts --plugin-dir "<dir>" --port 18090 --token clitok
 
 **新增端点的挂法**：在 `handle()` 里按 §3.0 的顺序插分支（鉴权闸门之后、admin 之前），
 注意 `/v1/*` 与 `/admin/*` 不重叠但 admin 必须放在 chat 之后，避免 chat 的 fallback 先吃掉请求。
+
+---
+
+## 8. P8 出口白名单接线（task-14，实现见 src/egress/，规则正本 docs/p8/01）
+
+桥内三层防线中的第二层（L7-2）：插件上游请求**默认**过白名单，越界拒绝且审计落盘。
+`src/egress/` 本身由 bridge-chat 交付（selftest 12/12），本目录只负责接线。
+
+**接线点**：
+
+| 环节 | 位置 | 做的事 |
+|---|---|---|
+| 装配 | `main.ts` → `loadEgressFromEnv(process.env, {log}, dataDir)` | strict 读宿主 `AIWORKGATE_EGRESS_FILE`（缺省 false = 放行+记账）；审计落 `<data-dir>/egress-audit.jsonl` |
+| 加载期声明 | `loader.ts` → `guard.declare` | 插件 SITES（`_internal.SITES`，入口门面没有就回退同目录 `index.mjs`）递归采域名 → **全部 provider 取并集**，以 `pluginId` 一个键注册（guard 以 plugin 为主键，逐 provider 会互相覆盖）；`egress.json/rules.json` 的文件级域名也挂到 `pluginId` 下 |
+| 运行期拦截 | `server.ts` `wrapLoaderFetch` | chat 的 `getProvider` 在**插件 auth.loader 边界**把返回的 `fetch` 换成 `guard.wrapFetch({plugin, provider})`——越界拒绝、逐跳重定向复核、审计 |
+| 403 语义透传 | `chat/upstream.ts` `callUpstream` catch | `EgressError`（403 + `EGRESS_*`）原样转成 ChatError 403（code=`egress_*`），不被 `networkError` 吞成 502 |
+| 启动告警 | `main.ts` 启动末 | `reportDeclarationGaps(declarations, actualHosts)` 点名「声明了域但实际请求别处」；本桥声明与 SITES 同源，正常为空 |
+| 管理面 | `server.ts` `sites` resolver | SITES 摊平成顶层 URL 形态交给 admin，`/admin/manifest` 的 `network_domains` 从此非空（trae 实测 11 域） |
+
+**strict 语义**：`true`（服务器必须）= 未声明 → 拒绝一切外联；`false`（本机默认）= 未声明 → 放行 + WARN 记账。两者都记审计。
+
+**实测回显（mock 插件，`mock.invalid` 上游）**：
+
+```
+A) strict=false → chat HTTP 200；审计行 {"action":"allowed","reason":"EGRESS_DOMAIN_NOT_DECLARED",...}
+B) strict=true 且未声明 → chat HTTP 403 {"error":{"message":"出口白名单：插件「magpie-bridge」strict=true 且未声明任何 network_domains，按策略拒绝一切外联（mock.invalid:443）","code":"egress_no_declaration"}}
+   审计行 {"action":"denied","reason":"EGRESS_NO_DECLARATION","host":"mock.invalid","port":443,...}
+C) strict=true 且 egress.json 声明 "mock.invalid" → chat HTTP 200（命中白名单，无 WARN/denied 行）
+```
+
+**注意**：桥内拦截防不了插件用 `node:tls` / 原生 socket 直连（那由宿主 CONNECT 监听器 + L3 nftables 兜底，见 egress/README 部署注意）；`blockPrivate` 默认开（SSRF 层），生产**必须保持**。

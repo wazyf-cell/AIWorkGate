@@ -5,6 +5,7 @@
   "api_level": 1,
   "description": "aiworkgate plugin contract bridge over a magpie .mjs plugin",
   "capabilities": [
+    "upstream",
     "accounts",
     "checkin"
   ],

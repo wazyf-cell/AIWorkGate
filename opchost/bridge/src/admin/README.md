@@ -82,7 +82,7 @@ export function createBridgeServer(ctx: BridgeContext): Server {
 - `identity`：**整体省略**（D-57 指纹留插件侧；Go 侧是 `*Identity omitempty`，省略合法）。
 - `enabled` 与墓碑落 `<data-dir>/accounts.json`，重启仍生效；DELETE 会同时删该账号凭据。
 
-## 三条口径（裁决已定，勿改）
+## 四条口径（裁决已定，勿改）
 
 1. **签到结果字段**：`result` 只出 `ok|already|fail`；`skipped` 由宿主生成，桥不返回。
    `kind` 取 `normal|rate_limited|session_dead|plan_limit|device_signed|quota|banned`，
@@ -91,6 +91,10 @@ export function createBridgeServer(ctx: BridgeContext): Server {
    （否则 `checkin_results` 日账每天多一条假失败）；聚合 `/checkin` 进 `skipped`。
 3. **凭据**：任何响应只有键名/存在性/生命周期；导出也不给密文——服务器侧注入走 POST。
    指纹（D-57）留在插件侧，管理面恒不透出。
+4. **能力位口径**（task-9，与 meta.ts bridgeCapabilities 同基线）：基线
+   `[upstream, accounts, checkin]`，`quota` 仅当某 provider 的插件带 `auth.usage` 时附加，
+   排序输出；**不声明** `refresh` / `login_*` / `identity_request` / `identity_os_switch`——
+   对应宿主契约端点未接线，声明了就是骗宿主（D-57 指纹透传接线后再声明）。
 
 ## 落盘文件（`--data-dir`）
 

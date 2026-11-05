@@ -149,6 +149,16 @@ export async function callUpstream(
   } catch (err) {
     clearTimeout(timer);
     if (ac.signal.aborted) throw timeoutError(budget);
+    // P8（task-14）：出口白名单拒绝（egress 的 EgressError，status=403、reason=EGRESS_*）
+    // 原样透传成 403，别被 networkError 吞成 502/500——这是策略拒绝，不是网络故障。
+    const egress = err as { status?: number; reason?: string } | null;
+    if (egress && egress.status === 403 && typeof egress.reason === "string" && egress.reason.startsWith("EGRESS_")) {
+      throw new ChatError({
+        status: 403,
+        code: egress.reason.toLowerCase(),
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     throw networkError(route.providerId, err);
   } finally {
     if (!stream) clearTimeout(timer);

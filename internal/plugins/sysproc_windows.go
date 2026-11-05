@@ -34,7 +34,11 @@ func hideWindow() *syscall.SysProcAttr {
 }
 
 // pluginProcAttr is the creation attribute for plugin children.
-func pluginProcAttr() *syscall.SysProcAttr { return hideWindow() }
+//
+// The sandboxUser parameter exists to match the non-Windows signature
+// (P8-① uid isolation lives in sysproc_other.go); Windows ignores it and
+// keeps its historical hideWindow behavior byte-for-byte.
+func pluginProcAttr(sandboxUser string) (*syscall.SysProcAttr, string) { return hideWindow(), "" }
 
 // hostJob is the process-wide kill-on-close job object. Its handle is never
 // closed by the host, so a killed or crashed host releases (and terminates)

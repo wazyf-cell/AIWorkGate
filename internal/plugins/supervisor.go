@@ -175,7 +175,12 @@ func (m *Manager) launch(p *pluginState, ctx context.Context) (*process, error) 
 		env = applyDirectEgress(env, listener, cfg.Proxy.NoProxy)
 	}
 	cmd.Env = env
-	cmd.SysProcAttr = pluginProcAttr()
+	// P8-① uid isolation (opt-in): Options.PluginUser="" keeps today's behavior.
+	attr, reason := pluginProcAttr(strings.TrimSpace(m.opts.PluginUser))
+	if reason != "" {
+		m.logWarn("plugin sandbox user not applied", map[string]any{"plugin": id, "user": m.opts.PluginUser, "reason": reason})
+	}
+	cmd.SysProcAttr = attr
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

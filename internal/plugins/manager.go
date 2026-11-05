@@ -36,6 +36,14 @@ type Options struct {
 	// package only spells the result into the child environment, and a nil hook
 	// means "never inject".
 	DirectEgress func(pluginID string) string
+
+	// PluginUser is the Linux account plugin children are spawned under
+	// (P8-① uid isolation, sysproc_other.go). Empty (the default) keeps today's
+	// behavior: children run as the host user. When set, the host must run as
+	// root and the account must exist; otherwise the supervisor falls back to
+	// the host uid and logs a warning. Wiring from host config is the app's job
+	// (P8 部署卡), not this package's.
+	PluginUser string
 }
 
 // pluginSettings mirrors the editable part of the store row.

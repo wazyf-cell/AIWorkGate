@@ -13,25 +13,35 @@ import type {
 import { BRIDGE_API_LEVEL, BRIDGE_ID, BRIDGE_NAME, BRIDGE_VERSION, CAP } from "./types.ts";
 
 /**
- * 能力位 = **桥实际能应答的契约端点**，不是「插件碰巧有什么钩子」。
+ * 能力口径（Lead 2026-11-06 裁定，P1 收尾-1；禁止再改回插件钩子推导式）：
  *
- * 口径（与 Go 侧 DefaultBridgeCapabilities=[accounts, checkin] 对齐，见
- * internal/opchost/bridge.go）：
+ * **基线 = [upstream, accounts, checkin]**，恒声明：
  *   upstream → POST /v1/chat/completions        （server.ts 挂的是 chat 泳道）
  *   accounts → GET /accounts                     （admin/router.ts handleAccounts）
  *   checkin  → /checkin + POST /accounts/{id}/checkin（admin D-19 委派）
- *   quota    → 额度经 /accounts 的 quota 字段透出；仅当插件确实有 auth.usage 时才声明
  *
- * **刻意不声明**（端点还没有，声明了就是骗宿主）：
+ * **quota 附加条件**：仅当任一插件确有 `auth.usage` 钩子才声明
+ *   （额度经 /accounts 的 quota 字段透出；没有钩子就没有数据可透）。
+ *
+ * **一律不声明**（端点没有接线，声明了就是骗宿主）：
  *   refresh            → POST /accounts/{id}/refresh 未实现
  *   login_api_key / login_oauth / login_paste_code / login_local_state / login_cookie
  *                      → 契约端点 /accounts/login* 未实现；登录实际走管理面
  *                        /admin/signin/start（管理面能力，不是宿主契约能力）
  *   identity_request / identity_os_switch
  *                      → POST /accounts/{id}/identity/reset 未实现（D-57 的透传待补）
+ *
+ * 与 Go 侧 DefaultBridgeCapabilities=[accounts, checkin] 的差异（桥多了 upstream、
+ * 条件 quota）记在 README §3.3，宿主 HasCapability 读的是 manifest 而非 /meta，不影响调度。
  */
+export const BASELINE_CAPABILITIES: readonly Capability[] = [
+  CAP.upstream,
+  CAP.accounts,
+  CAP.checkin,
+] as const;
+
 export function bridgeCapabilities(ctx: BridgeContext): Capability[] {
-  const caps = new Set<Capability>([CAP.upstream, CAP.accounts, CAP.checkin]);
+  const caps = new Set<Capability>(BASELINE_CAPABILITIES);
   for (const rec of Object.values(ctx.registry.providers)) {
     const auth = rec.plugin.plugin.auth;
     if (auth && typeof auth.usage === "function") caps.add(CAP.quota);

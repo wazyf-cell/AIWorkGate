@@ -71,11 +71,17 @@ export function registryFromLoad(load: LoadResult, credentials: SharedCredential
 
   const warnings = [...(opts.warnings ?? []), ...(load.warnings ?? [])]
 
-  const hasCheckin = providers.some((p) => typeof openCodeOf(p)?.auth?.checkin === 'function')
-  const derived: Capability[] = ['accounts', 'quota', 'refresh']
-  if (hasCheckin) derived.push('checkin')
-  // D-57：identity 能力留在插件侧，桥只声明透传
-  derived.push('identity_request', 'identity_os_switch')
+  // 能力口径（task-9 裁定，与 meta.ts bridgeCapabilities 同基线）：
+  //   基线 = [upstream, accounts, checkin] —— 桥实际能应答的契约端点
+  //   quota 仅当有 provider 的插件真带 auth.usage 时附加（额度经 /accounts 的 quota 字段透出）
+  // 刻意不声明（端点未实现，声明了就是骗宿主）：
+  //   refresh（/accounts/{id}/refresh 未接线）、login_*（登录走管理面 /admin/signin，不是
+  //   宿主契约 /accounts/login*）、identity_request/identity_os_switch（D-57 指纹透传未接线，
+  //   声明 = 谎称桥能 reset identity）。
+  const derived: Capability[] = ['upstream', 'accounts', 'checkin']
+  const hasUsage = providers.some((p) => typeof openCodeOf(p)?.auth?.usage === 'function')
+  if (hasUsage) derived.push('quota')
+  derived.sort()
 
   const getAuthFor = (providerId: string) => async (): Promise<Record<string, unknown> | undefined> => {
     const rec = credentials.get(providerId) as unknown as Record<string, unknown> | undefined
