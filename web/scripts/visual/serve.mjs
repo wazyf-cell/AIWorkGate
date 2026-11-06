@@ -57,6 +57,7 @@ const ROUTES = [
   { path: '/api/scheduler/models', body: () => F.schedulerModels },
   { path: '/api/scheduler/sticky', body: () => F.schedulerSticky },
   { path: '/api/scheduler/explain', body: () => F.schedulerExplain },
+  { path: '/api/prompt/analyze', body: () => F.promptComposition },
   { path: '/api/diagnostics/probes', body: () => F.probes },
   { path: '/api/custom-connections', body: () => F.customConnections },
   { path: '/api/custom-models', body: () => F.customModels },

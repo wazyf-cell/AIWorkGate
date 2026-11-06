@@ -594,6 +594,51 @@ func (s *Store) ListModelCatalog(pluginID string) ([]model.ModelCatalogEntry, er
 	return out, nil
 }
 
+// FindModelContextLength resolves a requested model to the catalog row that
+// publishes a context window. Callers spell the same model "gpt-4o",
+// "openai/gpt-4o" or "plugin/openai/gpt-4o"; an exact id wins, then a
+// slash-suffix match either way. Unknown models return zero, not an error.
+func (s *Store) FindModelContextLength(model string) (pluginID, modelID string, contextLength int) {
+	model = strings.TrimSpace(model)
+	if s == nil || s.db == nil || model == "" {
+		return "", "", 0
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT plugin_id, model_id, context_length
+		FROM model_catalog WHERE COALESCE(context_length, 0) > 0
+		ORDER BY plugin_id, model_id`)
+	if err != nil {
+		return "", "", 0
+	}
+	defer rows.Close()
+	lower := strings.ToLower(model)
+	var (
+		suffixPlugin, suffixModel string
+		suffixLength              int
+	)
+	for rows.Next() {
+		var (
+			plugin, id string
+			length     int
+		)
+		if err := rows.Scan(&plugin, &id, &length); err != nil {
+			return "", "", 0
+		}
+		idLower := strings.ToLower(id)
+		if idLower == lower {
+			return plugin, id, length
+		}
+		if suffixLength == 0 && (strings.HasSuffix(idLower, "/"+lower) || strings.HasSuffix(lower, "/"+idLower)) {
+			suffixPlugin, suffixModel, suffixLength = plugin, id, length
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", 0
+	}
+	return suffixPlugin, suffixModel, suffixLength
+}
+
 // SetModelCatalogEnabled flips one model's "接入" switch. It reports
 // ErrNotFound when the catalog has no such row.
 func (s *Store) SetModelCatalogEnabled(pluginID, modelID string, enabled bool) error {

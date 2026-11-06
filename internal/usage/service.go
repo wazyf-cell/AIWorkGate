@@ -283,11 +283,27 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	timeseries, err := s.Store.UsageTimeSeries(q.FromDay, q.ToDay, q.Granularity)
+	if err != nil {
+		return "", err
+	}
+	models, err := s.Store.ModelUsageRange(q.FromDay, q.ToDay, 50)
+	if err != nil {
+		return "", err
+	}
+	formatCost := func(cost float64, sampled bool) string {
+		if !sampled {
+			return ""
+		}
+		return strconv.FormatFloat(cost, 'f', -1, 64)
+	}
 	cw := csv.NewWriter(w)
 	write := func(record []string) error { return cw.Write(record) }
 	if err := write([]string{"section", "day", "plugin_id", "account_id", "display_name",
 		"requests", "prompt_tokens", "completion_tokens", "credits",
-		"remaining", "total", "expires_at", "plan", "daily_credits", "days_left"}); err != nil {
+		"remaining", "total", "expires_at", "plan", "daily_credits", "days_left",
+		"granularity", "cache_write", "cache_write_1h", "cache_unknown", "reasoning_tokens",
+		"cost_usd", "pricing_model", "purpose", "model_requested", "model_upstream", "model_served"}); err != nil {
 		return "", err
 	}
 	for _, row := range summary.Series {
@@ -298,6 +314,44 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			strconv.FormatInt(row.CompletionTokens, 10),
 			strconv.FormatFloat(row.Credits, 'f', -1, 64),
 			"", "", "", "", "", "",
+			"", "", "", "", "", "", "", "", "", "", "",
+		}); err != nil {
+			return "", err
+		}
+	}
+	for _, row := range timeseries {
+		if err := write([]string{
+			"timeseries", row.Bucket, row.PluginID, "", "",
+			strconv.FormatInt(row.Requests, 10),
+			strconv.FormatInt(row.PromptTokens, 10),
+			strconv.FormatInt(row.CompletionTokens, 10),
+			strconv.FormatFloat(row.Credits, 'f', -1, 64),
+			"", "", "", "", "", "",
+			q.Granularity,
+			strconv.FormatInt(row.CacheWrite, 10),
+			strconv.FormatInt(row.CacheWrite1h, 10),
+			strconv.FormatInt(row.CacheUnknown, 10),
+			strconv.FormatInt(row.ReasoningTokens, 10),
+			formatCost(row.CostUSD, row.CostSampled),
+			"", "", "", "", "",
+		}); err != nil {
+			return "", err
+		}
+	}
+	for _, row := range models {
+		if err := write([]string{
+			"model", "", "", "", row.Model,
+			strconv.FormatInt(row.Requests, 10),
+			strconv.FormatInt(row.PromptTokens, 10),
+			strconv.FormatInt(row.CompletionTokens, 10),
+			strconv.FormatFloat(row.Credits, 'f', -1, 64),
+			"", "", "", "", "", "",
+			q.Granularity,
+			strconv.FormatInt(row.CacheWrite, 10),
+			strconv.FormatInt(row.CacheWrite1h, 10),
+			"", strconv.FormatInt(row.ReasoningTokens, 10),
+			formatCost(row.CostUSD, row.CostSampled),
+			"", "", "", "", row.Model,
 		}); err != nil {
 			return "", err
 		}
@@ -316,6 +370,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			item.Plan,
 			strconv.FormatFloat(item.DailyCredits, 'f', -1, 64),
 			days,
+			"", "", "", "", "", "", "", "", "", "", "",
 		}); err != nil {
 			return "", err
 		}

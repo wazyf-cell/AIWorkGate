@@ -11,6 +11,7 @@ import {
   type UsageConversation,
   type UsageConversationsParams,
   type UsageFilterParams,
+  type UsageGranularity,
   type UsageKeyRow,
   type UsageKpis,
   type UsageLatencyDay,
@@ -74,6 +75,11 @@ const PRESETS: { key: Preset; label: string }[] = [
   { key: '7d', label: '7天' },
   { key: '30d', label: '30天' },
   { key: 'custom', label: '自定义' },
+]
+const GRANULARITIES: { key: UsageGranularity; label: string }[] = [
+  { key: 'hour', label: '小时' },
+  { key: 'day', label: '天' },
+  { key: 'week', label: '周' },
 ]
 const TABS: { key: Tab; label: string }[] = [
   { key: 'credits', label: '积分' },
@@ -162,7 +168,8 @@ const filterParams = computed<UsageFilterParams>(() => ({
 }))
 
 const filterKey = computed(() => JSON.stringify(filterParams.value))
-const exportUrl = computed(() => api.usage.exportUrl(filterParams.value))
+const exportGranularity = ref<UsageGranularity>('day')
+const exportUrl = computed(() => api.usage.exportUrl(filterParams.value, exportGranularity.value))
 
 function applyPreset(next: Preset) {
   preset.value = next
@@ -1040,6 +1047,20 @@ onBeforeUnmount(() => {
           </div>
 
           <span class="spacer"></span>
+          <span class="small muted">导出粒度</span>
+          <div class="seg" role="group" aria-label="导出时间粒度">
+            <button
+              v-for="item in GRANULARITIES"
+              :key="item.key"
+              type="button"
+              class="seg-btn"
+              :class="{ active: exportGranularity === item.key }"
+              :aria-pressed="exportGranularity === item.key"
+              @click="exportGranularity = item.key"
+            >
+              {{ item.label }}
+            </button>
+          </div>
           <button type="button" class="btn" @click="resetFilters">重置</button>
           <a class="btn primary" :href="exportUrl" download="usage.csv">导出 CSV</a>
         </div>

@@ -39,6 +39,8 @@ type Query struct {
 	// Cursor is the opaque keyset cursor of /api/usage/conversations
 	// (上一页返回的 next_cursor；空 = 第一页).
 	Cursor string
+	// Granularity is hour, day (default) or week for export time series.
+	Granularity string
 }
 
 // ParseQuery interprets from/to (YYYY-MM-DD local, inclusive), plugin, group
@@ -79,6 +81,7 @@ func ParseQuery(values url.Values, now time.Time) (Query, error) {
 		// D-32③：聚合视图下钻到逐请求的会话过滤
 		ConversationID: strings.TrimSpace(firstValue(values, "conversation_id")),
 		Cursor:         strings.TrimSpace(firstValue(values, "cursor")),
+		Granularity:    "day",
 		Filter: store.UsageFilter{
 			FromDay: from.Format("2006-01-02"),
 			ToDay:   to.Format("2006-01-02"),
@@ -92,6 +95,14 @@ func ParseQuery(values url.Values, now time.Time) (Query, error) {
 			return Query{}, fmt.Errorf("%w: account must be plugin:account, got %q", ErrBadQuery, item)
 		}
 		q.Filter.Accounts = append(q.Filter.Accounts, ref)
+	}
+	if raw := strings.ToLower(strings.TrimSpace(firstValue(values, "granularity"))); raw != "" {
+		switch raw {
+		case "hour", "day", "week":
+			q.Granularity = raw
+		default:
+			return Query{}, fmt.Errorf("%w: granularity must be hour, day or week, got %q", ErrBadQuery, raw)
+		}
 	}
 	if raw := strings.TrimSpace(firstValue(values, "page")); raw != "" {
 		if n, err := parsePositive(raw); err == nil {

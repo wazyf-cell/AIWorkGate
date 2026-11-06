@@ -793,3 +793,23 @@ export const schedulerExplain = {
     { plugin_id: 'opencode', account_id: 'acct_charlie', score: 0.4, rejected_reason: '上游已关闭' },
   ],
 }
+
+// D-55 prompt composition: a plausible coding-agent request (big tool schema,
+// long history, small current turn) so the bar and the table show every slice.
+export const promptComposition = {
+  model: 'example/model-one',
+  resolved_plugin: 'officeace',
+  resolved_model: 'vendor/model-one',
+  context_window: 128000,
+  window_share: 0.3302,
+  total_tokens: 42266,
+  estimated: true,
+  sections: [
+    { key: 'system', tokens: 3318, share: 0.0785 },
+    { key: 'tools', tokens: 21044, share: 0.4979 },
+    { key: 'memory', tokens: 1640, share: 0.0388 },
+    { key: 'history', tokens: 15582, share: 0.3687 },
+    { key: 'user_input', tokens: 642, share: 0.0152 },
+    { key: 'other', tokens: 40, share: 0.0009 },
+  ],
+}

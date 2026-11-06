@@ -832,6 +832,31 @@ export type UsageFilterParams = {
   account?: string
 }
 
+/** Export time-series bucket; the rest of the CSV is unaffected. */
+export type UsageGranularity = 'hour' | 'day' | 'week'
+
+/** One slice of a pasted request's estimated input tokens (D-55). */
+export interface PromptSection {
+  key: 'system' | 'tools' | 'memory' | 'history' | 'user_input' | 'other'
+  tokens: number
+  /** Fraction of the estimated total (0–1). */
+  share: number
+}
+
+export interface PromptComposition {
+  total_tokens: number
+  sections: PromptSection[]
+  /** Always true: no tokenizer runs, the estimate is char-weighted. */
+  estimated: boolean
+  model: string
+  /** Present only when the model resolved to a catalog row with a window. */
+  context_window?: number
+  /** total_tokens ÷ context_window, 0–1. */
+  window_share?: number
+  resolved_plugin?: string
+  resolved_model?: string
+}
+
 export interface UsageKpis {
   requests?: number
   errors?: number
@@ -2428,8 +2453,18 @@ export const api = {
       return request<UsageModelLatencyRow[]>(`/usage/latency/models${qs({ days })}`)
     },
     /** Absolute CSV URL, for an `<a download>` click. */
-    exportUrl(filters: UsageFilterParams): string {
-      return `/api/usage/export${qs({ ...filters })}`
+    exportUrl(filters: UsageFilterParams, granularity: UsageGranularity = 'day'): string {
+      return `/api/usage/export${qs({ ...filters, granularity })}`
+    },
+  },
+
+  prompt: {
+    /** Six-section estimate of a pasted request body (D-55). */
+    analyze(model: string, body: unknown): Promise<PromptComposition> {
+      return request<PromptComposition>('/prompt/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ model, body }),
+      })
     },
   },
 

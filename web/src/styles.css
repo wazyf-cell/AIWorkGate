@@ -4413,3 +4413,23 @@ html[data-motion='reduced'] .page > * {
 .motion-toggle.is-off {
   color: var(--muted);
 }
+
+/* Prompt composition (D-55): a six-segment estimate, not a chart. */
+.prompt-body {
+  min-height: 180px;
+  resize: vertical;
+}
+
+.prompt-bar {
+  display: flex;
+  width: 100%;
+  height: 12px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--border);
+}
+
+.prompt-bar-seg {
+  display: block;
+  height: 100%;
+}

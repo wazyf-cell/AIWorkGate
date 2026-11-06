@@ -121,3 +121,127 @@ func (s *Store) RecentKeyLogs(keyID string, limit int) ([]MeLogRow, error) {
 	}
 	return out, rows.Err()
 }
+
+// TimeSeriesRow is one bucket of the usage export time series.
+type TimeSeriesRow struct {
+	Bucket           string
+	PluginID         string
+	Requests         int64
+	PromptTokens     int64
+	CompletionTokens int64
+	CacheWrite       int64
+	CacheWrite1h     int64
+	CacheUnknown     int64
+	ReasoningTokens  int64
+	Credits          float64
+	CostUSD          float64
+	CostSampled      bool
+}
+
+// UsageTimeSeries aggregates api_logs by hour, day or week (Monday start,
+// local time as stored in ts). Granularity is validated by the caller.
+func (s *Store) UsageTimeSeries(fromDay, toDay, granularity string) ([]TimeSeriesRow, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store: usage time series: store is not open")
+	}
+	var bucket string
+	switch granularity {
+	case "hour":
+		bucket = `substr(ts, 1, 13) || ':00'`
+	case "week":
+		// Monday of the ts week. Use the date part only: SQLite normalises a
+		// timestamp with an offset to UTC first, which would shift a 01:10
+		// +08:00 row into the previous UTC week.
+		bucket = `date(substr(ts, 1, 10), '-6 days', 'weekday 1')`
+	default:
+		bucket = `substr(ts, 1, 10)`
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT `+bucket+`,
+		CASE WHEN source LIKE 'plugin:%' THEN substr(source, 8)
+		     WHEN source LIKE 'custom:%' THEN substr(source, 8)
+		     ELSE COALESCE(source, '') END AS plugin,
+		COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cache_write), 0), COALESCE(SUM(cache_write_1h), 0), COALESCE(SUM(cache_unknown), 0),
+		COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(credits), 0), SUM(cost_usd)
+		FROM api_logs WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
+		GROUP BY `+bucket+`, plugin ORDER BY `+bucket+` ASC, plugin ASC`, fromDay, toDay)
+	if err != nil {
+		return nil, fmt.Errorf("store: usage time series: %w", err)
+	}
+	defer rows.Close()
+	var out []TimeSeriesRow
+	for rows.Next() {
+		var (
+			row  TimeSeriesRow
+			cost sql.NullFloat64
+		)
+		if err := rows.Scan(&row.Bucket, &row.PluginID, &row.Requests, &row.PromptTokens,
+			&row.CompletionTokens, &row.CacheWrite, &row.CacheWrite1h, &row.CacheUnknown,
+			&row.ReasoningTokens, &row.Credits, &cost); err != nil {
+			return nil, fmt.Errorf("store: usage time series: scan: %w", err)
+		}
+		if cost.Valid {
+			row.CostUSD = cost.Float64
+			row.CostSampled = true
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// ModelUsageRange is ModelUsageSummary over an explicit day range, including
+// cache/reasoning sums and configured cost.
+type ModelUsageRange struct {
+	Model            string
+	Requests         int64
+	PromptTokens     int64
+	CompletionTokens int64
+	CacheWrite       int64
+	CacheWrite1h     int64
+	ReasoningTokens  int64
+	Credits          float64
+	CostUSD          float64
+	CostSampled      bool
+}
+
+// ModelUsageRange aggregates by served model inside [fromDay, toDay].
+func (s *Store) ModelUsageRange(fromDay, toDay string, limit int) ([]ModelUsageRange, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store: model usage range: store is not open")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		COALESCE(NULLIF(model_served, ''), NULLIF(logical_model, ''), COALESCE(model, '')) AS served,
+		COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cache_write), 0), COALESCE(SUM(cache_write_1h), 0), COALESCE(SUM(reasoning_tokens), 0),
+		COALESCE(SUM(credits), 0), SUM(cost_usd)
+		FROM api_logs WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
+		GROUP BY served ORDER BY COUNT(*) DESC, served ASC LIMIT ?`, fromDay, toDay, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: model usage range: %w", err)
+	}
+	defer rows.Close()
+	var out []ModelUsageRange
+	for rows.Next() {
+		var (
+			row  ModelUsageRange
+			cost sql.NullFloat64
+		)
+		if err := rows.Scan(&row.Model, &row.Requests, &row.PromptTokens, &row.CompletionTokens,
+			&row.CacheWrite, &row.CacheWrite1h, &row.ReasoningTokens, &row.Credits, &cost); err != nil {
+			return nil, fmt.Errorf("store: model usage range: scan: %w", err)
+		}
+		if cost.Valid {
+			row.CostUSD = cost.Float64
+			row.CostSampled = true
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}

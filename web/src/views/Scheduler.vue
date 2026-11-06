@@ -14,6 +14,7 @@ import {
   type ModelBindingSource,
   type PluginStatus,
   type PoolSettings,
+  type PromptComposition,
   type SchedulerCandidate,
   type SchedulerExplainRequest,
   type SchedulerExplainResponse,
@@ -133,6 +134,80 @@ const explainConv = ref('')
 const explainBusy = ref(false)
 const explainError = ref('')
 const explainResult = ref<SchedulerExplainResponse | null>(null)
+
+/* Prompt composition (D-55) */
+const PROMPT_SECTIONS: { key: PromptComposition['sections'][number]['key']; label: string; color: string }[] = [
+  { key: 'system', label: '系统提示', color: 'var(--chart-1)' },
+  { key: 'tools', label: '工具定义', color: 'var(--chart-2)' },
+  { key: 'memory', label: '记忆', color: 'var(--chart-3)' },
+  { key: 'history', label: '历史消息', color: 'var(--chart-4)' },
+  { key: 'user_input', label: '本轮输入', color: 'var(--chart-5)' },
+  { key: 'other', label: '其他字段', color: 'var(--chart-6)' },
+]
+const PROMPT_PLACEHOLDER = `{
+  "model": "gpt-4o",
+  "messages": [
+    { "role": "system", "content": "You are a helpful assistant." },
+    { "role": "user", "content": "你好" }
+  ]
+}`
+const promptBody = ref('')
+const promptModel = ref('')
+const promptBusy = ref(false)
+const promptError = ref('')
+const promptResult = ref<PromptComposition | null>(null)
+const promptBars = computed(() => {
+  const result = promptResult.value
+  if (!result || result.total_tokens <= 0) return []
+  return PROMPT_SECTIONS.filter((item) => {
+    const section = result.sections.find((row) => row.key === item.key)
+    return (section?.tokens ?? 0) > 0
+  }).map((item) => {
+    const section = result.sections.find((row) => row.key === item.key)
+    return {
+      ...item,
+      tokens: section?.tokens ?? 0,
+      width: `${((section?.tokens ?? 0) / result.total_tokens) * 100}%`,
+    }
+  })
+})
+const promptRows = computed(() =>
+  PROMPT_SECTIONS.map((item) => {
+    const section = promptResult.value?.sections.find((row) => row.key === item.key)
+    return { ...item, tokens: section?.tokens ?? 0, share: section?.share ?? 0 }
+  }),
+)
+
+function percent(value?: number): string {
+  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—'
+}
+
+async function runPromptAnalyze() {
+  const raw = promptBody.value.trim()
+  if (!raw) {
+    promptError.value = '请粘贴请求体 JSON。'
+    promptResult.value = null
+    return
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    promptError.value = '请求体不是合法 JSON。'
+    promptResult.value = null
+    return
+  }
+  promptBusy.value = true
+  promptError.value = ''
+  promptResult.value = null
+  try {
+    promptResult.value = await api.prompt.analyze(promptModel.value.trim(), parsed)
+  } catch (e) {
+    promptError.value = errorMessage(e)
+  } finally {
+    promptBusy.value = false
+  }
+}
 
 /* Toasts */
 let toastSeq = 0
@@ -1371,6 +1446,88 @@ async function runExplain() {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Prompt 组成（估算）</h2>
+          <span class="sub">按六段估算输入 token 与窗口占比</span>
+        </div>
+        <div class="card-body stack">
+          <div class="field">
+            <label for="prompt-body">请求体 JSON</label>
+            <textarea
+              id="prompt-body"
+              v-model="promptBody"
+              class="input mono prompt-body"
+              :placeholder="PROMPT_PLACEHOLDER"
+              spellcheck="false"
+            ></textarea>
+          </div>
+          <div class="explain-form">
+            <div class="field grow">
+              <label for="prompt-model">模型（可选）</label>
+              <input
+                id="prompt-model"
+                v-model="promptModel"
+                class="input mono"
+                type="text"
+                placeholder="留空取请求体里的 model，用于查上下文窗口"
+              />
+            </div>
+            <button type="button" class="btn primary" :disabled="promptBusy" @click="runPromptAnalyze">
+              {{ promptBusy ? '分析中…' : '分析组成' }}
+            </button>
+          </div>
+          <div v-if="promptError" class="notice error">
+            <span>{{ promptError }}</span>
+          </div>
+          <div v-if="promptResult" class="stack">
+            <div class="row between">
+              <span class="small muted">
+                估算合计 <strong>{{ promptResult.total_tokens }}</strong> tokens
+                <template v-if="promptResult.context_window">
+                  · 上下文窗口 {{ promptResult.context_window }}（占 {{ percent(promptResult.window_share) }}）
+                </template>
+                <template v-if="promptResult.resolved_model"> · 匹配 {{ promptResult.resolved_model }}</template>
+              </span>
+              <span class="badge plain muted">估算值，非计费 token</span>
+            </div>
+            <div v-if="promptBars.length" class="prompt-bar">
+              <span
+                v-for="item in promptBars"
+                :key="item.key"
+                class="prompt-bar-seg"
+                :style="{ width: item.width, background: item.color }"
+                :title="`${item.label} ${item.tokens} tokens`"
+              ></span>
+            </div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>分段</th>
+                    <th>字段</th>
+                    <th class="num">估算 tokens</th>
+                    <th class="num">占比</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="item in promptRows" :key="item.key">
+                    <td class="title-cell">{{ item.label }}</td>
+                    <td class="small muted mono">{{ item.key }}</td>
+                    <td class="num">{{ item.tokens }}</td>
+                    <td class="num">{{ percent(item.share) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="small muted plain-p">
+              估算口径：ASCII 约 0.3 token/字符、非 ASCII 1 token/字符，每条消息另加 4，图片按 1024；不运行
+              tokenizer，只用于观察结构占比。
+            </p>
           </div>
         </div>
       </section>

@@ -142,6 +142,27 @@ export const PAGES = [
     variants: ['light', 'dark'],
   },
   {
+    slug: 'scheduler-prompt',
+    path: '/scheduler',
+    title: '调度 · Prompt 组成',
+    ready: () => document.querySelectorAll('.main *').length > 40,
+    prepare: [
+      `(() => {
+        const textarea = document.querySelector('#prompt-body');
+        if (!textarea) throw new Error('prompt textarea missing');
+        textarea.value = '{"model":"gpt-4o","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"hi"}]}';
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`,
+      `(() => {
+        const button = [...document.querySelectorAll('button')].find((el) => el.textContent.trim() === '分析组成');
+        if (!button) throw new Error('analyze button missing');
+        button.click();
+      })()`,
+    ],
+    settled: () => !!document.querySelector('.prompt-bar'),
+    variants: ['light', 'dark'],
+  },
+  {
     slug: 'logs-raw',
     path: '/logs',
     title: '日志 · 原始行',

@@ -7,6 +7,43 @@ import (
 	"aiworkgate/internal/model"
 )
 
+func TestFindModelContextLength(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.ReplaceModelCatalog("officeace", []model.ModelCatalogEntry{
+		{ModelID: "glm-5.3", ContextLength: 200000},
+		{ModelID: "deepseek-v4-pro"},
+	}); err != nil {
+		t.Fatalf("ReplaceModelCatalog: %v", err)
+	}
+	if err := s.ReplaceModelCatalog("codearts", []model.ModelCatalogEntry{
+		{ModelID: "openai/gpt-4o", ContextLength: 128000},
+	}); err != nil {
+		t.Fatalf("ReplaceModelCatalog: %v", err)
+	}
+
+	cases := []struct {
+		model   string
+		plugin  string
+		modelID string
+		context int
+	}{
+		{"glm-5.3", "officeace", "glm-5.3", 200000},
+		{"officeace/glm-5.3", "officeace", "glm-5.3", 200000},
+		{"gpt-4o", "codearts", "openai/gpt-4o", 128000},
+		{"codearts/openai/gpt-4o", "codearts", "openai/gpt-4o", 128000},
+		{"deepseek-v4-pro", "", "", 0},
+		{"missing", "", "", 0},
+		{"", "", "", 0},
+	}
+	for _, tc := range cases {
+		plugin, modelID, length := s.FindModelContextLength(tc.model)
+		if plugin != tc.plugin || modelID != tc.modelID || length != tc.context {
+			t.Fatalf("FindModelContextLength(%q) = (%q, %q, %d), want (%q, %q, %d)",
+				tc.model, plugin, modelID, length, tc.plugin, tc.modelID, tc.context)
+		}
+	}
+}
+
 func TestModelCatalogEnableSwitch(t *testing.T) {
 	s := openTestStore(t)
 	entries := []model.ModelCatalogEntry{

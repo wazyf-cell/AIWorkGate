@@ -298,6 +298,10 @@ type Options struct {
 	SchedulerSticky       func() (any, error)
 	DeleteSchedulerSticky func(scope, key string) (removed int64, err error)
 
+	// PromptAnalyze estimates the six-section token split (D-55) of a request
+	// body. model is optional and only resolves the context window.
+	PromptAnalyze func(model string, body json.RawMessage) (any, error)
+
 	// S3 resource scheduling per plugin (§5.5).
 	PoolDetail          func(pluginID string) (any, error)
 	SavePoolSettings    func(pluginID string, update PoolSettingsUpdate) (any, error)
@@ -436,6 +440,7 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/scheduler/models/{logical}", s.handleSchedulerModel)
 	mux.HandleFunc("/api/scheduler/explain", s.handleSchedulerExplain)
 	mux.HandleFunc("/api/scheduler/sticky", s.handleSchedulerSticky)
+	mux.HandleFunc("/api/prompt/analyze", s.handlePromptAnalyze)
 	mux.HandleFunc("/api/pools/{plugin}", s.handlePool)
 	mux.HandleFunc("/api/pools/{plugin}/members", s.handlePoolMembers)
 	mux.HandleFunc("/api/pools/{plugin}/sync", s.handlePoolSync)

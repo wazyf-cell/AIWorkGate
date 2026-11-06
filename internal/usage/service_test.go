@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -411,7 +412,7 @@ func TestExportCSVBlocks(t *testing.T) {
 		t.Fatalf("filename = %q", filename)
 	}
 	text := buf.String()
-	if !strings.HasPrefix(text, "section,day,plugin_id,account_id,display_name,requests,prompt_tokens,completion_tokens,credits,remaining,total,expires_at,plan,daily_credits,days_left\n") {
+	if !strings.HasPrefix(text, "section,day,plugin_id,account_id,display_name,requests,prompt_tokens,completion_tokens,credits,remaining,total,expires_at,plan,daily_credits,days_left,granularity,cache_write,cache_write_1h,cache_unknown,reasoning_tokens,cost_usd,pricing_model,purpose,model_requested,model_upstream,model_served\n") {
 		t.Fatalf("header missing: %q", text)
 	}
 	if !strings.Contains(text, "account,,mock,acc_1,主号") {
@@ -434,5 +435,48 @@ func TestExportCSVBlocks(t *testing.T) {
 	}
 	if records[1][2] != "plugin:mock" || records[2][3] != "acc_1" || records[2][4] != "主号" {
 		t.Fatalf("block content = %+v", records)
+	}
+}
+
+func TestExportGranularityAndModelSections(t *testing.T) {
+	st := openConversationStore(t)
+	if err := st.InsertAPIRequestLog(model.APIRequestLog{
+		TS: "2026-10-20T10:05:00Z", ReqID: "r1", Source: "plugin:p1", Model: "m1",
+		ModelServed: "cheap", Status: 200, PromptTokens: 100, CompletionTokens: 50,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := st.InsertAPIRequestLog(model.APIRequestLog{
+		TS: "2026-10-20T11:05:00Z", ReqID: "r2", Source: "plugin:p1", Model: "m1",
+		ModelServed: "cheap", Status: 200, PromptTokens: 10, CompletionTokens: 5,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	svc := NewService(st)
+	q, err := ParseQuery(url.Values{
+		"from": {"2026-10-20"}, "to": {"2026-10-20"}, "granularity": {"hour"},
+	}, fixedNow())
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := svc.Export(&buf, q); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	text := buf.String()
+	if !strings.Contains(text, "granularity") || !strings.Contains(text, "timeseries") {
+		t.Fatalf("header/section missing:\n%s", text)
+	}
+	if !strings.Contains(text, "2026-10-20T10:00") || !strings.Contains(text, "2026-10-20T11:00") {
+		t.Fatalf("hour buckets missing:\n%s", text)
+	}
+	if !strings.Contains(text, "model,") || !strings.Contains(text, "cheap") {
+		t.Fatalf("model section missing:\n%s", text)
+	}
+}
+
+func TestParseQueryGranularityValidation(t *testing.T) {
+	if _, err := ParseQuery(url.Values{"granularity": {"minute"}}, fixedNow()); !errors.Is(err, ErrBadQuery) {
+		t.Fatalf("invalid granularity err = %v, want ErrBadQuery", err)
 	}
 }
