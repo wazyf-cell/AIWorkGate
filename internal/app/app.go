@@ -749,6 +749,9 @@ func (a *App) configSnapshot() config.Config {
 // read fails the page is opened without a token, which the admin API answers
 // with 403 admin_session_required rather than silently granting access.
 func (a *App) openExistingUI(cfg config.Config) {
+	if browserLaunchDisabled() {
+		return
+	}
 	port := readGatewayPort(a.dataDir)
 	if port == 0 {
 		port = cfg.Port
@@ -771,11 +774,29 @@ func (a *App) openExistingUI(cfg config.Config) {
 }
 
 // openUI opens the local admin page in the default browser.
+//
+// AIWORKGATE_NO_BROWSER=1 suppresses every automatic launch (first run, tray
+// click, second instance). Headless hosts and automated previews use it so a
+// browser window never steals focus from whatever the user is doing.
 func (a *App) openUI() {
+	if browserLaunchDisabled() {
+		return
+	}
 	url := "http://127.0.0.1:" + strconv.Itoa(a.port) + adminUIQuery(a.adminToken)
 	if err := winutil.OpenBrowser(url); err != nil {
 		a.logger.Warn("app", "cannot open browser", map[string]any{"url": url, "error": err.Error()})
 	}
+}
+
+// NoBrowserEnv suppresses every automatic browser launch when set to 1/true/yes.
+const NoBrowserEnv = "AIWORKGATE_NO_BROWSER"
+
+func browserLaunchDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(NoBrowserEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // AdminTokenEnv lets a headless deployment pin the admin launch token instead
