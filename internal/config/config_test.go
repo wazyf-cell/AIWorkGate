@@ -722,3 +722,22 @@ func TestPluginsSandboxUserParseAndDefault(t *testing.T) {
 		t.Fatalf("default plugins.sandbox_user = %q, want empty (off)", got)
 	}
 }
+
+func TestNormalizeDecisionUpstreams(t *testing.T) {
+	got := normalizeDecisionUpstreams([]DecisionUpstreamConfig{
+		{ID: "jev", BaseURL: "https://tokenrhythm.studio/v1/", ModelID: "NeoHorse-Jev-4B"},
+		{ID: "jev", BaseURL: "https://other.example/v1", ModelID: "dup"},
+		{ID: "bad", BaseURL: "ftp://nope", ModelID: "m"},
+		{ID: "nomodel", BaseURL: "https://x.example/v1"},
+		{ID: "dec", BaseURL: "https://d.example/v1", Protocol: "DECISION", ModelID: "m2"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("kept %d entries (%+v), want 2", len(got), got)
+	}
+	if got[0].Protocol != "systemone" || got[0].BaseURL != "https://tokenrhythm.studio/v1" {
+		t.Fatalf("defaults = %+v", got[0])
+	}
+	if got[1].Protocol != "decision" {
+		t.Fatalf("protocol = %q, want decision", got[1].Protocol)
+	}
+}

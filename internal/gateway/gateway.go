@@ -109,6 +109,9 @@ type Options struct {
 	// source IP before authentication (P5-5, 0 = off).
 	RateLimitPerMinute      int
 	RateLimitPerIPPerMinute int
+	// DecisionUpstreams supplies the configured structured-decision endpoints
+	// (P6/D-18). Nil disables /v1/systemone and /v1/decision.
+	DecisionUpstreams func() []DecisionUpstream
 
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
@@ -186,36 +189,37 @@ var (
 
 // Gateway is the http.Handler returned by New.
 type Gateway struct {
-	plugins        PluginRegistry
-	a              AUpstream
-	keys           KeyVerifier
-	logs           APILogSink
-	sched          *scheduler.Scheduler
-	snapshot       func(context.Context) (*scheduler.Snapshot, error)
-	schedLog       SchedLogger
-	overrides      func(pluginID string) (map[string]ModelOverride, error)
-	prefs          func(pluginID string) (map[string]ModelPrefs, error)
-	customModels   func() ([]CustomModel, error)
-	customModelKey func(id string) (string, bool)
-	keyRecord      func(keyID string) (KeyRecord, bool, error)
-	keyUsageToday  func(keyID, day string) (int, error)
-	keyUsageTotal  func(keyID string) (int, error)
-	keyUsage       func(keyID, day string, requests, promptTokens, completionTokens, cachedTokens int, credits *float64)
-	debugBody      atomic.Bool
-	bodyCap        int
-	queueTimeout   time.Duration
-	cacheTTL       time.Duration
-	redact         RedactOptions
-	corsOrigins    atomic.Value // []string, set by SetCorsOrigins
-	allowIPs       atomic.Value // ipAllowlist, set by SetAllowIPs
-	trustedProxies atomic.Value // ipAllowlist, set by SetTrustedProxies
-	serviceMode    atomic.Int32 // serviceOpen / servicePaused / serviceWhitelist
-	ratePerKey     atomic.Int64 // P5-5 per-key requests per minute
-	ratePerIP      atomic.Int64 // P5-5 per-IP requests per minute
-	limiter        *rateLimiter
-	defaultPlugin  string
-	legacyA        bool
-	now            func() time.Time
+	plugins           PluginRegistry
+	a                 AUpstream
+	keys              KeyVerifier
+	logs              APILogSink
+	sched             *scheduler.Scheduler
+	snapshot          func(context.Context) (*scheduler.Snapshot, error)
+	schedLog          SchedLogger
+	overrides         func(pluginID string) (map[string]ModelOverride, error)
+	prefs             func(pluginID string) (map[string]ModelPrefs, error)
+	customModels      func() ([]CustomModel, error)
+	customModelKey    func(id string) (string, bool)
+	keyRecord         func(keyID string) (KeyRecord, bool, error)
+	keyUsageToday     func(keyID, day string) (int, error)
+	keyUsageTotal     func(keyID string) (int, error)
+	keyUsage          func(keyID, day string, requests, promptTokens, completionTokens, cachedTokens int, credits *float64)
+	debugBody         atomic.Bool
+	bodyCap           int
+	queueTimeout      time.Duration
+	cacheTTL          time.Duration
+	redact            RedactOptions
+	corsOrigins       atomic.Value // []string, set by SetCorsOrigins
+	allowIPs          atomic.Value // ipAllowlist, set by SetAllowIPs
+	trustedProxies    atomic.Value // ipAllowlist, set by SetTrustedProxies
+	serviceMode       atomic.Int32 // serviceOpen / servicePaused / serviceWhitelist
+	ratePerKey        atomic.Int64 // P5-5 per-key requests per minute
+	ratePerIP         atomic.Int64 // P5-5 per-IP requests per minute
+	limiter           *rateLimiter
+	decisionUpstreams func() []DecisionUpstream
+	defaultPlugin     string
+	legacyA           bool
+	now               func() time.Time
 	// sleep waits for one retry backoff and reports whether the request may
 	// continue. Tests inject a recorder so 10/20/40s waits stay instant.
 	sleep func(context.Context, time.Duration) bool
@@ -297,34 +301,35 @@ func newGateway(opts Options) *Gateway {
 	}
 
 	g := &Gateway{
-		plugins:        opts.Plugins,
-		a:              opts.A,
-		keys:           opts.Keys,
-		logs:           opts.Log,
-		sched:          opts.Schedule,
-		snapshot:       opts.Snapshot,
-		schedLog:       opts.SchedLog,
-		overrides:      opts.Overrides,
-		prefs:          opts.Prefs,
-		customModels:   opts.CustomModels,
-		customModelKey: opts.CustomModelKey,
-		keyRecord:      opts.KeyRecord,
-		keyUsageToday:  opts.KeyUsageToday,
-		keyUsageTotal:  opts.KeyUsageTotal,
-		keyUsage:       opts.KeyUsage,
-		bodyCap:        bodyCap,
-		queueTimeout:   queueTimeout,
-		cacheTTL:       cacheTTL,
-		redact:         opts.Redact,
-		defaultPlugin:  strings.ToLower(strings.TrimSpace(opts.DefaultPlugin)),
-		legacyA:        opts.LegacyA,
-		now:            time.Now,
-		sleep:          sleepContext,
-		client:         &http.Client{Transport: transport, CheckRedirect: doNotFollowRedirects},
-		transport:      transport,
-		lim:            newLimiter(),
-		limiter:        newRateLimiter(),
-		pCache:         make(map[string]pluginModels),
+		plugins:           opts.Plugins,
+		a:                 opts.A,
+		keys:              opts.Keys,
+		logs:              opts.Log,
+		sched:             opts.Schedule,
+		snapshot:          opts.Snapshot,
+		schedLog:          opts.SchedLog,
+		overrides:         opts.Overrides,
+		prefs:             opts.Prefs,
+		customModels:      opts.CustomModels,
+		customModelKey:    opts.CustomModelKey,
+		keyRecord:         opts.KeyRecord,
+		keyUsageToday:     opts.KeyUsageToday,
+		keyUsageTotal:     opts.KeyUsageTotal,
+		keyUsage:          opts.KeyUsage,
+		bodyCap:           bodyCap,
+		queueTimeout:      queueTimeout,
+		cacheTTL:          cacheTTL,
+		redact:            opts.Redact,
+		defaultPlugin:     strings.ToLower(strings.TrimSpace(opts.DefaultPlugin)),
+		legacyA:           opts.LegacyA,
+		now:               time.Now,
+		sleep:             sleepContext,
+		client:            &http.Client{Transport: transport, CheckRedirect: doNotFollowRedirects},
+		transport:         transport,
+		lim:               newLimiter(),
+		limiter:           newRateLimiter(),
+		decisionUpstreams: opts.DecisionUpstreams,
+		pCache:            make(map[string]pluginModels),
 	}
 	g.debugBody.Store(opts.DebugBody)
 	g.SetCorsOrigins(opts.CorsAllowOrigins)
@@ -771,6 +776,8 @@ func (g *Gateway) route(w http.ResponseWriter, r *http.Request, rec *reqRecord) 
 			return
 		}
 		g.handleGeminiGenerate(w, r, rec, model, stream)
+	case r.Method == http.MethodPost && (path == "/v1/systemone" || path == "/v1/decision"):
+		g.handleDecision(w, r, rec, strings.TrimPrefix(path, "/v1/"))
 	default:
 		g.fail(w, rec, http.StatusNotFound, "not_found_error", "not_found",
 			"unknown endpoint "+path)
@@ -1029,6 +1036,12 @@ func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request, rec *reqRec
 		rec.errText = "invalid JSON body"
 		g.fail(w, rec, http.StatusBadRequest, "invalid_request_error", "invalid_json",
 			"request body must be a JSON object")
+		return
+	}
+	// D-18④: a decision model must not be used as a chat model.
+	if g.isDecisionModel(meta.model) {
+		g.fail(w, rec, http.StatusBadRequest, "invalid_request_error", "structured_model",
+			"该模型是结构化决策模型，请用 /v1/systemone 或 /v1/decision")
 		return
 	}
 	g.prepareRecord(rec, r, body, meta)

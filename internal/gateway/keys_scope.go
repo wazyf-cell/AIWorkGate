@@ -86,7 +86,8 @@ func (g *Gateway) keyRecordFor(keyID string) (KeyRecord, bool) {
 // /v1/models stays outside it (it is a catalogue read, not inference).
 func isInferencePath(path string) bool {
 	switch path {
-	case "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages":
+	case "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages",
+		"/v1/systemone", "/v1/decision":
 		return true
 	}
 	if isGeminiPath(path) {

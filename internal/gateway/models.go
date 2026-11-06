@@ -238,6 +238,23 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 		})
 	}
 
+	// Structured-decision endpoints are published too, marked so a client can
+	// tell them apart and avoid sending them to /v1/chat/completions (D-18④).
+	for _, upstream := range g.decisionList() {
+		key := CanonicalModelID(upstream.ModelID)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		entries = append(entries, modelEntry{
+			ID:         upstream.ModelID,
+			Object:     "model",
+			OwnedBy:    "decision:" + upstream.ID,
+			Name:       upstream.ModelID,
+			Structured: true,
+		})
+	}
+
 	payload, err := json.Marshal(modelsList{Object: "list", Data: entries})
 	if err != nil {
 		g.fail(w, rec, http.StatusInternalServerError, "internal_error", "internal_error",

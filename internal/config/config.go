@@ -113,6 +113,26 @@ type Config struct {
 	Gateway   GatewayConfig   `json:"gateway"`
 	Redact    RedactConfig    `json:"redact"`
 	Notify    NotifyConfig    `json:"notify"`
+	Decision  DecisionConfig  `json:"decision"`
+}
+
+// DecisionConfig lists the generic structured-decision upstreams (D-18/P6).
+// The API key is not here: it lives in the secret store under
+// "decision.<id>.api_key".
+type DecisionConfig struct {
+	Upstreams []DecisionUpstreamConfig `json:"upstreams"`
+}
+
+// DecisionUpstreamConfig is one fixed structured-decision endpoint. Protocol is
+// "systemone" (default) or "decision"; the model is normally JEV.
+type DecisionUpstreamConfig struct {
+	ID       string `json:"id"`
+	BaseURL  string `json:"base_url"`
+	Protocol string `json:"protocol"`
+	ModelID  string `json:"model_id"`
+	// Disabled is the opt-out spelling so a hand-written entry works without
+	// remembering to set enabled=true.
+	Disabled bool `json:"disabled"`
 }
 
 // NotifyConfig holds the optional out-of-app notification channel. The webhook
@@ -494,6 +514,7 @@ func (c *Config) Normalize() {
 	c.Gateway.AllowIPs = normalizeAllowIPs(c.Gateway.AllowIPs)
 	c.Gateway.TrustedProxies = normalizeIPList(c.Gateway.TrustedProxies, nil)
 	c.Gateway.ServiceMode = normalizeServiceMode(c.Gateway.ServiceMode)
+	c.Decision.Upstreams = normalizeDecisionUpstreams(c.Decision.Upstreams)
 	c.Gateway.RateLimitPerMinute = clampRateLimit(c.Gateway.RateLimitPerMinute)
 	c.Gateway.RateLimitPerIPPerMinute = clampRateLimit(c.Gateway.RateLimitPerIPPerMinute)
 	c.Gateway.DefaultPlugin = strings.ToLower(strings.TrimSpace(c.Gateway.DefaultPlugin))
@@ -611,6 +632,44 @@ func clampRateLimit(value int) int {
 		return 1_000_000
 	}
 	return value
+}
+
+// normalizeDecisionUpstreams trims entries, defaults the protocol and drops
+// entries that cannot be called (bad URL, missing model). IDs are deduped.
+func normalizeDecisionUpstreams(in []DecisionUpstreamConfig) []DecisionUpstreamConfig {
+	out := make([]DecisionUpstreamConfig, 0, len(in))
+	seen := map[string]bool{}
+	for _, raw := range in {
+		entry := raw
+		entry.ID = strings.TrimSpace(entry.ID)
+		entry.BaseURL = strings.TrimRight(strings.TrimSpace(entry.BaseURL), "/")
+		entry.ModelID = strings.TrimSpace(entry.ModelID)
+		switch strings.ToLower(strings.TrimSpace(entry.Protocol)) {
+		case "decision":
+			entry.Protocol = "decision"
+		default:
+			entry.Protocol = "systemone"
+		}
+		if entry.BaseURL == "" || entry.ModelID == "" {
+			continue
+		}
+		parsed, err := url.Parse(entry.BaseURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			continue
+		}
+		if entry.ID == "" {
+			entry.ID = entry.Protocol + "-" + entry.ModelID
+		}
+		if seen[entry.ID] {
+			continue
+		}
+		seen[entry.ID] = true
+		out = append(out, entry)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // normalizeAllowIPs keeps valid IP/CIDR entries, dedupes them and falls back to
