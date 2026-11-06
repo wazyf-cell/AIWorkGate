@@ -43,11 +43,11 @@ type routingRuleMembers struct {
 // routingGroupUniverse lists the model ids a pattern can match, as
 // "plugin/model", from the enabled rows of every installed plugin's catalog.
 func (a *App) routingGroupUniverse() []string {
+	universe := make([]string, 0)
 	if a == nil || a.store == nil || a.pluginMgr == nil {
-		return nil
+		return universe
 	}
 	seen := map[string]bool{}
-	var universe []string
 	for _, status := range a.pluginMgr.List() {
 		id := strings.TrimSpace(status.Manifest.ID)
 		if id == "" || !status.Enabled {
