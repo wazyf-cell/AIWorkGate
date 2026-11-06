@@ -1,7 +1,7 @@
 // Package gateway implements the AIWorkGate local API gateway (M3): client key
 // authentication, the merged model registry, routing between local plugins and
-// the AI Work 助手 (A) gateway, byte-for-byte SSE passthrough, per-plugin
-// concurrency gates and API request logging.
+// custom upstreams, byte-for-byte SSE passthrough, per-plugin concurrency gates
+// and API request logging.
 //
 // The package is deliberately decoupled from the concrete host runtime: it
 // depends only on the small interfaces below (plus internal/model), so it can
@@ -40,13 +40,6 @@ type PluginRegistry interface {
 	Touch(pluginID string)
 }
 
-// AUpstream is the AI Work 助手 built-in OpenAI-compatible gateway.
-type AUpstream interface {
-	BaseURL() string
-	APIKey() string
-	Models(ctx context.Context) ([]model.ModelInfo, error)
-}
-
 // SchedLogger is the slice of the host logger used for scheduler events.
 type SchedLogger interface {
 	Info(module, msg string, fields map[string]any)
@@ -72,10 +65,9 @@ type APILogSink interface {
 }
 
 // Options wires the gateway. Only Plugins is strictly required for routing;
-// A, Keys and Log may be nil (which yields 502, 401 and no logging).
+// Keys and Log may be nil (which yields 401 and no logging).
 type Options struct {
 	Plugins PluginRegistry
-	A       AUpstream
 	Keys    KeyVerifier
 	Log     APILogSink
 
@@ -143,17 +135,16 @@ type Options struct {
 	// QueueTimeout is how long a chat request waits for a plugin slot before
 	// receiving 429 concurrency_limit. Default 30s.
 	QueueTimeout time.Duration
-	// AModelCacheTTL is how long A's model list is reused. Default 10m.
-	AModelCacheTTL time.Duration
+	// ModelCacheTTL is how long a plugin's fetched model list is reused.
+	// Default 10m.
+	ModelCacheTTL time.Duration
 	// CorsAllowOrigins lists browser origins allowed to read gateway
 	// responses. Empty keeps the gateway closed to cross-origin JS.
 	CorsAllowOrigins []string
 
 	// DefaultPlugin serves bare model names through the generic plugin path.
-	// Empty means no default; see LegacyA.
+	// Empty means a bare name is a 404 model_not_found.
 	DefaultPlugin string
-	// LegacyA keeps the A upstream as the bare-name fallback for compatibility.
-	LegacyA bool
 
 	// Redact turns P10 request masking on: bodies are masked to the upstream
 	// (MaskJSON, Route=provider) and responses restored to the client
@@ -173,10 +164,6 @@ const (
 	idleConnTimeout     = 90 * time.Second
 
 	sourceHeader = "X-AIWorkGate-Source"
-	staleHeader  = "X-AIWorkGate-A-Stale"
-
-	// aDownMessage is the user-facing message required by the contract.
-	aDownMessage = "AI Work 助手未运行"
 )
 
 // Upstream liveness bounds. They are variables so tests can shorten them.
@@ -194,7 +181,6 @@ var (
 // Gateway is the http.Handler returned by New.
 type Gateway struct {
 	plugins           PluginRegistry
-	a                 AUpstream
 	keys              KeyVerifier
 	logs              APILogSink
 	sched             *scheduler.Scheduler
@@ -211,7 +197,7 @@ type Gateway struct {
 	debugBody         atomic.Bool
 	bodyCap           int
 	queueTimeout      time.Duration
-	cacheTTL          time.Duration
+	modelCacheTTL     time.Duration
 	redact            RedactOptions
 	corsOrigins       atomic.Value // []string, set by SetCorsOrigins
 	allowIPs          atomic.Value // ipAllowlist, set by SetAllowIPs
@@ -223,7 +209,6 @@ type Gateway struct {
 	decisionUpstreams func() []DecisionUpstream
 	priceFor          func(model string) (Price, string, bool)
 	defaultPlugin     string
-	legacyA           bool
 	now               func() time.Time
 	// sleep waits for one retry backoff and reports whether the request may
 	// continue. Tests inject a recorder so 10/20/40s waits stay instant.
@@ -232,11 +217,6 @@ type Gateway struct {
 	client    *http.Client
 	transport *http.Transport
 	lim       *limiter
-
-	aMu      sync.Mutex
-	aModels  []model.ModelInfo
-	aFetched time.Time
-	aHave    bool
 
 	pMu    sync.Mutex
 	pCache map[string]pluginModels
@@ -290,9 +270,9 @@ func newGateway(opts Options) *Gateway {
 	if queueTimeout <= 0 {
 		queueTimeout = defaultQueueTimeout
 	}
-	cacheTTL := opts.AModelCacheTTL
-	if cacheTTL <= 0 {
-		cacheTTL = defaultCacheTTL
+	modelCacheTTL := opts.ModelCacheTTL
+	if modelCacheTTL <= 0 {
+		modelCacheTTL = defaultCacheTTL
 	}
 
 	dialer := &net.Dialer{Timeout: upstreamDialTimeout, KeepAlive: 30 * time.Second}
@@ -313,7 +293,6 @@ func newGateway(opts Options) *Gateway {
 
 	g := &Gateway{
 		plugins:           opts.Plugins,
-		a:                 opts.A,
 		keys:              opts.Keys,
 		logs:              opts.Log,
 		sched:             opts.Schedule,
@@ -329,10 +308,9 @@ func newGateway(opts Options) *Gateway {
 		keyUsage:          opts.KeyUsage,
 		bodyCap:           bodyCap,
 		queueTimeout:      queueTimeout,
-		cacheTTL:          cacheTTL,
+		modelCacheTTL:     modelCacheTTL,
 		redact:            opts.Redact,
 		defaultPlugin:     strings.ToLower(strings.TrimSpace(opts.DefaultPlugin)),
-		legacyA:           opts.LegacyA,
 		now:               time.Now,
 		sleep:             sleepContext,
 		client:            &http.Client{Transport: transport, CheckRedirect: doNotFollowRedirects},
@@ -700,7 +678,7 @@ var (
 		"X-Goog-Api-Key",
 	}
 	corsExposeHeaders = []string{
-		sourceHeader, staleHeader, "X-Aiworkgate-Account", "X-Aiworkgate-Credits",
+		sourceHeader, "X-Aiworkgate-Account", "X-Aiworkgate-Credits",
 		"X-Aiworkgate-Account-Status", "X-Aiworkgate-Cooldown", "X-Aiworkgate-Downgraded",
 	}
 )
@@ -1081,18 +1059,11 @@ var errNoDefaultRoute = errors.New("no default plugin configured")
 
 // bareModelTarget decides what a bare (unprefixed) model name routes to.
 // It returns the plugin status to use, or ok=false when the request must fail.
-// This is the single place that knows about the default-plugin slot, so the
-// old "every bare name goes to A" rule is gone.
+// This is the single place that knows about the default-plugin slot.
 //
-// The three outcomes, in order:
-//   - a default plugin is configured: it serves the bare name, and the plugin
-//     target's inner model is the bare name itself (the prefix was not there).
-//     A configured default that is not installed is an error: the caller
-//     answers 503 plugin_unavailable instead of silently falling back to A.
-//   - no default plugin and LegacyA: ok=false, err=nil, so the caller keeps the
-//     pre-plugin A behaviour.
-//   - no default plugin and no LegacyA: errNoDefaultRoute, so the bare name is a
-//     404 without any code change.
+// A configured default plugin serves the bare name (its inner model keeps the
+// bare spelling); an uninstalled default is an error the caller answers with
+// 503. Without a default, errNoDefaultRoute makes the bare name a 404.
 func (g *Gateway) bareModelTarget(name string) (pluginTarget, bool, error) {
 	if g == nil {
 		return pluginTarget{}, false, errNoDefaultRoute
@@ -1107,9 +1078,6 @@ func (g *Gateway) bareModelTarget(name string) (pluginTarget, bool, error) {
 			return pluginTarget{status: st, inner: name}, true, nil
 		}
 		return pluginTarget{}, false, fmt.Errorf("默认插件 %s 未安装或不可用", pluginID)
-	}
-	if g.legacyA {
-		return pluginTarget{}, false, nil
 	}
 	return pluginTarget{}, false, errNoDefaultRoute
 }
@@ -1185,9 +1153,6 @@ func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request, rec *reqRec
 			}
 			g.forwardScheduled(w, r, rec, body, "/v1/chat/completions")
 			return
-		default:
-			g.forwardA(w, r, rec, body)
-			return
 		}
 	}
 
@@ -1207,9 +1172,6 @@ func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request, rec *reqRec
 	case ok:
 		rec.source = "plugin:" + tgt.status.Manifest.ID
 		g.forwardPlugin(w, r, rec, tgt, body, "/v1/chat/completions")
-		return
-	default:
-		g.forwardA(w, r, rec, body)
 		return
 	}
 }
@@ -1255,7 +1217,7 @@ func (g *Gateway) handlePassThrough(w http.ResponseWriter, r *http.Request, rec 
 			"unsupported_endpoint", msg)
 		return
 	}
-	g.forwardA(w, r, rec, body)
+	g.writeUnknownModel(w, rec, rec.model, "")
 }
 
 // chatSender is the narrow seam between protocol conversion and transport: it
@@ -1305,7 +1267,7 @@ func (g *Gateway) handleEnvelope(w http.ResponseWriter, r *http.Request, rec *re
 	}
 	bound := scheduled && !isPlugin && g.hasBinding(r.Context(), rec.model)
 	if !isPlugin && !bound {
-		g.forwardA(w, r, rec, body)
+		g.writeUnknownModel(w, rec, rec.model, "")
 		return
 	}
 	// "<plugin>/" names no model. The scheduled path answers such a request with
@@ -1441,35 +1403,6 @@ func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *req
 		g.fail(w, rec, http.StatusBadGateway, "upstream_unavailable", "upstream_unavailable",
 			fmt.Sprintf("插件 %s 不可达", id))
 	})
-}
-
-// forwardA proxies to A with its key and the original path/query.
-func (g *Gateway) forwardA(w http.ResponseWriter, r *http.Request, rec *reqRecord, body []byte) {
-	rec.source = "a"
-	if rec.modelUpstream == "" {
-		rec.modelUpstream = rec.modelRequested
-	}
-	if g.a == nil || strings.TrimSpace(g.a.BaseURL()) == "" {
-		g.failAUnavailable(w, rec)
-		return
-	}
-	headers := forwardHeaders(r.Header)
-	if key := strings.TrimSpace(g.a.APIKey()); key != "" {
-		headers.Set("Authorization", "Bearer "+key)
-	}
-	// P10：内置 A 上游同样脱敏（Route="a"），审计进 rec
-	red := NewWiring(g.redact)
-	body = red.MaskJSONBody(body, "a")
-	rec.redactLine = red.AuditLine()
-	target := strings.TrimRight(strings.TrimSpace(g.a.BaseURL()), "/") + r.URL.RequestURI()
-	g.forward(w, r, rec, target, headers, body, red, func() {
-		g.failAUnavailable(w, rec)
-	})
-}
-
-func (g *Gateway) failAUnavailable(w http.ResponseWriter, rec *reqRecord) {
-	g.fail(w, rec, http.StatusBadGateway, "upstream_unavailable", "upstream_unavailable",
-		aDownMessage)
 }
 
 // errUpstreamIdleTimeout marks a response body abandoned because the upstream
@@ -1640,8 +1573,7 @@ func copyResponseHeaders(dst, src http.Header) {
 // reach a plugin that reads X-API-Key as its own upstream credential.
 // Headers that only a native Anthropic upstream understands are handled on the
 // translation path instead: chatSenderForMessages (anthropic.go) removes
-// anthropic-version/-beta once a /v1/messages body has become a chat body, while
-// forwardA keeps forwarding the client's headers untouched.
+// anthropic-version/-beta once a /v1/messages body has become a chat body.
 func forwardHeaders(src http.Header) http.Header {
 	out := cloneHeader(src)
 	for _, name := range []string{"Authorization", "X-API-Key", "Api-Key", "X-Client-Key"} {

@@ -54,12 +54,6 @@ const (
 	portFileName = "gateway.port"
 
 	shutdownTimeout = 5 * time.Second
-
-	// aProbeTTLDefault is how long a health result is reused before BaseURL
-	// re-probes (and possibly re-discovers) A's loopback port.
-	aProbeTTLDefault = 30 * time.Second
-	// aHealthTimeout bounds one GET /health probe against A.
-	aHealthTimeout = 2 * time.Second
 )
 
 // AdminLaunchTokenSecretKey is the secrets.dat key holding the admin launch
@@ -163,23 +157,6 @@ type App struct {
 	listener net.Listener
 	server   *http.Server
 	port     int
-
-	aBaseURL string
-	aPort    int
-
-	// Live A upstream state, guarded by aMu. aBaseURL/aPort stay the startup
-	// snapshot so unlocked readers in other host files keep racing nothing.
-	aMu       sync.Mutex
-	aURL      string
-	aPortLive int
-	aProbeAt  time.Time
-	aState    hosts.AState
-	aDetail   string
-
-	// Test seams for the lazy resolver; nil selects the real implementations.
-	aDiscoverPort func() (int, bool)
-	aProbeFn      func(ctx context.Context, baseURL string) (hosts.AState, string)
-	aProbeTTL     time.Duration
 
 	releaseInstance func()
 
@@ -480,37 +457,23 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	a.initSchedule()
 	a.initUpdateTimer()
 
-	// 8. A (AI Work 助手) upstream adapter.
-	baseURL, aPort, discovered := resolveABaseURL(cfg, logger)
-	a.aBaseURL, a.aPort = baseURL, aPort
-	a.aURL, a.aPortLive = baseURL, aPort
-	a.logger.Info("app", "A gateway configured", map[string]any{
-		"base_url": a.aBaseURL, "port": a.aPort, "discovered": discovered,
-	})
-	// One-time handover of A's credentials to the aichat plugin (Q18): background, failure only warns.
-	a.startAIChatUpstreamPush()
-
-	// 9. Client key verification.
+	// 8. Client key verification.
 	a.keyVerifier = &keyAdapter{app: a}
 
 	// 10. Local API gateway.
 	a.gatewayHandler = gateway.New(gateway.Options{
 		Plugins:                 a.pluginMgr,
-		A:                       &aAdapter{app: a, baseURL: a.aBaseURL},
 		Keys:                    a.keyVerifier,
 		Log:                     apiLogSink{app: a},
 		DebugBody:               cfg.Logging.DebugBody,
-		AModelCacheTTL:          time.Duration(cfg.A.ModelCacheMinutes) * time.Minute,
 		CorsAllowOrigins:        cfg.Gateway.CorsAllowOrigins,
 		AllowIPs:                cfg.Gateway.AllowIPs,
 		TrustedProxies:          cfg.Gateway.TrustedProxies,
 		ServiceMode:             cfg.Gateway.ServiceMode,
 		RateLimitPerMinute:      cfg.Gateway.RateLimitPerMinute,
 		RateLimitPerIPPerMinute: cfg.Gateway.RateLimitPerIPPerMinute,
-		// Bare model names route to the configured default plugin; the legacy A
-		// fallback only applies while that slot is empty and the switch is on.
+		// Bare model names route to the configured default plugin only.
 		DefaultPlugin:     cfg.Gateway.DefaultPlugin,
-		LegacyA:           cfg.Gateway.LegacyAFallback,
 		Schedule:          a.dispatch,
 		Snapshot:          a.schedulerSnapshot,
 		SchedLog:          logger,
@@ -631,7 +594,6 @@ func (a *App) Run() error {
 		a.updateCancel = cancel
 		go a.updateTimer.Run(ctx)
 	}
-	a.startAIfConfigured()
 	a.logger.Info("app", "AIWorkGate ready", map[string]any{"port": a.port})
 	if a.firstRun {
 		a.openUI()
@@ -1043,163 +1005,6 @@ func (a *App) writeAllRules() {
 				"plugin": id, "error": err.Error(),
 			})
 		}
-	}
-}
-
-// resolveABaseURL prefers A's discovered loopback port over the configured
-// base URL; it falls back to the configured URL (contract default 7864).
-func resolveABaseURL(cfg config.Config, logger *logging.Logger) (baseURL string, port int, discovered bool) {
-	baseURL = strings.TrimSpace(cfg.A.BaseURL)
-	if baseURL == "" {
-		baseURL = config.DefaultABaseURL
-	}
-	port = portFromBaseURL(baseURL)
-
-	dataDir, err := hosts.ADataDir()
-	if err != nil {
-		return baseURL, port, false
-	}
-	info, err := os.Stat(dataDir)
-	if err != nil || !info.IsDir() {
-		return baseURL, port, false
-	}
-	discoveredPort, err := hosts.DiscoverPort(dataDir)
-	if err != nil {
-		if logger != nil {
-			logger.Info("app", "A port discovery failed; using the configured base URL", map[string]any{
-				"error": err.Error(),
-			})
-		}
-		return baseURL, port, false
-	}
-	return fmt.Sprintf("http://127.0.0.1:%d", discoveredPort), discoveredPort, true
-}
-
-// aUpstreamProbe classifies A's health over GET /health with a short timeout.
-func (a *App) aUpstreamProbe(ctx context.Context, baseURL string) (hosts.AState, string) {
-	if a.aProbeFn != nil {
-		return a.aProbeFn(ctx, baseURL)
-	}
-	key := ""
-	if a.secrets != nil {
-		key, _ = a.secrets.GetAAPIKey()
-	}
-	client := hosts.NewClient(baseURL, key)
-	if client.HTTP != nil {
-		client.HTTP.Timeout = aHealthTimeout
-	}
-	return client.HealthState(ctx)
-}
-
-// aResolvePort re-runs A's loopback port discovery; (0, false) when it fails.
-func (a *App) aResolvePort() (int, bool) {
-	if a.aDiscoverPort != nil {
-		return a.aDiscoverPort()
-	}
-	dataDir, err := hosts.ADataDir()
-	if err != nil {
-		return 0, false
-	}
-	port, err := hosts.DiscoverPort(dataDir)
-	if err != nil || port < 1 || port > 65535 {
-		return 0, false
-	}
-	return port, true
-}
-
-// aEnsure returns A's health state, detail and live base URL, cached for
-// aProbeTTL. When the current URL stops answering it re-runs port discovery,
-// so an A restart on a new loopback port heals without a host restart; a
-// down/unauthorized -> ok transition invalidates the gateway's A model cache.
-func (a *App) aEnsure(force bool) (hosts.AState, string, string) {
-	if a == nil {
-		return hosts.AStateDown, "app is not running", ""
-	}
-	ttl := a.aProbeTTL
-	if ttl <= 0 {
-		ttl = aProbeTTLDefault
-	}
-
-	a.aMu.Lock()
-	url := a.aURL
-	if url == "" {
-		url = a.aBaseURL
-	}
-	if url == "" {
-		a.aMu.Unlock()
-		return hosts.AStateDown, "A base URL is not configured", ""
-	}
-	if !force && a.aState != "" && time.Since(a.aProbeAt) < ttl {
-		state, detail := a.aState, a.aDetail
-		a.aMu.Unlock()
-		return state, detail, url
-	}
-
-	prev := a.aState
-	state, detail := a.aUpstreamProbe(context.Background(), url)
-	if state == hosts.AStateDown {
-		if port, ok := a.aResolvePort(); ok {
-			if candidate := fmt.Sprintf("http://127.0.0.1:%d", port); candidate != url {
-				cState, cDetail := a.aUpstreamProbe(context.Background(), candidate)
-				if cState != hosts.AStateDown {
-					url, state, detail = candidate, cState, cDetail
-					a.aPortLive = port
-					if a.logger != nil {
-						a.logger.Info("app", "A base URL followed the discovered port", map[string]any{
-							"base_url": url, "port": port,
-						})
-					}
-				}
-			}
-		}
-	}
-	a.aURL, a.aState, a.aDetail = url, state, detail
-	a.aProbeAt = time.Now()
-	recovered := state == hosts.AStateOK && (prev == hosts.AStateDown || prev == hosts.AStateUnauthorized)
-	a.aMu.Unlock()
-
-	if recovered {
-		a.InvalidateAModelCache()
-	}
-	return state, detail, url
-}
-
-// aLivePort returns the loopback port the host currently dials for A.
-func (a *App) aLivePort() int {
-	if a == nil {
-		return 0
-	}
-	a.aMu.Lock()
-	defer a.aMu.Unlock()
-	if a.aPortLive > 0 {
-		return a.aPortLive
-	}
-	return a.aPort
-}
-
-// aStatusProbe forces a fresh health check for GET /api/status and returns
-// the three-state result, a short detail, the live port and whether A answers
-// at all (the a_running compatibility value).
-func (a *App) aStatusProbe() (state string, detail string, port int, running bool) {
-	st, dt, url := a.aEnsure(true)
-	port = a.aLivePort()
-	if port == 0 {
-		port = portFromBaseURL(url)
-	}
-	return string(st), dt, port, st != hosts.AStateDown
-}
-
-// InvalidateAModelCache asks the gateway to drop its cached A model list
-// after A recovered, using the same interface-assertion pattern as SetDebug.
-// internal/gateway exposes no such method yet: the call then only logs, and
-// starts working the moment the gateway adds InvalidateAModelCache().
-func (a *App) InvalidateAModelCache() {
-	if g, ok := a.gatewayHandler.(interface{ InvalidateAModelCache() }); ok {
-		g.InvalidateAModelCache()
-		return
-	}
-	if a.logger != nil {
-		a.logger.Warn("app", "cannot invalidate the A model cache: gateway exposes no hook yet", nil)
 	}
 }
 

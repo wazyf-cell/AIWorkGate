@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"aiworkgate/internal/model"
 )
 
 func geminiRequest(t *testing.T, path, body string) *http.Request {
@@ -20,9 +22,10 @@ func TestGeminiGenerateContentInbound(t *testing.T) {
 	srv, rec := newUpstreamServer(t, jsonResponder(http.StatusOK,
 		`{"model":"gpt-4o","choices":[{"message":{"content":"hello"},"finish_reason":"stop"}],`+
 			`"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`))
-	g := newTestGateway(t, Options{A: &fakeA{base: srv.URL, key: "sk-a"}})
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg})
 
-	rr := serve(g, geminiRequest(t, "/v1beta/models/gpt-4o:generateContent",
+	rr := serve(g, geminiRequest(t, "/v1beta/models/p/chat:generateContent",
 		`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],`+
 			`"generationConfig":{"temperature":0.3,"maxOutputTokens":9}}`))
 	if rr.Code != http.StatusOK {
@@ -58,7 +61,7 @@ func TestGeminiGenerateContentInbound(t *testing.T) {
 	if err := json.Unmarshal(up.Body, &chat); err != nil {
 		t.Fatalf("upstream body: %v", err)
 	}
-	if chat["model"] != "gpt-4o" || chat["temperature"] != 0.3 || chat["max_tokens"] != float64(9) {
+	if chat["model"] != "chat" || chat["temperature"] != 0.3 || chat["max_tokens"] != float64(9) {
 		t.Fatalf("upstream chat body = %v", chat)
 	}
 }
@@ -66,9 +69,10 @@ func TestGeminiGenerateContentInbound(t *testing.T) {
 func TestGeminiInlineImageMapsToImageURL(t *testing.T) {
 	srv, rec := newUpstreamServer(t, jsonResponder(http.StatusOK,
 		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"total_tokens":1}}`))
-	g := newTestGateway(t, Options{A: &fakeA{base: srv.URL, key: "sk-a"}})
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg})
 
-	rr := serve(g, geminiRequest(t, "/v1beta/models/gpt-4o:generateContent",
+	rr := serve(g, geminiRequest(t, "/v1beta/models/p/chat:generateContent",
 		`{"contents":[{"role":"user","parts":[{"text":"what is this"},`+
 			`{"inlineData":{"mimeType":"image/png","data":"QUJD"}}]}]}`))
 	if rr.Code != http.StatusOK {
@@ -88,9 +92,10 @@ func TestGeminiStreamInbound(t *testing.T) {
 		`data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}` + "\n\n",
 		"data: [DONE]\n\n",
 	}))
-	g := newTestGateway(t, Options{A: &fakeA{base: srv.URL, key: "sk-a"}})
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg})
 
-	rr := serve(g, geminiRequest(t, "/v1beta/models/gpt-4o:streamGenerateContent?alt=sse",
+	rr := serve(g, geminiRequest(t, "/v1beta/models/p/chat:streamGenerateContent?alt=sse",
 		`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
@@ -110,9 +115,10 @@ func TestGeminiStreamInbound(t *testing.T) {
 func TestGeminiErrorMapping(t *testing.T) {
 	srv, _ := newUpstreamServer(t, jsonResponder(http.StatusTooManyRequests,
 		`{"error":{"message":"rate limited","type":"rate_limit"}}`))
-	g := newTestGateway(t, Options{A: &fakeA{base: srv.URL, key: "sk-a"}})
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg})
 
-	rr := serve(g, geminiRequest(t, "/v1beta/models/gpt-4o:generateContent",
+	rr := serve(g, geminiRequest(t, "/v1beta/models/p/chat:generateContent",
 		`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`))
 	if rr.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())

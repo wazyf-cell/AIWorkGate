@@ -130,12 +130,6 @@ func TestDiagnosticsProbeResponseShape(t *testing.T) {
 	if recorder.Code != http.StatusOK || fixture.requests[2].CustomModelID != "cm-abc" {
 		t.Fatalf("custom probe = %d, req %+v", recorder.Code, fixture.requests[2])
 	}
-
-	// kind "a" takes no parameters.
-	recorder = doRequest(t, handler, http.MethodPost, "/api/diagnostics/probe", `{"kind":"a"}`)
-	if recorder.Code != http.StatusOK || fixture.requests[3].Kind != ProbeKindA {
-		t.Fatalf("a probe = %d, req %+v", recorder.Code, fixture.requests[3])
-	}
 }
 
 func TestDiagnosticsProbeHistory(t *testing.T) {
@@ -198,7 +192,8 @@ func TestDiagnosticsProbeHistory(t *testing.T) {
 
 func TestDiagnosticsCallbacksOptional(t *testing.T) {
 	handler := New(Options{})
-	if code := doRequest(t, handler, http.MethodPost, "/api/diagnostics/probe", `{"kind":"a"}`).Code; code != http.StatusNotImplemented {
+	if code := doRequest(t, handler, http.MethodPost, "/api/diagnostics/probe",
+		`{"kind":"plugin","plugin_id":"p","model":"m"}`).Code; code != http.StatusNotImplemented {
 		t.Fatalf("probe without callback = %d, want 501", code)
 	}
 	if code := doRequest(t, handler, http.MethodGet, "/api/diagnostics/probes", "").Code; code != http.StatusNotImplemented {
@@ -210,7 +205,8 @@ func TestDiagnosticsCallbacksOptional(t *testing.T) {
 // of the probe contract: only probe outcomes are 200, transport failures are 500.
 func TestDiagnosticsHostErrorIsInternal(t *testing.T) {
 	fixture := &diagnosticsFixture{err: json.Unmarshal([]byte(`{`), &struct{}{})}
-	recorder := doRequest(t, New(fixture.options()), http.MethodPost, "/api/diagnostics/probe", `{"kind":"a"}`)
+	recorder := doRequest(t, New(fixture.options()), http.MethodPost, "/api/diagnostics/probe",
+		`{"kind":"plugin","plugin_id":"p","model":"m"}`)
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("host error = %d, want 500 (body %s)", recorder.Code, recorder.Body.String())
 	}

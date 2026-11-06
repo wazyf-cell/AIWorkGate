@@ -232,23 +232,18 @@ func TestCustomModelUpstreamErrorRedactsKey(t *testing.T) {
 
 func TestCustomModelDisabledFallsThrough(t *testing.T) {
 	customSrv, customCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"model":"vendor-model"}`))
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusNotFound,
-		`{"error":{"message":"unknown model","type":"invalid_request_error","code":"model_not_found"}}`))
 
 	g := newTestGateway(t, customFixture(t, []CustomModel{{
 		ID: "cm-1", Name: "my-model", BaseURL: customSrv.URL, UpstreamModel: "vendor-model", Enabled: false,
-	}}, customUpstreamKey, Options{Plugins: newFakeRegistry(), A: &fakeA{base: aSrv.URL}}))
+	}}, customUpstreamKey, Options{Plugins: newFakeRegistry()}))
 
 	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
 		`{"model":"my-model","messages":[{"role":"user","content":"hi"}]}`))
 	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want the normal A 404 (body %s)", rr.Code, rr.Body.String())
+		t.Fatalf("status = %d, want model_not_found (body %s)", rr.Code, rr.Body.String())
 	}
 	if customCalls.count() != 0 {
 		t.Fatalf("disabled custom upstream calls = %d, want 0", customCalls.count())
-	}
-	if aCalls.count() != 1 {
-		t.Fatalf("A calls = %d, want 1", aCalls.count())
 	}
 }
 
@@ -698,14 +693,11 @@ func TestCustomModelMessagesErrorRedactsKey(t *testing.T) {
 func TestCustomModelListMerge(t *testing.T) {
 	reg := newFakeRegistry().add(
 		pluginStatus("p", true, model.ModelInfo{ID: "chat"}), "http://127.0.0.1:1", "plug-token")
-	fa := &fakeA{base: "http://127.0.0.1:1", models: []model.ModelInfo{
-		{ID: "gpt-4o"}, {ID: "other-model"},
-	}}
 	g := newTestGateway(t, customFixture(t, []CustomModel{
 		{ID: "cm-1", Name: "my-model", BaseURL: "https://a.example.com/v1", UpstreamModel: "v1", Enabled: true},
 		{ID: "cm-2", Name: "GPT-4o", BaseURL: "https://b.example.com/v1", UpstreamModel: "v2", Enabled: true},
 		{ID: "cm-3", Name: "off-model", BaseURL: "https://c.example.com/v1", UpstreamModel: "v3", Enabled: false},
-	}, customUpstreamKey, Options{Plugins: reg, A: fa}))
+	}, customUpstreamKey, Options{Plugins: reg}))
 
 	rr := serve(g, newGetRequest(t, "/v1/models", clientKey))
 	if rr.Code != http.StatusOK {
@@ -728,7 +720,7 @@ func TestCustomModelListMerge(t *testing.T) {
 	if !ok || custom.Vendor != "custom" || custom.Name != "my-model" {
 		t.Fatalf("custom entry = %+v (ok %v), want vendor custom", custom, ok)
 	}
-	// The custom gpt-4o replaces A's bare entry in place (custom wins over A).
+	// A custom entry with no conflicting plugin id is published as-is.
 	if got := byID["GPT-4o"]; got.Vendor != "custom" {
 		t.Fatalf("GPT-4o entry = %+v, want the custom entry", got)
 	}
@@ -743,12 +735,12 @@ func TestCustomModelListMerge(t *testing.T) {
 		switch id {
 		case "my-model":
 			posCustom = i
-		case "other-model":
+		case "GPT-4o":
 			posOther = i
 		}
 	}
 	if posCustom < 0 || posOther < 0 || posCustom > posOther {
-		t.Fatalf("custom entries should precede A entries: %v", order)
+		t.Fatalf("custom entries should keep their order: %v", order)
 	}
 
 	// The conflict helper sees a plugin id collision (defensive: names cannot

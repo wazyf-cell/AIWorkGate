@@ -10,7 +10,7 @@ package gateway
 //   2. gateway.go  newGateway      存 `g.redact = opts.Redact`（Gateway 新增该字段）；
 //   3. gateway.go  forwardPlugin   L1183 后：`body = g.redact.MaskJSONBody(rewritten, id)`
 //      （Route = 目标插件 id）；
-//   4. gateway.go  forwardA        L1216 前：`body = g.redact.MaskJSONBody(body, "a")`；
+//   4. （A 内置上游已退役，原 forwardA 钩子随之删除；裸模型名不再有隐式上游）
 //   5. gateway.go  forward         响应写循环（L1317 起）：`w, finish := g.redact.RespWriter(w)`，
 //      Write 改走 w、Flush 用 w.Flush()、写循环结束后 `finish()`（= NewWriter.Finish）；
 //   6. app 层构造 gateway.Options 处：`Redact: redactOptionsFromConfig(c)` 一行；

@@ -29,7 +29,7 @@ func TestPluginIDExprPreservesNonPluginValues(t *testing.T) {
 		var got string
 		// The expression binds its argument twice (LIKE and substr), so pass a
 		// literal rather than placeholders to keep the test readable.
-		q := "SELECT " + pluginIDExpr(`'` + c.stored + `'`)
+		q := "SELECT " + pluginIDExpr(`'`+c.stored+`'`)
 		if err := s.db.QueryRow(q).Scan(&got); err != nil {
 			t.Fatalf("eval %q: %v", c.stored, err)
 		}
@@ -39,8 +39,8 @@ func TestPluginIDExprPreservesNonPluginValues(t *testing.T) {
 	}
 }
 
-// A bare "a" filter must still resolve to the legacy stored value: A keeps
-// recording source="a" until forwardA is deleted, so resolving it to "plugin:a"
+// A bare "a" filter must still resolve to the legacy stored value: the
+// retired built-in A gateway wrote source="a", so resolving it to "plugin:a"
 // now would make the filter miss all live A traffic.
 func TestUsagePluginValueKeepsLegacyA(t *testing.T) {
 	cases := map[string]string{

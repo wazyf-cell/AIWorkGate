@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"aiworkgate/internal/hosts"
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/safego"
 	"aiworkgate/internal/store"
@@ -44,13 +43,6 @@ type Plugins interface {
 	CheckinTime(pluginID string) (string, bool)
 }
 
-// AHost is the A executable integration used by the manual "sign all" action
-// and never by the daily schedule (D37: A keeps its own timer).
-type AHost interface {
-	ExePath() string
-	RunTask(ctx context.Context, exePath, taskKey string) (hosts.TaskResult, error)
-}
-
 // Notifier raises user-visible notifications (tray bubbles).
 type Notifier interface {
 	// kind is one of checkin_failed, plugin_offline or quota_low.
@@ -71,7 +63,6 @@ type Logger interface {
 type Manager struct {
 	Plugins Plugins
 	Store   *store.Store
-	A       AHost
 	Notify  Notifier
 	Log     Logger
 	Now     func() time.Time

@@ -18,14 +18,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"aiworkgate/internal/gateway"
-	"aiworkgate/internal/hosts"
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/plugins"
 	"aiworkgate/internal/store"
@@ -76,8 +74,6 @@ var connectivityPluginSource = func(a *App) pluginProbeSource {
 func (a *App) probeConnectivity(req webui.ProbeRequest) (webui.ProbeResult, error) {
 	var outcome connectivityOutcome
 	switch req.Kind {
-	case webui.ProbeKindA:
-		outcome = a.probeAConnectivity()
 	case webui.ProbeKindPlugin:
 		outcome = a.probePluginConnectivity(req.PluginID, req.Model)
 	case webui.ProbeKindCustomModel:
@@ -135,92 +131,6 @@ func (a *App) listConnectivityProbes(limit int, kind, targetID string) ([]store.
 		return []store.ConnectivityProbe{}, nil
 	}
 	return a.store.ListConnectivityProbes(limit, kind, targetID)
-}
-
-// ---------------------------------------------------------------- A
-
-// probeAConnectivity follows A's live base URL through aEnsure (the same
-// resolver as GET /api/status), then fetches /v1/models with A's key. ok
-// requires health 200; latency covers both calls.
-func (a *App) probeAConnectivity() connectivityOutcome {
-	start := time.Now()
-	out := connectivityOutcome{target: "a"}
-
-	state, healthDetail, baseURL := a.aEnsure(true)
-	out.targetID = hostPortOnly(baseURL)
-	if strings.TrimSpace(baseURL) == "" {
-		out.latencyMS = time.Since(start).Milliseconds()
-		out.errorCode = "not_configured"
-		out.detail = redactedProbeDetail(healthDetail)
-		return out
-	}
-	if state != hosts.AStateOK {
-		out.latencyMS = time.Since(start).Milliseconds()
-		out.status = statusFromText(healthDetail)
-		switch {
-		case isTimeoutText(healthDetail):
-			out.errorCode = "timeout"
-		case state == hosts.AStateUnauthorized:
-			out.errorCode = "upstream_error"
-			if out.status == 0 {
-				out.status = http.StatusUnauthorized
-			}
-		default:
-			out.errorCode = "unreachable"
-		}
-		// Show an actionable Chinese hint, not the transport error; the raw
-		// detail stays in the host log path that produced it.
-		target := strings.TrimSpace(out.targetID)
-		if target == "" {
-			target = "A"
-		}
-		switch out.errorCode {
-		case "timeout":
-			out.detail = "A 响应超时（" + target + "）"
-		case "upstream_error":
-			out.detail = "A 拒绝访问，请检查 API Key（" + target + "）"
-		default:
-			out.detail = "A 未运行或端口不可达（" + target + "）"
-		}
-		return out
-	}
-
-	key := ""
-	if a.secrets != nil {
-		key, _ = a.secrets.GetAAPIKey()
-	}
-	client := hosts.NewClient(baseURL, key)
-	client.HTTP.Timeout = connectivityProbeTimeout
-	ctx, cancel := context.WithTimeout(context.Background(), connectivityProbeTimeout)
-	defer cancel()
-	models, err := client.Models(ctx)
-	out.latencyMS = time.Since(start).Milliseconds()
-	if err != nil {
-		out.errorCode, out.status = probeErrorCode(err, "upstream_error")
-		out.detail = redactedProbeDetail(err.Error())
-		return out
-	}
-	out.ok = true
-	out.status = http.StatusOK
-	out.detail = fmt.Sprintf("A 运行中 · %d 个模型", len(models))
-	return out
-}
-
-// hostPortOnly reduces a base URL to its host:port, dropping the scheme,
-// userinfo, path and query. It tolerates a bare "host:port".
-func hostPortOnly(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
-		parsed, err = url.Parse("http://" + raw)
-		if err != nil {
-			return ""
-		}
-	}
-	return parsed.Host
 }
 
 // ---------------------------------------------------------------- plugin
@@ -442,10 +352,6 @@ func probeErrorCode(err error, fallback string) (string, int) {
 	var pluginErr *plugins.HTTPError
 	if errors.As(err, &pluginErr) {
 		return fallback, pluginErr.Status
-	}
-	var hostErr *hosts.HTTPError
-	if errors.As(err, &hostErr) {
-		return fallback, hostErr.StatusCode
 	}
 	if errors.Is(err, context.DeadlineExceeded) || isTimeoutText(err.Error()) {
 		return "timeout", 0

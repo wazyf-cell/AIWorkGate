@@ -72,12 +72,9 @@ func pluginIDExpr(column string) string {
 // usagePluginValue normalises a plugin filter value to the form stored in
 // usage_daily.plugin_id.
 //
-// The bare "a" case must stay until forwardA is deleted: A is still routed
-// outside the plugin system, and its requests record source="a", so new A rows
-// keep landing under the legacy value even after the historical rows are
-// migrated to "plugin:a". Dropping this branch now would make a filter for "a"
-// silently miss all live A traffic. Removing forwardA (next round) removes the
-// writer, and this branch with it.
+// The bare "a" case stays for history: the retired built-in A gateway wrote
+// source="a", and dropping the branch would make an "a" filter silently miss
+// those rows. No new rows are written under that value.
 func usagePluginValue(raw string) string {
 	raw = strings.TrimSpace(raw)
 	switch {

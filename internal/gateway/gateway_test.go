@@ -80,77 +80,6 @@ func TestAuthentication(t *testing.T) {
 	}
 }
 
-func TestChatBareModelForwardedToA(t *testing.T) {
-	const respBody = `{"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}`
-	srv, calls := newUpstreamServer(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Upstream", "a")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, respBody)
-	})
-	fa := &fakeA{base: srv.URL, key: "sk-a"}
-	logs := &fakeLogSink{}
-	g := newTestGateway(t, Options{Plugins: newFakeRegistry(), A: fa, Log: logs})
-
-	const body = `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"temperature":0.2}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?trace=1", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+clientKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Client", "keep")
-	rr := serve(g, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body.String())
-	}
-	if got := rr.Body.String(); got != respBody {
-		t.Fatalf("response body = %q, want %q", got, respBody)
-	}
-	if got := rr.Header().Get("X-Upstream"); got != "a" {
-		t.Fatalf("X-Upstream = %q, want a", got)
-	}
-	if got := rr.Header().Get(sourceHeader); got != "a" {
-		t.Fatalf("source header = %q, want a", got)
-	}
-	if got := rr.Header().Get("Content-Type"); got != "application/json" {
-		t.Fatalf("Content-Type = %q", got)
-	}
-
-	if calls.count() != 1 {
-		t.Fatalf("A calls = %d, want 1", calls.count())
-	}
-	got := calls.last(t)
-	if got.Method != http.MethodPost || got.Path != "/v1/chat/completions" || got.RawQuery != "trace=1" {
-		t.Fatalf("A request = %s %s?%s", got.Method, got.Path, got.RawQuery)
-	}
-	if got.Authorization != "Bearer sk-a" {
-		t.Fatalf("A Authorization = %q, want Bearer sk-a (client key must be replaced)", got.Authorization)
-	}
-	if got.ContentType != "application/json" {
-		t.Fatalf("A Content-Type = %q", got.ContentType)
-	}
-	if got.Header.Get("X-Client") != "keep" {
-		t.Fatalf("client header was not preserved: %v", got.Header)
-	}
-	if string(got.Body) != body {
-		t.Fatalf("A body = %q, want original %q", got.Body, body)
-	}
-
-	rows := logs.wait(t, 1)
-	row := rows[0]
-	if row.Source != "a" || row.Model != "gpt-4o" || row.Status != http.StatusOK || row.Stream {
-		t.Fatalf("unexpected log row: %+v", row)
-	}
-	if row.KeyID != "key-1" || row.KeyName != "default" {
-		t.Fatalf("key fields not logged: %+v", row)
-	}
-	if row.PromptTokens != 3 || row.CompletionTokens != 4 {
-		t.Fatalf("usage = %d/%d, want 3/4", row.PromptTokens, row.CompletionTokens)
-	}
-	if row.LatencyMS < 0 || row.TTFBMS < 0 {
-		t.Fatalf("negative latency fields: %+v", row)
-	}
-}
-
 func TestChatPluginForwardRewritesModelOnly(t *testing.T) {
 	const respBody = `{"id":"pl-1","choices":[]}`
 	srv, calls := newUpstreamServer(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
@@ -464,14 +393,10 @@ func TestConcurrencyLimitQueueTimeout(t *testing.T) {
 }
 
 func TestPassThroughEndpoints(t *testing.T) {
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":true}`))
 	pSrv, pCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"p":true}`))
 	reg := newFakeRegistry().add(
 		pluginStatus("p", true, model.ModelInfo{ID: "chat"}), pSrv.URL, "tok")
-	g := newTestGateway(t, Options{
-		Plugins: reg,
-		A:       &fakeA{base: aSrv.URL, key: "sk-a"},
-	})
+	g := newTestGateway(t, Options{Plugins: reg})
 
 	paths := []string{
 		"/v1/messages",
@@ -484,18 +409,14 @@ func TestPassThroughEndpoints(t *testing.T) {
 		t.Run("bare"+path, func(t *testing.T) {
 			body := `{"model":"gpt-4o","input":"x"}`
 			rr := serve(g, newChatRequest(t, path, clientKey, body))
-			if rr.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body.String())
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 (body %s)", rr.Code, rr.Body.String())
 			}
-			if got := rr.Body.String(); got != `{"a":true}` {
-				t.Fatalf("body = %q", got)
+			if got := decodeError(t, rr).Error.Code; got != "model_not_found" {
+				t.Fatalf("error code = %q, want model_not_found", got)
 			}
-			got := aCalls.last(t)
-			if got.Path != path || got.Authorization != "Bearer sk-a" {
-				t.Fatalf("A request = %s auth %q, want %s", got.Path, got.Authorization, path)
-			}
-			if string(got.Body) != body {
-				t.Fatalf("A body = %q, want %q", got.Body, body)
+			if pCalls.count() != 0 {
+				t.Fatalf("plugin calls = %d, want 0 for a bare name", pCalls.count())
 			}
 		})
 	}
@@ -505,7 +426,7 @@ func TestPassThroughEndpoints(t *testing.T) {
 	// so only the remaining endpoints answer 501.
 	for _, path := range []string{"/v1/embeddings", "/v1/images/generations"} {
 		t.Run("plugin"+path, func(t *testing.T) {
-			beforeA, beforeP := aCalls.count(), pCalls.count()
+			beforeP := pCalls.count()
 			rr := serve(g, newChatRequest(t, path, clientKey, `{"model":"p/chat"}`))
 			if rr.Code != http.StatusNotImplemented {
 				t.Fatalf("status = %d, want 501 (body %s)", rr.Code, rr.Body.String())
@@ -514,36 +435,18 @@ func TestPassThroughEndpoints(t *testing.T) {
 			if payload.Error.Code != "unsupported_endpoint" {
 				t.Fatalf("error code = %q, want unsupported_endpoint", payload.Error.Code)
 			}
-			if aCalls.count() != beforeA || pCalls.count() != beforeP {
+			if pCalls.count() != beforeP {
 				t.Fatal("501 response must not reach an upstream")
 			}
 		})
 	}
 }
-
 func TestUnknownModelRouting(t *testing.T) {
-	aSrv, aCalls := newUpstreamServer(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
-		var meta struct {
-			Model string `json:"model"`
-		}
-		_ = json.Unmarshal(body, &meta)
-		w.Header().Set("Content-Type", "application/json")
-		if meta.Model == "gpt-unknown" {
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":{"message":"a says no","type":"invalid_request_error"}}`)
-			return
-		}
-		_, _ = io.WriteString(w, `{"ok":true}`)
-	})
 	pSrv, pCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"p":true}`))
 	reg := newFakeRegistry().add(
 		pluginStatus("p", true, model.ModelInfo{ID: "chat"}), pSrv.URL, "tok")
 	logs := &fakeLogSink{}
-	g := newTestGateway(t, Options{
-		Plugins: reg,
-		A:       &fakeA{base: aSrv.URL, key: "sk-a"},
-		Log:     logs,
-	})
+	g := newTestGateway(t, Options{Plugins: reg, Log: logs})
 
 	t.Run("known_plugin_unknown_model", func(t *testing.T) {
 		rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"p/nope"}`))
@@ -557,65 +460,41 @@ func TestUnknownModelRouting(t *testing.T) {
 		if !strings.Contains(payload.Error.Message, "p/chat") {
 			t.Fatalf("404 message does not list plugin models: %q", payload.Error.Message)
 		}
-		if aCalls.count() != 0 || pCalls.count() != 0 {
+		if pCalls.count() != 0 {
 			t.Fatal("unknown plugin model must not be proxied")
 		}
 	})
 
-	// "other/x" is not a known plugin id. Current behavior (documented by this
-	// test): it takes the bare/A route, because only installed plugin ids are
-	// treated as prefixes. A decides what to do with the unknown name.
-	t.Run("unknown_plugin_prefix_goes_to_a", func(t *testing.T) {
+	// "other/x" is not a known plugin id and no default plugin is configured,
+	// so it is a model_not_found like any other bare name.
+	t.Run("unknown_plugin_prefix_is_model_not_found", func(t *testing.T) {
 		rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"other/x"}`))
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body.String())
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (body %s)", rr.Code, rr.Body.String())
 		}
-		got := aCalls.last(t)
-		var meta struct {
-			Model string `json:"model"`
-		}
-		if err := json.Unmarshal(got.Body, &meta); err != nil {
-			t.Fatalf("A body: %v", err)
-		}
-		if meta.Model != "other/x" {
-			t.Fatalf("A model = %q, want other/x", meta.Model)
-		}
-		if got.Authorization != "Bearer sk-a" {
-			t.Fatalf("A Authorization = %q", got.Authorization)
+		if got := decodeError(t, rr).Error.Code; got != "model_not_found" {
+			t.Fatalf("error code = %q, want model_not_found", got)
 		}
 	})
 
 	t.Run("empty_inner_model", func(t *testing.T) {
-		beforeA, beforeP := aCalls.count(), pCalls.count()
+		beforeP := pCalls.count()
 		rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"p/"}`))
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404 (body %s)", rr.Code, rr.Body.String())
 		}
-		if aCalls.count() != beforeA || pCalls.count() != beforeP {
+		if pCalls.count() != beforeP {
 			t.Fatal("empty plugin model must not be proxied")
 		}
 	})
 
-	t.Run("unknown_bare_model_goes_to_a", func(t *testing.T) {
-		rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"gpt-unknown"}`))
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want A's 404 (body %s)", rr.Code, rr.Body.String())
-		}
-		if got := rr.Body.String(); !strings.Contains(got, "a says no") {
-			t.Fatalf("A error body was not passed through: %q", got)
-		}
-	})
-
-	rows := logs.wait(t, 4)
-	byStatus := map[int]int{}
+	rows := logs.wait(t, 3)
 	for _, row := range rows {
-		byStatus[row.Status]++
-	}
-	if byStatus[200] != 1 || byStatus[404] != 3 {
-		t.Fatalf("logged statuses = %v, want one 200 and three 404", byStatus)
+		if row.Status != http.StatusNotFound {
+			t.Fatalf("unexpected status in log row: %+v", row)
+		}
 	}
 }
-
 func TestPluginUnavailable(t *testing.T) {
 	pSrv, pCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"p":true}`))
 	cases := []struct {
@@ -662,46 +541,6 @@ func TestPluginUnavailable(t *testing.T) {
 	}
 }
 
-func TestAUnavailable(t *testing.T) {
-	dead := deadServerURL(t)
-	logs := &fakeLogSink{}
-	g := newTestGateway(t, Options{
-		Plugins: newFakeRegistry(),
-		A:       &fakeA{base: dead, key: "sk-a"},
-		Log:     logs,
-	})
-
-	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"gpt-4o"}`))
-	if rr.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502 (body %s)", rr.Code, rr.Body.String())
-	}
-	payload := decodeError(t, rr)
-	if payload.Error.Type != "upstream_unavailable" || payload.Error.Message != aDownMessage {
-		t.Fatalf("unexpected error: %+v", payload.Error)
-	}
-	if got := rr.Header().Get(sourceHeader); got != "a" {
-		t.Fatalf("source header = %q, want a", got)
-	}
-	rows := logs.wait(t, 1)
-	if rows[0].Status != http.StatusBadGateway || rows[0].Source != "a" {
-		t.Fatalf("unexpected log row: %+v", rows[0])
-	}
-	if !strings.Contains(rows[0].Error, aDownMessage) {
-		t.Fatalf("error summary = %q, want it to contain %q", rows[0].Error, aDownMessage)
-	}
-
-	t.Run("nil_a", func(t *testing.T) {
-		g2 := newTestGateway(t, Options{Plugins: newFakeRegistry()})
-		rr2 := serve(g2, newChatRequest(t, "/v1/messages", clientKey, `{"model":"claude"}`))
-		if rr2.Code != http.StatusBadGateway {
-			t.Fatalf("status = %d, want 502 (body %s)", rr2.Code, rr2.Body.String())
-		}
-		if payload := decodeError(t, rr2); payload.Error.Message != aDownMessage {
-			t.Fatalf("message = %q, want %q", payload.Error.Message, aDownMessage)
-		}
-	})
-}
-
 func TestUpstreamRedirectIsPassedThrough(t *testing.T) {
 	var targetHits atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -714,11 +553,10 @@ func TestUpstreamRedirectIsPassedThrough(t *testing.T) {
 		w.Header().Set("Location", target.URL+"/elsewhere")
 		w.WriteHeader(http.StatusTemporaryRedirect)
 	})
-	g := newTestGateway(t, Options{
-		Plugins: newFakeRegistry(),
-		A:       &fakeA{base: srv.URL, key: "sk-a"},
-	})
-	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"gpt-4o"}`))
+	reg := newFakeRegistry().add(
+		pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg})
+	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"p/chat"}`))
 	if rr.Code != http.StatusTemporaryRedirect {
 		t.Fatalf("status = %d, want 307 (redirects must not be followed)", rr.Code)
 	}

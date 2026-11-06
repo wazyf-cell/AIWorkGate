@@ -93,44 +93,6 @@ func (s *server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// ---------------------------------------------------------------- secrets
-
-func (s *server) handleAKey(w http.ResponseWriter, r *http.Request) {
-	if !allowMethods(w, r, http.MethodGet, http.MethodPut) {
-		return
-	}
-
-	if r.Method == http.MethodGet {
-		if s.opts.AKeyConfigured == nil {
-			s.unavailable(w)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]bool{"configured": s.opts.AKeyConfigured()})
-		return
-	}
-
-	if s.opts.SetAKey == nil {
-		s.unavailable(w)
-		return
-	}
-	var body struct {
-		Key string `json:"key"`
-	}
-	if !decodeJSON(w, r, &body) {
-		return
-	}
-	key := strings.TrimSpace(body.Key)
-	if key == "" {
-		writeError(w, http.StatusBadRequest, "key is required", "bad_request")
-		return
-	}
-	if err := s.opts.SetAKey(key); err != nil {
-		writeError(w, http.StatusInternalServerError, "save A key: "+err.Error(), "internal_error")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
 func (s *server) handleLANPassword(w http.ResponseWriter, r *http.Request) {
 	if !allowMethods(w, r, http.MethodPut) {
 		return

@@ -3,6 +3,8 @@ package gateway
 import (
 	"net/http"
 	"testing"
+
+	"aiworkgate/internal/model"
 )
 
 func TestTapParsesCacheWriteAndReasoning(t *testing.T) {
@@ -23,10 +25,11 @@ func TestLogRecordsCacheReasoningAndPurpose(t *testing.T) {
 			`"usage":{"prompt_tokens":10,"completion_tokens":5,"cache_creation_input_tokens":300,`+
 			`"cache_creation":{"ephemeral_1h_input_tokens":120},"completion_tokens_details":{"reasoning_tokens":9}}}`))
 	logs := &fakeLogSink{}
-	g := newTestGateway(t, Options{A: &fakeA{base: srv.URL, key: "sk-a"}, Log: logs})
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg, Log: logs})
 
 	req := newChatRequest(t, "/v1/chat/completions", clientKey,
-		`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+		`{"model":"p/chat","messages":[{"role":"user","content":"hi"}]}`)
 	req.Header.Set("X-Aiworkgate-Purpose", "batch")
 	serve(g, req)
 	row := logs.wait(t, 1)[0]
@@ -37,7 +40,7 @@ func TestLogRecordsCacheReasoningAndPurpose(t *testing.T) {
 
 	// No header: the endpoint name is the purpose.
 	serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
-		`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+		`{"model":"p/chat","messages":[{"role":"user","content":"hi"}]}`))
 	rows := logs.wait(t, 2)
 	if rows[1].Purpose != "chat" {
 		t.Fatalf("purpose = %q, want chat", rows[1].Purpose)

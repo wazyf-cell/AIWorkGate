@@ -60,19 +60,19 @@ const (
 // CustomModel is the gateway's read-only view of one user-defined upstream.
 // The API key never travels in this struct.
 type CustomModel struct {
-	ID               string
-	ConnectionID     string
-	Name             string
-	Protocol         string
-	BaseURL          string
+	ID                string
+	ConnectionID      string
+	Name              string
+	Protocol          string
+	BaseURL           string
 	UpstreamModel     string
 	Enabled           bool
 	ConnectionEnabled bool
 	ContextWindow     int
-	MaxOutputTokens  int
-	InputTypes       []string
-	ReasoningTiers   []string
-	DefaultReasoning string
+	MaxOutputTokens   int
+	InputTypes        []string
+	ReasoningTiers    []string
+	DefaultReasoning  string
 }
 
 // CustomChatURL normalises a custom base URL to its chat endpoint:
@@ -643,8 +643,8 @@ func rewriteModelIfPresent(body []byte, clientModel string) []byte {
 }
 
 // handleModelsWithCustom serves GET /v1/models with custom entries merged in.
-// The base list is produced by handleModels (plugins, logical bindings, A) and
-// then transformed, so the plugin/A fields are unchanged.
+// The base list is produced by handleModels (plugins, logical bindings) and
+// then transformed, so the plugin fields are unchanged.
 func (g *Gateway) handleModelsWithCustom(w http.ResponseWriter, r *http.Request, rec *reqRecord) {
 	buf := &bufferedResponse{header: make(http.Header)}
 	g.handleModels(buf, r, rec)
@@ -689,18 +689,14 @@ func (g *Gateway) handleModelsWithCustom(w http.ResponseWriter, r *http.Request,
 	buf.respond(w, payload)
 }
 
-// mergeCustomModelEntries inserts enabled custom models before A's entries.
-// A plugin model or logical binding with the same canonical id wins (its entry
-// comes first and the custom one is skipped); a same-id A model is replaced by
-// the custom entry, matching the routing priority (custom before A). The
-// result is what GET /v1/models publishes; the admin list flags the skipped
-// case through CustomModelConflicts.
+// mergeCustomModelEntries appends enabled custom models to the published list.
+// A plugin model or logical binding with the same canonical id wins (the custom
+// entry is skipped); the admin list flags that case through
+// CustomModelConflicts.
 func mergeCustomModelEntries(existing []modelEntry, customs []CustomModel) []modelEntry {
 	hard := make(map[string]bool, len(existing))
 	for _, entry := range existing {
-		if entry.OwnedBy != "a" {
-			hard[CanonicalModelID(entry.ID)] = true
-		}
+		hard[CanonicalModelID(entry.ID)] = true
 	}
 
 	inserts := make([]modelEntry, 0, len(customs))
@@ -728,28 +724,13 @@ func mergeCustomModelEntries(existing []modelEntry, customs []CustomModel) []mod
 	}
 
 	out := make([]modelEntry, 0, len(existing)+len(inserts))
-	inserted := false
-	for _, entry := range existing {
-		if entry.OwnedBy == "a" && customKeys[CanonicalModelID(entry.ID)] {
-			if !inserted {
-				out = append(out, inserts...)
-				inserted = true
-			}
-			continue
-		}
-		out = append(out, entry)
-	}
-	if !inserted {
-		out = append(out, inserts...)
-	}
-	return out
+	out = append(out, existing...)
+	return append(out, inserts...)
 }
 
 // CustomModelConflicts reports which of names collide with a model id already
 // served by an enabled plugin or a logical binding (canonical compare). Those
 // custom models never reach /v1/models; the admin list shows them as flagged.
-// A's own models are not reported: a custom entry intentionally takes priority
-// over A's catalogue.
 func (g *Gateway) CustomModelConflicts(ctx context.Context, names []string) map[string]bool {
 	out := make(map[string]bool)
 	if g == nil || len(names) == 0 {

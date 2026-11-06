@@ -48,13 +48,13 @@
 
 1. `插件id/模型id` —— 只在该插件的资源池里挑账号。例：`officeace/glm-5.2`、`codearts/GLM-5.2`。前缀大小写敏感。
 2. **逻辑名** —— 在「调度 → 模型绑定」里把一个名字绑到多个 `插件/模型`，网关按顺序跨池挑，前一个失败自动换下一个。例：`kimi → officeace/kimi-k2.6, codearts/kimi-k2.6`。
-3. **裸模型名** —— 交给 AI Work 助手（A）。A 没运行或没配 A Key 时会返回 502/401，日志页能看出原因。
+3. **裸模型名** —— 交给「设置 → 网关」里的默认插件；留空时返回 404 `model_not_found`。
 
 `GET /v1/models` 里 `owned_by` 为 `plugin:<id>` 的是插件模型，`scheduler` 的是逻辑名。
 
 ## 4. 支持的端点
 
-| 端点 | 插件模型 | A（裸模型名） |
+| 端点 | 插件模型 | 自定义模型 |
 |---|---|---|
 | `GET /health`（不在 `/v1` 下） | ✅ 宿主存活探针，无需 Key | ✅ 同一实现 |
 | `GET /healthz`（不在 `/v1` 下） | ✅ 可调度账号探针，无需 Key | ✅ 同一实现 |
@@ -226,7 +226,7 @@ print(r.choices[0].message.content)
 | 429 | `concurrency_limit` | 插件并发满、排队超时 |
 | 429 | `key_quota_exceeded` | 这把 Key 的每日配额用尽（`Retry-After` 到次日 00:00） |
 | 503 | `no_available_account` / `plugin_unavailable` | 没有可用账号/插件起不来（带 `Retry-After`） |
-| 502 | `upstream_unavailable` | 插件不可达，或 A 未运行 |
+| 502 | `upstream_unavailable` | 插件或自定义上游不可达 |
 | 501 | `unsupported_endpoint` | 该端点只支持 A |
 
 ### 8.1 400 的重试分类（客户端可见行为）

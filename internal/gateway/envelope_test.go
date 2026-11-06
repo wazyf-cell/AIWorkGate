@@ -1313,40 +1313,20 @@ func TestEnvelopeRouteUsesScheduler(t *testing.T) {
 	}
 }
 
-func TestEnvelopeBareModelKeepsPlainPassthrough(t *testing.T) {
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":"original"}`))
-	logs := &fakeLogSink{}
-	g := newTestGateway(t, Options{
-		Plugins: newFakeRegistry(),
-		A:       &fakeA{base: aSrv.URL, key: "sk-a"},
-		Log:     logs,
-	})
+func TestEnvelopeBareModelIsModelNotFound(t *testing.T) {
+	g := newTestGateway(t, Options{Plugins: newFakeRegistry()})
 
 	for _, path := range []string{"/v1/completions", "/v1/responses"} {
-		body := `{"model":"gpt-4o","prompt":"hello","input":"hello","echo":true,"n":2}`
+		body := `{"model":"gpt-4o","prompt":"hello","input":"hello"}`
 		rr := serve(g, newChatRequest(t, path, clientKey, body))
-		if rr.Code != http.StatusOK {
+		if rr.Code != http.StatusNotFound {
 			t.Fatalf("%s status = %d (body %s)", path, rr.Code, rr.Body.String())
 		}
-		if got := rr.Body.String(); got != `{"a":"original"}` {
-			t.Fatalf("%s body = %q, want A's answer verbatim", path, got)
-		}
-		up := aCalls.last(t)
-		if up.Path != path {
-			t.Fatalf("%s A path = %s", path, up.Path)
-		}
-		if string(up.Body) != body {
-			t.Fatalf("%s A body = %q, want the original %q", path, up.Body, body)
-		}
-		if got := rr.Header().Get(sourceHeader); got != "a" {
-			t.Fatalf("%s source header = %q, want a", path, got)
+		if got := decodeError(t, rr).Error.Code; got != "model_not_found" {
+			t.Fatalf("%s error code = %q", path, got)
 		}
 	}
 }
-
-// TestEnvelopeCompletionsRouteAcceptsFalsyParams pins the 400 regression: an SDK
-// sending the OpenAI defaults (echo:false, suffix:"") gets a normal completion,
-// while echo:true still reports unsupported_request.
 func TestEnvelopeCompletionsRouteAcceptsFalsyParams(t *testing.T) {
 	srv, calls := newUpstreamServer(t, jsonResponder(http.StatusOK, chatJSONReply))
 	reg := newFakeRegistry().add(
@@ -1466,20 +1446,16 @@ func TestEnvelopeRoutePassesUpstreamErrorThrough(t *testing.T) {
 	})
 }
 
-// TestEnvelopeRouteUnknownPluginModelIsNotFound pins "<plugin>/" to 404. The
-// scheduled path used to translate the request and then fall back to A, which
-// handed A a chat body on the completions URL.
+// TestEnvelopeRouteUnknownPluginModelIsNotFound pins "<plugin>/" to 404
+// instead of translating it into a chat body for some other upstream.
 func TestEnvelopeRouteUnknownPluginModelIsNotFound(t *testing.T) {
-	const errBody = `{"a":"answer"}`
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, errBody))
 	srv, pCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, chatJSONReply))
 	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "m1"}), srv.URL, "tok")
 
 	gateways := map[string]*Gateway{
-		"plain": newTestGateway(t, Options{Plugins: reg, A: &fakeA{base: aSrv.URL, key: "sk-a"}}),
+		"plain": newTestGateway(t, Options{Plugins: reg}),
 		"scheduled": newTestGateway(t, Options{
 			Plugins:  reg,
-			A:        &fakeA{base: aSrv.URL, key: "sk-a"},
 			Schedule: scheduler.New(scheduler.Options{}),
 			Snapshot: staticSnapshot(singlePoolSnapshot("p", 2, "acc1")),
 		}),
@@ -1497,9 +1473,6 @@ func TestEnvelopeRouteUnknownPluginModelIsNotFound(t *testing.T) {
 				t.Fatalf("%s %s error = %+v", name, tc.path, payload.Error)
 			}
 		}
-	}
-	if aCalls.count() != 0 {
-		t.Fatalf("A calls = %d, want an unnamed plugin model never to reach A", aCalls.count())
 	}
 	if pCalls.count() != 0 {
 		t.Fatalf("plugin calls = %d", pCalls.count())

@@ -16,12 +16,6 @@ func TestDefault(t *testing.T) {
 		Port:      7865,
 		ListenLAN: false,
 		Autostart: true,
-		A: AConfig{
-			BaseURL:           "http://127.0.0.1:7864",
-			ExePath:           "",
-			AutoStart:         false,
-			ModelCacheMinutes: 10,
-		},
 		Proxy: ProxyConfig{
 			Enabled: false,
 			HTTP:    "",
@@ -55,7 +49,7 @@ func TestDefault(t *testing.T) {
 			ProxyLogDays:    7,
 		},
 		Logging: LoggingConfig{DebugBody: false},
-		Gateway: GatewayConfig{DefaultPlugin: "", LegacyAFallback: true, AllowIPs: []string{"127.0.0.1", "::1"}, ServiceMode: "open"},
+		Gateway: GatewayConfig{DefaultPlugin: "", AllowIPs: []string{"127.0.0.1", "::1"}, ServiceMode: "open"},
 		Redact:  RedactConfig{RouteAware: true}, // P10-2：新增段，缺省即默认表
 		Notify: NotifyConfig{
 			Enabled:            false,
@@ -168,9 +162,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	cfg.Port = 7870
 	cfg.ListenLAN = true
 	cfg.Autostart = false
-	cfg.A.ExePath = `C:\Program Files\AI Work\A.exe`
-	cfg.A.AutoStart = true
-	cfg.A.ModelCacheMinutes = 30
 	cfg.Proxy.Enabled = true
 	cfg.Proxy.HTTP = "http://127.0.0.1:7890"
 	cfg.Proxy.HTTPS = "http://127.0.0.1:7890"
@@ -270,7 +261,7 @@ func TestLoadIgnoresUnknownFields(t *testing.T) {
 		t.Fatal("debug_body = false, want true")
 	}
 	// Absent fields keep their defaults.
-	if cfg.A.BaseURL != DefaultABaseURL || !reflect.DeepEqual(cfg.Proxy.NoProxy, []string{"127.0.0.1", "localhost"}) {
+	if !reflect.DeepEqual(cfg.Proxy.NoProxy, []string{"127.0.0.1", "localhost"}) {
 		t.Fatalf("defaults lost for absent fields: %+v", cfg)
 	}
 }
@@ -396,15 +387,6 @@ func TestLoadClamps(t *testing.T) {
 				}
 			},
 		},
-		{
-			name: "negative model cache",
-			raw:  `{"a": {"model_cache_minutes": -5}}`,
-			then: func(t *testing.T, c Config) {
-				if c.A.ModelCacheMinutes != MinModelCacheMinutes {
-					t.Fatalf("model_cache_minutes = %d, want %d", c.A.ModelCacheMinutes, MinModelCacheMinutes)
-				}
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -442,11 +424,7 @@ func TestValidate(t *testing.T) {
 		{name: "retry count too high", mutate: func(c *Config) { c.Checkin.RetryCount = 6 }, wantErr: true},
 		{name: "retry count negative", mutate: func(c *Config) { c.Checkin.RetryCount = -1 }, wantErr: true},
 		{name: "retention zero", mutate: func(c *Config) { c.Retention.BodyPreviewDays = 0 }, wantErr: true},
-		{name: "base url without scheme", mutate: func(c *Config) { c.A.BaseURL = "127.0.0.1:7864" }, wantErr: true},
-		{name: "base url empty", mutate: func(c *Config) { c.A.BaseURL = "" }, wantErr: true},
-		{name: "base url https", mutate: func(c *Config) { c.A.BaseURL = "https://example.test:7864" }},
 		{name: "version zero", mutate: func(c *Config) { c.Version = 0 }, wantErr: true},
-		{name: "model cache zero", mutate: func(c *Config) { c.A.ModelCacheMinutes = 0 }, wantErr: true},
 		{name: "cors wildcard", mutate: func(c *Config) { c.Gateway.CorsAllowOrigins = []string{"*"} }},
 		{
 			name: "cors origin list",
@@ -526,12 +504,6 @@ func TestNormalizeDefaultPlugin(t *testing.T) {
 	if err := empty.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-
-	// LegacyAFallback ships on so an existing install keeps answering bare names
-	// through A until the default-plugin slot (or S9b) replaces it.
-	if !Default().Gateway.LegacyAFallback {
-		t.Fatal("Default().Gateway.LegacyAFallback = false, want true")
-	}
 }
 
 // TestDefaultPluginWireKeys pins the on-disk names: the settings page and the
@@ -540,7 +512,6 @@ func TestDefaultPluginWireKeys(t *testing.T) {
 	dir := t.TempDir()
 	cfg := Default()
 	cfg.Gateway.DefaultPlugin = "oc"
-	cfg.Gateway.LegacyAFallback = false
 	if err := Save(dir, cfg); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -551,7 +522,6 @@ func TestDefaultPluginWireKeys(t *testing.T) {
 	var onDisk struct {
 		Gateway struct {
 			DefaultPlugin string `json:"default_plugin"`
-			LegacyA       *bool  `json:"legacy_a_fallback"`
 		} `json:"gateway"`
 	}
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
@@ -560,15 +530,11 @@ func TestDefaultPluginWireKeys(t *testing.T) {
 	if onDisk.Gateway.DefaultPlugin != "oc" {
 		t.Fatalf("gateway.default_plugin = %q, want oc (%s)", onDisk.Gateway.DefaultPlugin, raw)
 	}
-	if onDisk.Gateway.LegacyA == nil || *onDisk.Gateway.LegacyA {
-		t.Fatalf("gateway.legacy_a_fallback = %v, want an explicit false (%s)", onDisk.Gateway.LegacyA, raw)
-	}
-	if got, err := Load(dir); err != nil ||
-		got.Gateway.DefaultPlugin != "oc" || got.Gateway.LegacyAFallback {
+	if got, err := Load(dir); err != nil || got.Gateway.DefaultPlugin != "oc" {
 		t.Fatalf("round trip = %+v (%v)", got.Gateway, err)
 	}
 
-	// An older config.json without the new keys keeps the compatibility default.
+	// An older config.json without the key keeps the no-default value.
 	if err := os.WriteFile(ConfigPath(dir), []byte(`{"gateway":{}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -576,8 +542,8 @@ func TestDefaultPluginWireKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got.Gateway.DefaultPlugin != "" || !got.Gateway.LegacyAFallback {
-		t.Fatalf("absent keys = %+v, want no default plugin and the legacy fallback on", got.Gateway)
+	if got.Gateway.DefaultPlugin != "" {
+		t.Fatalf("absent keys = %+v, want no default plugin", got.Gateway)
 	}
 
 	// A malformed value is rejected at load time, naming the field.

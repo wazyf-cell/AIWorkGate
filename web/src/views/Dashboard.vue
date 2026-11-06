@@ -1,16 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, errorMessage, type HostStatus } from '../api'
-import { formatLatency, formatTimeOnly, formatTimestamp } from '../format'
+import { formatTimeOnly } from '../format'
 
-// The host status payload extended with the three-state A health fields.
-type AState = 'ok' | 'unauthorized' | 'down'
-interface StatusInfo extends HostStatus {
-  a_state?: AState
-  a_detail?: string
-}
-
-const status = ref<StatusInfo | null>(null)
+const status = ref<HostStatus | null>(null)
 const error = ref('')
 const loading = ref(false)
 const updatedAt = ref<Date | null>(null)
@@ -31,125 +24,12 @@ async function load(silent = false) {
 
 onMounted(() => {
   void load()
-  // The probe history is read once on mount; it never joins the 5s poll.
-  void loadAProbeHistory()
   timer = window.setInterval(() => void load(true), 5000)
 })
 
 onBeforeUnmount(() => {
   if (timer !== undefined) window.clearInterval(timer)
 })
-
-const aState = computed<AState>(() => {
-  const s = status.value
-  if (!s) return 'down'
-  if (s.a_state === 'ok' || s.a_state === 'unauthorized' || s.a_state === 'down') {
-    return s.a_state
-  }
-  return s.a_running ? 'ok' : 'down'
-})
-
-const aTone = computed(() => {
-  if (!status.value) return 'muted'
-  if (aState.value === 'ok') return 'ok'
-  return aState.value === 'unauthorized' ? 'warn' : 'danger'
-})
-
-const aLabel = computed(() => {
-  if (!status.value) return '未知'
-  if (aState.value === 'ok') return 'A 正常'
-  if (aState.value === 'unauthorized') return 'A 需要 API Key'
-  return 'A 未运行'
-})
-
-// Raw transport failures from the health probe (dial/connect/timeout) are not
-// user-facing text. They are replaced by a short Chinese hint; the raw string
-// survives only as the title of the small "详情" affordance.
-const TRANSPORT_ERROR =
-  /dial tcp|connectex|actively refused|connection refused|i\/o timeout|no such host|network is unreachable|connection reset|context deadline exceeded/i
-
-const aDetail = computed(() => {
-  const detail = status.value?.a_detail?.trim() ?? ''
-  if (!detail) return ''
-  // A down probe always carries host-side diagnostics; never show them raw.
-  if (aState.value === 'down') return 'A 未运行或端口不可达'
-  return TRANSPORT_ERROR.test(detail) ? 'A 未运行或端口不可达' : detail
-})
-
-const aRawDetail = computed(() => {
-  const detail = status.value?.a_detail?.trim() ?? ''
-  return detail && detail !== aDetail.value ? detail : ''
-})
-
-/* ------------------------------------------------------------------ */
-/* Explicit A connectivity probe (POST /api/diagnostics/probe)         */
-/* ------------------------------------------------------------------ */
-
-/** One probe outcome; failures keep the host's redacted detail. */
-interface AProbe {
-  ok: boolean
-  status: number
-  latency_ms: number
-  detail: string
-  error_code?: string
-  at: number
-}
-
-const aProbe = ref<AProbe | null>(null)
-const probingA = ref(false)
-const aProbedAt = ref(0)
-
-const aProbeLabel = computed(() => {
-  const probe = aProbe.value
-  if (!probe) return ''
-  if (probe.ok) return `连通 · ${formatLatency(probe.latency_ms)}`
-  return probe.detail || '检测失败'
-})
-
-const aProbeTitle = computed(() => {
-  const probe = aProbe.value
-  if (!probe) return ''
-  const parts = [probe.ok ? '连通正常' : probe.detail || '检测失败']
-  if (probe.status) parts.push(`HTTP ${probe.status}`)
-  if (probe.error_code) parts.push(probe.error_code)
-  parts.push(formatTimestamp(probe.at))
-  return parts.join(' · ')
-})
-
-const aProbedAtLabel = computed(() => (aProbedAt.value > 0 ? formatTimestamp(aProbedAt.value) : ''))
-
-async function probeA() {
-  probingA.value = true
-  try {
-    const result = await api.diagnostics.probe('a')
-    aProbe.value = {
-      ok: result.ok,
-      status: result.status,
-      latency_ms: result.latency_ms,
-      detail: result.detail,
-      error_code: result.error_code,
-      at: result.at,
-    }
-    aProbedAt.value = result.at
-  } catch (e) {
-    const at = Math.floor(Date.now() / 1000)
-    aProbe.value = { ok: false, status: 0, latency_ms: 0, detail: errorMessage(e), at }
-    aProbedAt.value = at
-  } finally {
-    probingA.value = false
-  }
-}
-
-/** Newest `a` probe from history, read once on mount. */
-async function loadAProbeHistory() {
-  try {
-    const list = await api.diagnostics.probes({ limit: 20, kind: 'a' })
-    const latest = list.find((probe) => probe.kind === 'a')
-    if (latest) aProbedAt.value = latest.at
-  } catch {
-    // Optional: an older host without diagnostics simply shows no timestamp.
-  }
-}
 
 const pluginLabel = computed(() => {
   if (!status.value) return '—'
@@ -199,36 +79,6 @@ const egressFailed = computed(() => status.value?.egress_failed ?? 0)
         </div>
       </section>
 
-      <section class="stat" :title="aDetail || undefined">
-        <span class="stat-label">A 网关</span>
-        <span class="stat-value small-value">
-          <span class="badge" :class="aTone">{{ aLabel }}</span>
-        </span>
-        <span class="stat-sub">
-          <span>{{ status?.a_configured ? 'Key 已配置' : '尚未填写 A Key' }}</span>
-          <span v-if="status?.a_port">· 端口 {{ status.a_port }}</span>
-        </span>
-        <div class="probe-row">
-          <button type="button" class="btn sm" :disabled="probingA" @click="probeA">
-            {{ probingA ? '检测中…' : '检测' }}
-          </button>
-          <span
-            v-if="aProbe"
-            class="probe-inline"
-            :class="aProbe.ok ? 'ok' : 'danger'"
-            :title="aProbeTitle"
-          >
-            {{ aProbeLabel }}
-          </span>
-        </div>
-        <span v-if="aProbedAtLabel" class="stat-sub">上次检测 {{ aProbedAtLabel }}</span>
-        <div v-if="status && !status.a_configured" class="empty">
-          <strong>尚未配置 A Key</strong>
-          <span>A 网关需要 API Key 才能正常访问。</span>
-          <RouterLink to="/settings" class="btn sm ghost">去设置填写</RouterLink>
-        </div>
-      </section>
-
       <section class="stat">
         <span class="stat-label">插件运行</span>
         <span class="stat-value">{{ pluginLabel }}</span>
@@ -255,19 +105,6 @@ const egressFailed = computed(() => status.value?.egress_failed ?? 0)
         <dl class="kv host-kv" style="grid-template-columns: 110px minmax(0, 1fr)">
           <dt>数据目录</dt>
           <dd class="mono">{{ status?.data_dir || '—' }}</dd>
-          <dt>A 接入</dt>
-          <dd>
-            {{ aLabel }}<span v-if="status?.a_port">，端口 {{ status.a_port }}</span>
-            <template v-if="status && aState !== 'ok' && aDetail">
-              <span class="sub">
-                （{{ aDetail }}<template v-if="aRawDetail">，<span
-                  class="small muted"
-                  :title="aRawDetail"
-                  aria-label="A 健康详情（开发者）"
-                >详情</span></template>）
-              </span>
-            </template>
-          </dd>
           <dt>插件</dt>
           <dd>{{ status?.plugins_total ?? 0 }} 个已安装，{{ status?.plugins_running ?? 0 }} 个运行中</dd>
         </dl>
@@ -305,28 +142,6 @@ const egressFailed = computed(() => status.value?.egress_failed ?? 0)
   font-size: var(--text-sm);
 }
 
-.probe-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.probe-inline {
-  min-width: 0;
-  overflow: hidden;
-  font-size: var(--text-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.probe-inline.ok {
-  color: var(--ok);
-}
-
-.probe-inline.danger {
-  color: var(--danger);
-}
 .retry-btn {
   margin-left: var(--space-2);
 }

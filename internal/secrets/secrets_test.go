@@ -30,9 +30,6 @@ func openStore(t *testing.T) (*Store, string) {
 
 func TestOpenEmptyStore(t *testing.T) {
 	s, dir := openStore(t)
-	if _, ok := s.GetAAPIKey(); ok {
-		t.Fatal("GetAAPIKey() on empty store = present")
-	}
 	if s.HasLANPassword() {
 		t.Fatal("HasLANPassword() on empty store = true")
 	}
@@ -41,39 +38,9 @@ func TestOpenEmptyStore(t *testing.T) {
 	}
 }
 
-func TestAAPIKeyDPAPIRoundtrip(t *testing.T) {
-	s, dir := openStore(t)
-	const key = "sk-a-gateway-key-0123456789"
-
-	if err := s.SetAAPIKey(key); err != nil {
-		t.Fatalf("SetAAPIKey() error = %v", err)
-	}
-	got, ok := s.GetAAPIKey()
-	if !ok || got != key {
-		t.Fatalf("GetAAPIKey() = %q, %v; want %q, true", got, ok, key)
-	}
-
-	reopened, err := Open(dir)
-	if err != nil {
-		t.Fatalf("reopen error = %v", err)
-	}
-	defer reopened.Close()
-	got, ok = reopened.GetAAPIKey()
-	if !ok || got != key {
-		t.Fatalf("after reopen GetAAPIKey() = %q, %v; want %q, true", got, ok, key)
-	}
-
-	if err := reopened.SetAAPIKey(""); err != nil {
-		t.Fatalf("SetAAPIKey(\"\") error = %v", err)
-	}
-	if _, ok := reopened.GetAAPIKey(); ok {
-		t.Fatal("GetAAPIKey() after clear = present")
-	}
-}
-
 func TestDPAPIBlobIsNotPlaintext(t *testing.T) {
 	s, dir := openStore(t)
-	if err := s.SetAAPIKey("sk-sealed-check"); err != nil {
+	if err := s.SetProxyPassword("px_1", "sk-sealed-check"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, FileName))
@@ -83,8 +50,8 @@ func TestDPAPIBlobIsNotPlaintext(t *testing.T) {
 	if json.Valid(raw) {
 		t.Fatalf("%s is plain JSON, expected a DPAPI blob", FileName)
 	}
-	if bytes.Contains(raw, []byte("a_api_key")) || bytes.Contains(raw, []byte("sk-sealed-check")) {
-		t.Fatal("secrets.dat contains plaintext JSON markers or the raw key")
+	if bytes.Contains(raw, []byte("proxy_passwords")) || bytes.Contains(raw, []byte("sk-sealed-check")) {
+		t.Fatal("secrets.dat contains plaintext JSON markers or the raw secret")
 	}
 }
 
@@ -399,15 +366,11 @@ func TestNoPlaintextSecretsOnDisk(t *testing.T) {
 	s, dir := openStore(t)
 
 	const (
-		aKey    = "sk-live-AKEY-0123456789abcdef-DO-NOT-LEAK"
 		proxyPW = "proxy-pass-9f8e7d6c5b4a-DO-NOT-LEAK"
 		lanPW   = "lan-pass-ZYXWVU-1234567890-DO-NOT-LEAK"
 	)
 	clientPlain, clientID, _, clientHash := NewClientKey()
 
-	if err := s.SetAAPIKey(aKey); err != nil {
-		t.Fatal(err)
-	}
 	if err := s.SetProxyPassword("px_1", proxyPW); err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +392,6 @@ func TestNoPlaintextSecretsOnDisk(t *testing.T) {
 		t.Fatal("secrets.dat is empty")
 	}
 	for _, secret := range []struct{ name, value string }{
-		{"A API key", aKey},
 		{"proxy password", proxyPW},
 		{"LAN password", lanPW},
 		{"client key", clientPlain},
@@ -443,7 +405,7 @@ func TestNoPlaintextSecretsOnDisk(t *testing.T) {
 			t.Fatalf("secrets.dat contains part of the raw %s (%q)", secret.name, core)
 		}
 	}
-	for _, marker := range []string{`"a_api_key"`, `"proxy_passwords"`, `"lan_password_hash"`, "agk_"} {
+	for _, marker := range []string{`"proxy_passwords"`, `"lan_password_hash"`, "agk_"} {
 		if bytes.Contains(raw, []byte(marker)) {
 			t.Fatalf("secrets.dat contains plaintext marker %q", marker)
 		}
@@ -474,14 +436,14 @@ func TestOpenCorruptFile(t *testing.T) {
 
 func TestCloseDropsPlaintext(t *testing.T) {
 	s, _ := openStore(t)
-	if err := s.SetAAPIKey("sk-close-me"); err != nil {
+	if err := s.SetProxyPassword("px_1", "sk-close-me"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if _, ok := s.GetAAPIKey(); ok {
-		t.Fatal("GetAAPIKey() after Close() = present")
+	if _, ok := s.GetProxyPassword("px_1"); ok {
+		t.Fatal("ProxyPassword() after Close() = present")
 	}
 	if err := s.Save(); err != nil {
 		t.Fatalf("Save() after Close() error = %v", err)

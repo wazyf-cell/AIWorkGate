@@ -21,7 +21,7 @@ const defaults = DEFAULT_SETTINGS
 /* Top-level modules. Cards stay mounted so unsaved edits survive a tab
  * switch; the active module lives in ?tab= so reloads and links keep it. */
 const SETTINGS_TABS = [
-  { id: 'gateway', label: '接入与网关', hint: '监听端口、A 接入、上游代理与跨源' },
+  { id: 'gateway', label: '接入与网关', hint: '监听端口、上游代理与跨源' },
   { id: 'client', label: '客户端', hint: '客户端 Key、自定义接入与模型' },
   { id: 'plugin', label: '插件与签到', hint: '插件运行参数、签到时间与重试' },
   { id: 'ops', label: '通知与日志', hint: '系统通知、日志保留与连通性诊断' },
@@ -58,10 +58,6 @@ const form = reactive({
   port: defaults.port,
   listen_lan: defaults.listen_lan,
   autostart: defaults.autostart,
-  a_base_url: defaults.a.base_url,
-  a_exe_path: defaults.a.exe_path,
-  a_auto_start: defaults.a.auto_start,
-  a_model_cache_minutes: defaults.a.model_cache_minutes,
   proxy_enabled: defaults.proxy.enabled,
   proxy_http: defaults.proxy.http,
   proxy_https: defaults.proxy.https,
@@ -86,6 +82,7 @@ const form = reactive({
   gateway_rate_key: 0,
   gateway_rate_ip: 0,
   gateway_public_hosts: '',
+  gateway_default_plugin: '',
 })
 
 /** Last raw payload from the host; keeps unknown keys for the round trip. */
@@ -96,11 +93,6 @@ const error = ref('')
 const message = ref('')
 /** Inline failure of the retry-backoff field; the global 保存设置 sits remotely. */
 const backoffError = ref('')
-
-const aKeyConfigured = ref(false)
-const aKeyAvailable = ref(true)
-const aKeyInput = ref('')
-const aKeyBusy = ref(false)
 
 const lanPassword = ref('')
 const lanBusy = ref(false)
@@ -484,7 +476,7 @@ async function copyCreatedKey() {
 /* ------------------------------------------------------------------ */
 
 const DIAGNOSTICS_KIND_LABELS: Record<DiagnosticsKind, string> = {
-  a: 'A',
+  a: 'A（历史）',
   plugin: '插件模型',
   custom_model: '自定义模型',
 }
@@ -666,7 +658,6 @@ async function load() {
     const raw = asObject((await api.getSettings()) ?? {})
     loaded.value = raw
 
-    const a = asObject(raw.a)
     const proxy = asObject(raw.proxy)
     const egress = asObject(raw.egress)
     const plugins = asObject(raw.plugins)
@@ -678,11 +669,6 @@ async function load() {
     form.port = asNumber(raw.port, defaults.port)
     form.listen_lan = asBoolean(raw.listen_lan, defaults.listen_lan)
     form.autostart = asBoolean(raw.autostart, defaults.autostart)
-
-    form.a_base_url = asString(a.base_url, defaults.a.base_url)
-    form.a_exe_path = asString(a.exe_path, defaults.a.exe_path)
-    form.a_auto_start = asBoolean(a.auto_start, defaults.a.auto_start)
-    form.a_model_cache_minutes = asNumber(a.model_cache_minutes, defaults.a.model_cache_minutes)
 
     form.proxy_enabled = asBoolean(proxy.enabled, defaults.proxy.enabled)
     form.proxy_http = asString(proxy.http, defaults.proxy.http)
@@ -723,6 +709,7 @@ async function load() {
     form.gateway_rate_key = asNumber(gateway.rate_limit_per_minute, defaults.gateway.rate_limit_per_minute ?? 0)
     form.gateway_rate_ip = asNumber(gateway.rate_limit_per_ip_per_minute, defaults.gateway.rate_limit_per_ip_per_minute ?? 0)
     form.gateway_public_hosts = asStringList(gateway.public_hosts, defaults.gateway.public_hosts ?? []).join('\n')
+    form.gateway_default_plugin = asString(gateway.default_plugin, defaults.gateway.default_plugin ?? '')
     savedSignature.value = settingsSignature()
   } catch (e) {
     error.value = errorMessage(e)
@@ -731,21 +718,9 @@ async function load() {
   }
 }
 
-async function loadAKeyStatus() {
-  try {
-    const status = await api.aKey.status()
-    aKeyConfigured.value = Boolean(status?.configured)
-    aKeyAvailable.value = true
-  } catch {
-    aKeyAvailable.value = false
-    aKeyConfigured.value = false
-  }
-}
-
 onMounted(async () => {
   await Promise.all([
     load(),
-    loadAKeyStatus(),
     loadClientKeys(),
     loadPluginIDs(),
     loadNotify(),
@@ -768,11 +743,6 @@ async function save() {
   const concurrency = Number(form.plugins_concurrency)
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) {
     error.value = '默认并发数必须是 1–32 之间的整数。'
-    return
-  }
-  const modelCache = Number(form.a_model_cache_minutes)
-  if (!Number.isInteger(modelCache) || modelCache < 1 || modelCache > 1440) {
-    error.value = 'A 模型缓存时间必须是 1–1440 之间的整数（分钟）。'
     return
   }
   const retryCount = Number(form.checkin_retry_count)
@@ -842,12 +812,6 @@ async function save() {
     port,
     listen_lan: form.listen_lan,
     autostart: form.autostart,
-    a: {
-      base_url: form.a_base_url.trim(),
-      exe_path: form.a_exe_path.trim(),
-      auto_start: form.a_auto_start,
-      model_cache_minutes: modelCache,
-    },
     proxy: {
       enabled: form.proxy_enabled,
       http: httpProxy,
@@ -886,6 +850,7 @@ async function save() {
       rate_limit_per_minute: Math.max(0, Math.floor(Number(form.gateway_rate_key) || 0)),
       rate_limit_per_ip_per_minute: Math.max(0, Math.floor(Number(form.gateway_rate_ip) || 0)),
       public_hosts: publicHosts,
+      default_plugin: form.gateway_default_plugin.trim().toLowerCase(),
     },
     // The notification policy lives in the same config.json block; sending it
     // here keeps a page-wide save from reverting a card edit. The webhook URL
@@ -906,28 +871,6 @@ async function save() {
     error.value = errorMessage(e)
   } finally {
     saving.value = false
-  }
-}
-
-async function saveAKey() {
-  const key = aKeyInput.value.trim()
-  if (!key) {
-    error.value = '请填写 A 的 Key。'
-    return
-  }
-  aKeyBusy.value = true
-  error.value = ''
-  message.value = ''
-  try {
-    await api.aKey.set(key)
-    aKeyInput.value = ''
-    aKeyConfigured.value = true
-    aKeyAvailable.value = true
-    message.value = 'A Key 已加密保存。'
-  } catch (e) {
-    error.value = errorMessage(e)
-  } finally {
-    aKeyBusy.value = false
   }
 }
 
@@ -1031,80 +974,6 @@ async function saveLanPassword() {
               {{ lanBusy ? '保存中…' : '保存密码' }}
             </button>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <section v-show="activeTab === 'gateway'" class="card">
-      <div class="card-head">
-        <h2>A 接入</h2>
-        <span class="sub">A 保持独立，宿主只注入 Key 并转发裸模型名</span>
-      </div>
-      <div class="card-body stack">
-        <div class="form-grid">
-          <div class="field span-2">
-            <label for="set-a-url">A 基础地址</label>
-            <input id="set-a-url" v-model="form.a_base_url" class="input mono" type="text" placeholder="http://127.0.0.1:7864" />
-            <span class="help">裸模型名（不含插件前缀）会转发到该地址的 /v1。</span>
-          </div>
-          <div class="field span-2">
-            <label for="set-a-exe">A 可执行文件路径（可选）</label>
-            <input
-              id="set-a-exe"
-              v-model="form.a_exe_path"
-              class="input mono"
-              type="text"
-              placeholder="D:\AIWork\AIWork.exe"
-              spellcheck="false"
-            />
-            <span class="help">用于宿主拉起 A；留空表示 A 由用户自行启动。</span>
-          </div>
-          <div class="field">
-            <span class="field-label">随宿主启动 A <span class="badge plain warn">需重启生效</span></span>
-            <label class="switch">
-              <input v-model="form.a_auto_start" type="checkbox" />
-              <span class="switch-track"></span>
-              {{ form.a_auto_start ? '自动启动' : '不自动启动' }}
-            </label>
-            <span class="help">是否在宿主启动时拉起 A 的进程；仅在下次宿主重启后生效。</span>
-          </div>
-          <div class="field">
-            <label for="set-a-cache">A 模型缓存（分钟） <span class="badge plain warn">需重启生效</span></label>
-            <input
-              id="set-a-cache"
-              v-model.number="form.a_model_cache_minutes"
-              class="input"
-              type="number"
-              min="1"
-              max="1440"
-            />
-            <span class="help">默认 10，范围 1–1440；缓存期内不重新拉取模型列表。新的缓存时长在宿主重启后应用。</span>
-          </div>
-        </div>
-
-        <div class="field" style="max-width: 560px">
-          <label for="set-a-key">A Key</label>
-          <div class="row" style="align-items: center">
-            <input
-              id="set-a-key"
-              v-model="aKeyInput"
-              class="input"
-              type="password"
-              autocomplete="new-password"
-              placeholder="写入后不再回显"
-              style="flex: 1"
-            />
-            <button type="button" class="btn primary" :disabled="aKeyBusy" @click="saveAKey">
-              {{ aKeyBusy ? '保存中…' : '保存 Key' }}
-            </button>
-            <span class="badge" :class="aKeyConfigured ? 'ok' : 'muted'">
-              {{ aKeyConfigured ? '已保存' : '未保存' }}
-            </span>
-          </div>
-          <span class="help">只写字段：宿主使用 DPAPI 加密保存，接口从不返回明文。</span>
-          <span v-if="!aKeyAvailable" class="help help-warn">
-            宿主尚未提供 A Key 状态接口，无法确认是否已保存。
-          </span>
         </div>
       </div>
     </section>
@@ -1509,6 +1378,11 @@ async function saveLanPassword() {
           </span>
         </div>
         <div class="field">
+          <label for="set-default-plugin">默认插件（裸模型名）</label>
+          <input id="set-default-plugin" v-model="form.gateway_default_plugin" class="input mono" type="text" placeholder="例如 trae" spellcheck="false" />
+          <span class="help">客户端只写模型名（不带 <code>插件/</code> 前缀）时交给该插件；留空则返回 404 model_not_found。</span>
+        </div>
+        <div class="field">
           <label for="set-rate-key">每 Key 每分钟请求上限</label>
           <input
             id="set-rate-key"
@@ -1681,7 +1555,6 @@ async function saveLanPassword() {
         <div class="row">
           <select v-model="probeKindFilter" class="select select-compact" aria-label="按类型筛选诊断记录">
             <option value="">全部</option>
-            <option value="a">A</option>
             <option value="plugin">插件模型</option>
             <option value="custom_model">自定义模型</option>
           </select>

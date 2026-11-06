@@ -225,52 +225,6 @@ func pluginStatus(id string, enabled bool, models ...model.ModelInfo) model.Plug
 	}
 }
 
-// fakeA implements AUpstream. Models is served from memory so tests can drive
-// success/failure without a server; BaseURL points at an httptest server for
-// routing tests.
-type fakeA struct {
-	mu         sync.Mutex
-	base       string
-	key        string
-	models     []model.ModelInfo
-	modelsErr  error
-	modelCalls int
-}
-
-func (f *fakeA) BaseURL() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.base
-}
-
-func (f *fakeA) APIKey() string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.key
-}
-
-func (f *fakeA) Models(ctx context.Context) ([]model.ModelInfo, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.modelCalls++
-	if f.modelsErr != nil {
-		return nil, f.modelsErr
-	}
-	return append([]model.ModelInfo(nil), f.models...), nil
-}
-
-func (f *fakeA) setModelsErr(err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.modelsErr = err
-}
-
-func (f *fakeA) calls() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.modelCalls
-}
-
 type capturedRequest struct {
 	Method        string
 	Path          string
@@ -348,12 +302,6 @@ func newTestGateway(t *testing.T, opts Options) *Gateway {
 	if opts.Keys == nil {
 		opts.Keys = newFakeKeys()
 	}
-	// config.Default() ships LegacyAFallback=true, so a gateway built from the
-	// shipped configuration still answers bare model names through A. Mirror
-	// that here: the pre-plugin suites assert the legacy contract, and a test
-	// about the default-plugin slot builds its gateway with newGateway directly
-	// so it can control DefaultPlugin/LegacyA itself.
-	opts.LegacyA = true
 	g := newGateway(opts)
 	// Retry backoffs are wall-clock waits in production; tests only care about
 	// the decision sequence, so the default is instant. Individual tests

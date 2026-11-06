@@ -1166,8 +1166,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request, rec *re
 	scheduled := g.sched != nil && g.snapshot != nil
 	tgt, isPlugin := g.matchPlugin(rec.model)
 	// A bare name may be served by the configured default plugin; folding the
-	// answer into the same tgt/isPlugin pair reuses the translation branch below
-	// instead of opening a second, A-shaped path.
+	// answer into the same tgt/isPlugin pair reuses the translation branch below.
 	if !isPlugin {
 		def, ok, derr := g.bareModelTarget(rec.model)
 		switch {
@@ -1183,7 +1182,7 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request, rec *re
 	}
 	bound := scheduled && !isPlugin && g.hasBinding(r.Context(), rec.model)
 	if !isPlugin && !bound {
-		g.forwardA(w, r, rec, body)
+		g.writeUnknownModel(w, rec, rec.model, "")
 		return
 	}
 
@@ -1233,8 +1232,7 @@ var nativeAnthropicHeaders = []string{"anthropic-version", "anthropic-beta"}
 // Anthropic headers leave the client request exactly when the translated body is
 // handed over as chat: relayMessages calls send only after
 // chatBodyFromAnthropic re-encoded the Messages body, and forwardPlugin /
-// forwardScheduled clone r.Header from there. The A passthrough of a bare model
-// (forwardA) never uses this wrapper, so A keeps receiving the client's headers.
+// forwardScheduled are about to deliver it.
 func chatSenderForMessages(r *http.Request, send chatSender) chatSender {
 	return func(dst http.ResponseWriter, chatBody []byte) {
 		for _, name := range nativeAnthropicHeaders {

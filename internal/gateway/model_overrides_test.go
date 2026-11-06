@@ -52,9 +52,8 @@ func TestModelsHumanOverrideWins(t *testing.T) {
 		Vision:        false,
 		Free:          false,
 		Tools:         true,
-	}), "", "")
-	fa := &fakeA{models: []model.ModelInfo{{ID: "gpt-4o", Name: "GPT-4o"}}}
-	g := newTestGateway(t, Options{Plugins: reg, A: fa, Overrides: st.GetModelOverrides})
+	}, model.ModelInfo{ID: "plain", Name: "普通模型"}), "", "")
+	g := newTestGateway(t, Options{Plugins: reg, Overrides: st.GetModelOverrides})
 
 	name := "人工名"
 	contextLength := 200000
@@ -85,9 +84,9 @@ func TestModelsHumanOverrideWins(t *testing.T) {
 	}
 
 	// A model without an override keeps the plugin metadata and no marker.
-	other := modelByID(t, payload, "gpt-4o")
-	if other.Name != "GPT-4o" || len(other.Overridden) != 0 {
-		t.Fatalf("A model entry = %+v, want untouched", other)
+	other := modelByID(t, payload, "p1/plain")
+	if other.Name != "普通模型" || len(other.Overridden) != 0 {
+		t.Fatalf("plain model entry = %+v, want untouched", other)
 	}
 
 	// Clearing the override restores the plugin report on the next list.

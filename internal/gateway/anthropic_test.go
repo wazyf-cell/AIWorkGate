@@ -636,30 +636,20 @@ func TestMessagesRouteToPlugin(t *testing.T) {
 	}
 }
 
-func TestMessagesBareModelKeepsPassthrough(t *testing.T) {
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":"original"}`))
+func TestMessagesBareModelIsModelNotFound(t *testing.T) {
 	const body = `{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
 	g := newTestGateway(t, Options{
 		Plugins: newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), "", ""),
-		A:       &fakeA{base: aSrv.URL, key: "sk-a"},
 	})
 
 	rr := serve(g, newChatRequest(t, "/v1/messages", clientKey, body))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body %s)", rr.Code, rr.Body.String())
 	}
-	if got := rr.Body.String(); got != `{"a":"original"}` {
-		t.Fatalf("body = %q, want A's answer verbatim", got)
-	}
-	up := aCalls.last(t)
-	if up.Path != "/v1/messages" || string(up.Body) != body || up.Authorization != "Bearer sk-a" {
-		t.Fatalf("A request = %s auth %q body %q", up.Path, up.Authorization, up.Body)
-	}
-	if got := rr.Header().Get(sourceHeader); got != "a" {
-		t.Fatalf("source header = %q", got)
+	if !strings.Contains(rr.Body.String(), "model_not_found") {
+		t.Fatalf("body = %s, want model_not_found", rr.Body.String())
 	}
 }
-
 func TestMessagesRouteStreamsSSE(t *testing.T) {
 	frames := streamFrames(true)
 	srv, calls := newUpstreamServer(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
@@ -870,33 +860,6 @@ func TestMessagesDropsNativeAnthropicHeaders(t *testing.T) {
 			t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
 		}
 		requireChatBodyWithout(t, calls.last(t))
-	})
-
-	t.Run("bare model keeps the passthrough headers", func(t *testing.T) {
-		aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":"original"}`))
-		g := newTestGateway(t, Options{
-			Plugins: newFakeRegistry(),
-			A:       &fakeA{base: aSrv.URL, key: "sk-a"},
-		})
-
-		req := newChatRequest(t, "/v1/messages", clientKey,
-			`{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
-		req.Header.Set("anthropic-version", version)
-		req.Header.Set("anthropic-beta", beta)
-		rr := serve(g, req)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
-		}
-		up := aCalls.last(t)
-		if got := up.Header.Get("anthropic-version"); got != version {
-			t.Fatalf("A must receive the client's anthropic-version, got %q", got)
-		}
-		if got := up.Header.Get("anthropic-beta"); got != beta {
-			t.Fatalf("A must receive the client's anthropic-beta, got %q", got)
-		}
-		if string(up.Body) != `{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}` {
-			t.Fatalf("A body = %q, want the native body untouched", up.Body)
-		}
 	})
 }
 

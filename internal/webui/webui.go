@@ -108,8 +108,6 @@ type Options struct {
 	GetSettings  func() (json.RawMessage, error)
 	SaveSettings func(json.RawMessage) error
 
-	AKeyConfigured func() bool
-	SetAKey        func(string) error
 	SetLANPassword func(string) error
 
 	Plugins func() []model.PluginStatus
@@ -366,7 +364,6 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/notify", s.handleNotify)
 	mux.HandleFunc("/api/notify/test", s.handleNotifyTest)
-	mux.HandleFunc("/api/secrets/a-key", s.handleAKey)
 	mux.HandleFunc("/api/secrets/lan-password", s.handleLANPassword)
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/plugins/install", s.handlePluginInstall)

@@ -292,7 +292,8 @@ d81b7f3  D-31：sync the remaining api_logs scans and refresh the handoff snapsh
 efd1707  P9：cheap 池间按配置价排序
 ab189af  D-31：缓存写侧/reasoning/purpose 五列
 dd7a976  P13：导出粒度/拆段 + Prompt 组成分析
-（下一个提交） P11：组编辑器 + 意图规则框架
+f8d6027  P11：组编辑器 + 意图规则框架
+（本轮提交） 退役内置 A 网关（D-60）
 ```
 
 远端：`wazyf-cell/AIWorkGate` 的 `main` 在每批提交后按需推送；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。
@@ -301,7 +302,7 @@ dd7a976  P13：导出粒度/拆段 + Prompt 组成分析
 
 | 阶段 | 状态 |
 |---|---|
-| P1/P2/P8/P10/P12-1/2 | 代码/本地验证完成；真实登录与 Linux 实跑仍缺 |
+| P1/P2/P8/P10/P12-1/2 | 代码/本地验证完成；内置 A 网关已退役（D-60），裸模型名改由 `default_plugin`；真实登录与 Linux 实跑仍缺 |
 | P5 | D-40/41(部分)/P5-1 全项/P5-4/P5-5/P5-6 完成；Key 分享标记强制到期完成 |
 | P6 | Gemini 入站 + SystemOne 路由完成；真实 JEV key 未验；Gemini 工具调用未回译 |
 | P9 | 策略/告警/面板/告警订阅 + `cheap`（配置价）完成 |
@@ -323,4 +324,5 @@ dd7a976  P13：导出粒度/拆段 + Prompt 组成分析
 1. 服务器到位后按 `docs/p7/00-部署演练.md` 实跑，重点验收 `public_hosts` / `trusted_proxies` / 回滚。
 2. 真实 trae/workbuddy 登录后补 P1/P2 验收；真实 JEV key 补 P6 三例与 P11 意图规则一例。
 3. 下一步：真实登录验收（临时 Key + trae 首个模型，非流式 1 次 + 流式 1 次）→ P3 退役；P13 仅剩 47 列清单文档。
-4. 不要启用蜂群：本 agent 无多子代理能力。
+4. 内置 A 网关已按 D-60 删除：`config.a`、A 面板/Key、`forwardA` 与裸名兜底都不存在；`aichat` 插件保留但需自行配置上游。历史 `source="a"` 行仍可查询。
+5. 不要启用蜂群：本 agent 无多子代理能力。

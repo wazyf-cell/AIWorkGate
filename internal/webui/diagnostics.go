@@ -3,7 +3,6 @@ package webui
 // Connectivity probe API (Settings → 连通性自检).
 //
 //	POST /api/diagnostics/probe
-//	  {"kind":"a"}
 //	  {"kind":"plugin","plugin_id":"officeace","model":"glm-5.3"}
 //	  {"kind":"custom_model","custom_model_id":"cm-xxx"}
 //	  -> 200 {"ok","kind","target","target_id","status","latency_ms","detail",
@@ -32,6 +31,8 @@ const (
 
 // Probe kinds accepted by POST /api/diagnostics/probe.
 const (
+	// ProbeKindA only survives as a history filter: the built-in A gateway is
+	// retired, but rows probed before that stay queryable.
 	ProbeKindA           = "a"
 	ProbeKindPlugin      = "plugin"
 	ProbeKindCustomModel = "custom_model"
@@ -107,8 +108,6 @@ func (s *server) handleDiagnosticsProbe(w http.ResponseWriter, r *http.Request) 
 		CustomModelID: strings.TrimSpace(body.CustomModelID),
 	}
 	switch req.Kind {
-	case ProbeKindA:
-		// No extra parameters: kind selects A's resolved base URL.
 	case ProbeKindPlugin:
 		if req.PluginID == "" || req.Model == "" {
 			writeError(w, http.StatusBadRequest, "plugin 探测需要 plugin_id 和 model", "invalid_request")
@@ -120,7 +119,7 @@ func (s *server) handleDiagnosticsProbe(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	default:
-		writeError(w, http.StatusBadRequest, "kind 必须是 a、plugin 或 custom_model", "invalid_request")
+		writeError(w, http.StatusBadRequest, "kind 必须是 plugin 或 custom_model", "invalid_request")
 		return
 	}
 

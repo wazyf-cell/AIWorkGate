@@ -85,9 +85,6 @@ func TestStatus(t *testing.T) {
 				Version:        "0.1.0-test",
 				Port:           7865,
 				DataDir:        `C:\data`,
-				AConfigured:    true,
-				ARunning:       false,
-				APort:          7864,
 				PluginsRunning: 2,
 				PluginsTotal:   3,
 			}
@@ -100,7 +97,7 @@ func TestStatus(t *testing.T) {
 	}
 	var status model.HostStatus
 	decodeJSONBody(t, recorder, &status)
-	if status.Version != "0.1.0-test" || status.Port != 7865 || !status.AConfigured {
+	if status.Version != "0.1.0-test" || status.Port != 7865 || status.PluginsTotal != 3 {
 		t.Fatalf("unexpected status payload: %+v", status)
 	}
 	if status.PluginsRunning != 2 || status.PluginsTotal != 3 {
@@ -153,8 +150,6 @@ func TestNilFunctionsReturn501(t *testing.T) {
 		{http.MethodGet, "/api/status", ""},
 		{http.MethodGet, "/api/settings", ""},
 		{http.MethodPut, "/api/settings", `{"port":7865}`},
-		{http.MethodGet, "/api/secrets/a-key", ""},
-		{http.MethodPut, "/api/secrets/a-key", `{"key":"secret"}`},
 		{http.MethodPut, "/api/secrets/lan-password", `{"password":"pw"}`},
 		{http.MethodGet, "/api/plugins", ""},
 		{http.MethodPost, "/api/plugins/install", `{"zip_path":"C:\\plugin.zip"}`},
@@ -497,12 +492,9 @@ func TestSystemProxyRowIsReadOnly(t *testing.T) {
 }
 
 func TestSecretsAndKeys(t *testing.T) {
-	aKey := ""
 	lanPassword := "unset"
 	keys := []model.ClientKey{}
 	handler := New(Options{
-		AKeyConfigured: func() bool { return aKey != "" },
-		SetAKey:        func(key string) error { aKey = key; return nil },
 		SetLANPassword: func(password string) error { lanPassword = password; return nil },
 		Keys:           func() []model.ClientKey { return keys },
 		CreateKey: func(name string) (string, model.ClientKey, error) {
@@ -516,27 +508,7 @@ func TestSecretsAndKeys(t *testing.T) {
 		},
 	})
 
-	recorder := doRequest(t, handler, http.MethodGet, "/api/secrets/a-key", "")
-	var keyStatus map[string]bool
-	decodeJSONBody(t, recorder, &keyStatus)
-	if keyStatus["configured"] {
-		t.Fatalf("A key should start unconfigured")
-	}
-
-	recorder = doRequest(t, handler, http.MethodPut, "/api/secrets/a-key", `{"key":"  token-123  "}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("PUT a-key = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
-	}
-	if aKey != "token-123" {
-		t.Fatalf("stored A key = %q, want trimmed token", aKey)
-	}
-
-	recorder = doRequest(t, handler, http.MethodPut, "/api/secrets/a-key", `{"key":"   "}`)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("empty A key = %d, want 400", recorder.Code)
-	}
-
-	recorder = doRequest(t, handler, http.MethodPut, "/api/secrets/lan-password", `{"password":"lan-pass"}`)
+	recorder := doRequest(t, handler, http.MethodPut, "/api/secrets/lan-password", `{"password":"lan-pass"}`)
 	if recorder.Code != http.StatusOK || lanPassword != "lan-pass" {
 		t.Fatalf("LAN password code = %d, stored = %q", recorder.Code, lanPassword)
 	}

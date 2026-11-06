@@ -53,8 +53,6 @@ func (a *App) webOptions() webui.Options {
 		Status:         a.status,
 		GetSettings:    a.getSettings,
 		SaveSettings:   a.saveSettings,
-		AKeyConfigured: a.aKeyConfigured,
-		SetAKey:        a.setAKey,
 		SetLANPassword: a.setLANPassword,
 
 		Plugins:       a.listPlugins,
@@ -203,21 +201,11 @@ func (a *App) status() model.HostStatus {
 			running++
 		}
 	}
-	configured := false
-	if a.secrets != nil {
-		_, configured = a.secrets.GetAAPIKey()
-	}
-	state, detail, aPort, aRunning := a.aStatusProbe()
 	egressAssigned, egressFailed := a.egressFailureCounts(plugins)
 	return model.HostStatus{
 		Version:        Version,
 		Port:           a.port,
 		DataDir:        a.dataDir,
-		AConfigured:    configured,
-		ARunning:       aRunning,
-		APort:          aPort,
-		AState:         state,
-		ADetail:        detail,
 		PluginsRunning: running,
 		PluginsTotal:   len(plugins),
 		EgressAssigned: egressAssigned,
@@ -439,25 +427,6 @@ func (a *App) saveSettings(raw json.RawMessage) error {
 	} else {
 		a.logger.Info("app", "settings saved", fields)
 	}
-	return nil
-}
-
-func (a *App) aKeyConfigured() bool {
-	if a.secrets == nil {
-		return false
-	}
-	_, ok := a.secrets.GetAAPIKey()
-	return ok
-}
-
-func (a *App) setAKey(key string) error {
-	if a.secrets == nil {
-		return errors.New("app: secrets store is not available")
-	}
-	if err := a.secrets.SetAAPIKey(key); err != nil {
-		return err
-	}
-	a.logger.Info("app", "A key saved", nil)
 	return nil
 }
 
@@ -2345,8 +2314,6 @@ func (a *App) runtimeLogs(source string, n int) []string {
 			return []string{}
 		}
 		return lines
-	case source == "a":
-		return []string{"A（AI Work 助手）的日志由 A 自己保存，不在宿主内展示；请在 A 的设置页打开 A 的日志目录。"}
 	default:
 		return []string{}
 	}

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"aiworkgate/internal/hosts"
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/store"
 )
@@ -79,39 +78,6 @@ func (f *fakePlugins) accountsHit() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.accountHit
-}
-
-type fakeA struct {
-	mu      sync.Mutex
-	path    string
-	tasks   []string
-	exeArgs []string
-	results map[string]hosts.TaskResult
-	errs    map[string]error
-}
-
-func (a *fakeA) ExePath() string { return a.path }
-
-func (a *fakeA) RunTask(_ context.Context, exePath, taskKey string) (hosts.TaskResult, error) {
-	a.mu.Lock()
-	a.tasks = append(a.tasks, taskKey)
-	a.exeArgs = append(a.exeArgs, exePath)
-	result, hasResult := a.results[taskKey]
-	err := a.errs[taskKey]
-	a.mu.Unlock()
-	if err != nil {
-		return result, err
-	}
-	if !hasResult {
-		result = hosts.TaskResult{Task: taskKey, OK: true, Summary: "ok=1 already=0 failed=0"}
-	}
-	return result, nil
-}
-
-func (a *fakeA) taskKeys() []string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return append([]string(nil), a.tasks...)
 }
 
 type notifyEvent struct {
@@ -689,11 +655,9 @@ func TestCheckinAllOrderAndRecording(t *testing.T) {
 			return model.CheckinResult{Result: model.CheckinOK, CreditsAfter: &after}, nil
 		},
 	}
-	host := &fakeA{path: `C:\A\A.exe`}
 	st := openScheduleStore(t)
 	notifier := &fakeNotifier{}
 	m, sleeper := newTestManager(t, plugins, st, clock, notifier)
-	m.A = host
 
 	results := m.CheckinAll(context.Background())
 
@@ -712,11 +676,6 @@ func TestCheckinAllOrderAndRecording(t *testing.T) {
 	}
 	if len(results) != len(want) {
 		t.Fatalf("results = %+v, want %d items (plugins only, no A)", results, len(want))
-	}
-	for _, got := range results {
-		if got.Source == SourceA {
-			t.Fatalf("manual sign-all produced an A result %+v; A must be excluded", got)
-		}
 	}
 	for i, w := range want {
 		got := results[i]
@@ -756,21 +715,13 @@ func TestCheckinAllOrderAndRecording(t *testing.T) {
 		t.Fatalf("a1 record = %+v (ok=%v)", rec, ok)
 	}
 
-	// A must not be invoked by the manual action any more (see the want table
-	// above). The fakeA is installed on purpose so a regression shows up here
-	// rather than silently in production.
-	tasks := host.taskKeys()
-	if len(tasks) != 0 {
-		t.Fatalf("A tasks = %v, want none: the manual sign-all must not run A", tasks)
-	}
 	if got := len(notifier.snapshot()); got != 0 {
 		t.Fatalf("manual notifications = %v, want none", notifier.kinds())
 	}
 }
 
-// With every check-in-capable plugin disabled and A not configured, the manual
-// action has nothing to do. A is not consulted at all any more, so this also
-// guards that an unconfigured/disabled A never produces a result row.
+// With every check-in-capable plugin disabled, the manual action has nothing
+// to do.
 func TestCheckinAllWithoutA(t *testing.T) {
 	clock := newFakeClock(at(10, 0))
 	plugins := &fakePlugins{
@@ -778,10 +729,9 @@ func TestCheckinAllWithoutA(t *testing.T) {
 	}
 	st := openScheduleStore(t)
 	m, _ := newTestManager(t, plugins, st, clock, &fakeNotifier{})
-	m.A = &fakeA{path: ""}
 
 	if results := m.CheckinAll(context.Background()); len(results) != 0 {
-		t.Fatalf("results = %+v, want none (plugin disabled, A not configured)", results)
+		t.Fatalf("results = %+v, want none (plugin disabled)", results)
 	}
 }
 

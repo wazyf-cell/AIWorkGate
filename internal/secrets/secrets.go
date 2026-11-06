@@ -30,7 +30,6 @@ const (
 
 // Blob is the plaintext document that gets DPAPI-sealed in secrets.dat.
 type Blob struct {
-	AAPIKey         string            `json:"a_api_key,omitempty"`
 	ClientKeyHashes map[string]string `json:"client_key_hashes,omitempty"`
 	PluginTokens    map[string]string `json:"plugin_tokens,omitempty"`
 	ProxyPasswords  map[string]string `json:"proxy_passwords,omitempty"`
@@ -123,29 +122,6 @@ func (s *Store) saveLocked() error {
 		return err
 	}
 	return writeFileAtomic(s.path, sealed, FilePerm)
-}
-
-// SetAAPIKey stores the AI Work 助手 gateway key. An empty key clears it.
-func (s *Store) SetAAPIKey(key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	old := s.blob.AAPIKey
-	if old == key {
-		return nil
-	}
-	s.blob.AAPIKey = key
-	if err := s.saveLocked(); err != nil {
-		s.blob.AAPIKey = old
-		return err
-	}
-	return nil
-}
-
-// GetAAPIKey returns the stored A gateway key and whether one is present.
-func (s *Store) GetAAPIKey() (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.blob.AAPIKey, s.blob.AAPIKey != ""
 }
 
 // EnsurePluginToken returns the per-plugin bearer token, creating and

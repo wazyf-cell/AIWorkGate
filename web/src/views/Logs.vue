@@ -338,7 +338,7 @@ const rlogLoading = ref(true)
 const rlogLoadingMore = ref(false)
 const rlogLoaded = ref(false)
 const rlogError = ref('')
-const sourceOptions = ref<{ value: string; label: string }[]>([{ value: 'a', label: 'A 助手' }])
+const sourceOptions = ref<{ value: string; label: string }[]>([])
 let rlogSeq = 0
 
 /**
@@ -412,7 +412,7 @@ function clearRequestLogFilters() {
 }
 
 async function loadSourceOptions() {
-  const options: { value: string; label: string }[] = [{ value: 'a', label: 'A 助手' }]
+  const options: { value: string; label: string }[] = []
   try {
     const plugins = (await api.plugins.list()) ?? []
     for (const plugin of plugins) {

@@ -75,11 +75,11 @@ type modelsList struct {
 	Data   []modelEntry `json:"data"`
 }
 
-// handleModels merges plugin models (prefixed) with A's bare models. A failure
-// is not fatal: the last cache is served with X-AIWorkGate-A-Stale: 1.
+// handleModels merges plugin models (prefixed), logical bindings and custom
+// entries into the published catalog.
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqRecord) {
-	// The list is merged by the gateway (plugins + bindings + A + custom), so
-	// the request log must not attribute it to A alone.
+	// The list is merged by the gateway (plugins + bindings + custom), so the
+	// request log must not attribute it to one plugin.
 	rec.source = "gateway"
 	entries := make([]modelEntry, 0, 32)
 	// Keyed by CanonicalModelID, so "Kimi-K2" reported twice (different case or
@@ -203,41 +203,6 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 		}
 	}
 
-	aModels, stale := g.aModelList(r.Context())
-	aPrefs := g.modelPrefsFor("a")
-	for _, m := range aModels {
-		key := CanonicalModelID(m.ID)
-		if m.ID == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		if p, ok := prefsForModel(aPrefs, m.ID); ok {
-			m = p.ApplyInfo(m)
-		}
-		entries = append(entries, modelEntry{
-			ID:                  m.ID,
-			Object:              "model",
-			OwnedBy:             "a",
-			Name:                m.Name,
-			ContextLength:       m.ContextLength,
-			Tools:               m.Tools,
-			Vision:              m.Vision,
-			Vendor:              m.Vendor,
-			Multiplier:          catalogMultiplier(m.Multiplier),
-			Thinking:            m.Thinking,
-			Free:                m.Free,
-			Released:            m.Released,
-			Family:              m.Family,
-			Tiers:               m.Tiers,
-			AlwaysThinks:        m.AlwaysThinks,
-			DynamicTools:        m.DynamicTools,
-			DefaultEffort:       m.DefaultEffort,
-			SupportedParameters: supportedParameters(m),
-			Temperature:         m.Temperature,
-			Structured:          m.Structured,
-		})
-	}
-
 	// Structured-decision endpoints are published too, marked so a client can
 	// tell them apart and avoid sending them to /v1/chat/completions (D-18④).
 	for _, upstream := range g.decisionList() {
@@ -264,10 +229,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 
 	h := w.Header()
 	h.Set("Content-Type", "application/json; charset=utf-8")
-	h.Set(sourceHeader, "a")
-	if stale {
-		h.Set(staleHeader, "1")
-	}
+	h.Set(sourceHeader, "gateway")
 	rec.status = http.StatusOK
 	if g.debugBody.Load() {
 		rec.bodyResp = string(payload)
@@ -366,62 +328,6 @@ func supportedParameters(m model.ModelInfo) []string {
 	return params
 }
 
-// aModelList returns A's models, fetching at most once per TTL. The second
-// result reports whether the list is stale (A unreachable, cache reused).
-func (g *Gateway) aModelList(ctx context.Context) ([]model.ModelInfo, bool) {
-	if g.a == nil {
-		return g.cachedAModels(), true
-	}
-
-	g.aMu.Lock()
-	fresh := g.aHave && g.now().Sub(g.aFetched) < g.cacheTTL
-	cached := append([]model.ModelInfo(nil), g.aModels...)
-	g.aMu.Unlock()
-	if fresh {
-		return cached, false
-	}
-
-	fetchCtx, cancel := context.WithTimeout(ctx, modelsFetchTimeout)
-	defer cancel()
-	models, err := g.a.Models(fetchCtx)
-	if err != nil {
-		// Re-read the cache: a concurrent request may have refreshed it.
-		return g.cachedAModels(), true
-	}
-	clean := make([]model.ModelInfo, 0, len(models))
-	for _, m := range models {
-		if strings.TrimSpace(m.ID) == "" {
-			continue
-		}
-		clean = append(clean, m)
-	}
-
-	g.aMu.Lock()
-	g.aModels = clean
-	g.aFetched = g.now()
-	g.aHave = true
-	g.aMu.Unlock()
-	return clean, false
-}
-
-func (g *Gateway) cachedAModels() []model.ModelInfo {
-	g.aMu.Lock()
-	defer g.aMu.Unlock()
-	return append([]model.ModelInfo(nil), g.aModels...)
-}
-
-// InvalidateAModelCache drops the cached A model list so the next /v1/models
-// refetches. The app calls it when A transitions from down to reachable; the
-// previous list stays available for the stale-response path.
-func (g *Gateway) InvalidateAModelCache() {
-	if g == nil {
-		return
-	}
-	g.aMu.Lock()
-	g.aHave = false
-	g.aMu.Unlock()
-}
-
 // pluginModelList returns a plugin's local models. Manifest models win; when
 // the manifest lists none, the plugin's /v1/models is queried (cached for the
 // model cache TTL). known=false means the registry could not be determined.
@@ -443,7 +349,7 @@ func (g *Gateway) pluginModelList(ctx context.Context, st model.PluginStatus) ([
 
 	models, known := g.fetchPluginModels(ctx, id)
 
-	ttl := g.cacheTTL
+	ttl := g.modelCacheTTL
 	if !known {
 		ttl = 30 * time.Second
 	}
@@ -535,7 +441,8 @@ func validLocalModels(in []model.ModelInfo) []model.ModelInfo {
 }
 
 // availableModels returns up to 20 model names for the unknown-model 404
-// message: enabled plugin models plus the cached A list (no network call).
+// message, taken from the enabled plugins' manifests or cached lists (no
+// network call).
 // exposed, when non-nil, maps a plugin id to the models the resource page still
 // exposes; plugins absent from the map have no catalog filter (same rule as
 // GET /v1/models).
@@ -569,15 +476,6 @@ func (g *Gateway) availableModels(exposed map[string]map[string]bool) []string {
 					return out
 				}
 			}
-		}
-	}
-	for _, m := range g.cachedAModels() {
-		if m.ID == "" {
-			continue
-		}
-		out = append(out, m.ID)
-		if len(out) >= 20 {
-			break
 		}
 	}
 	return out

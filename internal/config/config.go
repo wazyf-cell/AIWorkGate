@@ -6,7 +6,6 @@ package config
 import (
 	"crypto/ed25519"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -26,8 +25,6 @@ const (
 	FileName = "config.json"
 
 	DefaultPort         = 7865
-	DefaultABaseURL     = "http://127.0.0.1:7864"
-	DefaultModelCache   = 10
 	DefaultConcurrency  = 2
 	DefaultCheckinTime  = "09:00"
 	DefaultRetryCount   = 2
@@ -52,16 +49,12 @@ const (
 	StartupAlways   = "always"
 	StartupOnDemand = "on_demand"
 
-	MinPort       = 1024
-	MaxPort       = 65535
-	MinConcurr    = 1
-	MaxConcurr    = 32
-	MaxRetryCount = 5
-	// MinModelCacheModels keeps the A model cache from being refreshed on every
-	// request; MaxModelCacheMinutes caps it at one day.
-	MinModelCacheMinutes = 1
-	MaxModelCacheMinutes = 1440
-	MaxRetryBackoff      = 3600
+	MinPort         = 1024
+	MaxPort         = 65535
+	MinConcurr      = 1
+	MaxConcurr      = 32
+	MaxRetryCount   = 5
+	MaxRetryBackoff = 3600
 
 	// Market update check cadence (P2-5): the default mirrors the 6h rhythm of
 	// the magpie updater. An interval of 0 disables the timer entirely.
@@ -103,7 +96,6 @@ type Config struct {
 	Port      int             `json:"port"`
 	ListenLAN bool            `json:"listen_lan"`
 	Autostart bool            `json:"autostart"`
-	A         AConfig         `json:"a"`
 	Proxy     ProxyConfig     `json:"proxy"`
 	Plugins   PluginsConfig   `json:"plugins"`
 	Egress    EgressConfig    `json:"egress"`
@@ -263,18 +255,6 @@ type GatewayConfig struct {
 	// DefaultPlugin serves bare model names (no "id/" prefix). Empty means a
 	// bare name is answered with 404 model_not_found.
 	DefaultPlugin string `json:"default_plugin"`
-	// LegacyAFallback keeps the pre-plugin A upstream as the bare-name fallback
-	// when DefaultPlugin is empty. It exists only until A itself becomes a
-	// plugin; set it to false to make bare names 404 without any code change.
-	LegacyAFallback bool `json:"legacy_a_fallback"`
-}
-
-// AConfig describes how to reach the AI Work 助手 (A) gateway.
-type AConfig struct {
-	BaseURL           string `json:"base_url"`
-	ExePath           string `json:"exe_path"`
-	AutoStart         bool   `json:"auto_start"`
-	ModelCacheMinutes int    `json:"model_cache_minutes"`
 }
 
 // ProxyConfig holds the optional upstream proxy used by plugins.
@@ -470,12 +450,6 @@ func Default() Config {
 		Port:      DefaultPort,
 		ListenLAN: false,
 		Autostart: true,
-		A: AConfig{
-			BaseURL:           DefaultABaseURL,
-			ExePath:           "",
-			AutoStart:         false,
-			ModelCacheMinutes: DefaultModelCache,
-		},
 		Proxy: ProxyConfig{
 			Enabled: false,
 			HTTP:    "",
@@ -514,10 +488,9 @@ func Default() Config {
 		},
 		Logging: LoggingConfig{DebugBody: false},
 		Gateway: GatewayConfig{
-			// Bare model names keep reaching A until the plugin layer replaces
-			// it; a fresh install must not break existing client configs.
-			DefaultPlugin:   "",
-			LegacyAFallback: true,
+			// Bare model names need an explicit default plugin; a fresh install
+			// answers them with 404 rather than reaching a built-in upstream.
+			DefaultPlugin: "",
 			// D-40: /v1 answers the local machine only until the user names the
 			// networks that may reach it.
 			AllowIPs:    []string{"127.0.0.1", "::1"},
@@ -541,12 +514,6 @@ func (c *Config) Normalize() {
 		c.Version = CurrentVersion
 	}
 	c.Port = clampInt(c.Port, MinPort, MaxPort)
-
-	c.A.BaseURL = strings.TrimSpace(c.A.BaseURL)
-	if c.A.BaseURL == "" {
-		c.A.BaseURL = DefaultABaseURL
-	}
-	c.A.ModelCacheMinutes = clampInt(c.A.ModelCacheMinutes, MinModelCacheMinutes, MaxModelCacheMinutes)
 
 	if c.Proxy.NoProxy == nil {
 		c.Proxy.NoProxy = append([]string(nil), DefaultNoProxy...)
@@ -1042,12 +1009,6 @@ func (c Config) Validate() error {
 	if c.Port < MinPort || c.Port > MaxPort {
 		return fmt.Errorf("config: port %d out of range %d-%d", c.Port, MinPort, MaxPort)
 	}
-	if c.A.ModelCacheMinutes < MinModelCacheMinutes || c.A.ModelCacheMinutes > MaxModelCacheMinutes {
-		return fmt.Errorf("config: a.model_cache_minutes %d out of range %d-%d", c.A.ModelCacheMinutes, MinModelCacheMinutes, MaxModelCacheMinutes)
-	}
-	if err := validateBaseURL(c.A.BaseURL); err != nil {
-		return err
-	}
 	if c.Plugins.Concurrency < MinConcurr || c.Plugins.Concurrency > MaxConcurr {
 		return fmt.Errorf("config: plugins.concurrency %d out of range %d-%d", c.Plugins.Concurrency, MinConcurr, MaxConcurr)
 	}
@@ -1110,23 +1071,6 @@ func (c Config) Validate() error {
 		if !notifyEvents[event] {
 			return fmt.Errorf("config: notify.events contains unknown kind %q", event)
 		}
-	}
-	return nil
-}
-
-func validateBaseURL(raw string) error {
-	if strings.TrimSpace(raw) == "" {
-		return errors.New("config: a.base_url is empty")
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("config: a.base_url %q: %w", raw, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("config: a.base_url %q must use http or https", raw)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("config: a.base_url %q has no host", raw)
 	}
 	return nil
 }

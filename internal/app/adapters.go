@@ -8,48 +8,11 @@ import (
 	"time"
 
 	"aiworkgate/internal/egress"
-	"aiworkgate/internal/hosts"
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/plugins"
 	"aiworkgate/internal/scheduler"
 	"aiworkgate/internal/store"
 )
-
-// aAdapter exposes the AI Work 助手 (A) gateway to internal/gateway. The API
-// key and the base URL are resolved on every call: A re-picks its loopback
-// port on each launch, so the adapter follows the live discovered port
-// instead of the startup snapshot held in baseURL.
-type aAdapter struct {
-	app     *App
-	baseURL string
-}
-
-// BaseURL implements gateway.AUpstream.
-func (ad *aAdapter) BaseURL() string {
-	if ad == nil {
-		return ""
-	}
-	if ad.app != nil {
-		if _, _, url := ad.app.aEnsure(false); url != "" {
-			return url
-		}
-	}
-	return ad.baseURL
-}
-
-// APIKey implements gateway.AUpstream.
-func (ad *aAdapter) APIKey() string {
-	if ad == nil || ad.app == nil || ad.app.secrets == nil {
-		return ""
-	}
-	key, _ := ad.app.secrets.GetAAPIKey()
-	return key
-}
-
-// Models implements gateway.AUpstream.
-func (ad *aAdapter) Models(ctx context.Context) ([]model.ModelInfo, error) {
-	return hosts.NewClient(ad.BaseURL(), ad.APIKey()).Models(ctx)
-}
 
 // keyAdapter verifies client API keys against the DPAPI secret store and
 // resolves their display names from SQLite.

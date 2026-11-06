@@ -83,7 +83,7 @@ const routes: RouteRecordRaw[] = [
     path: '/settings',
     name: 'settings',
     component: () => import('./views/Settings.vue'),
-    meta: { title: '设置', subtitle: '宿主端口、A 接入与保留策略' },
+    meta: { title: '设置', subtitle: '宿主端口、上游代理与保留策略' },
   },
   {
     path: '/:pathMatch(.*)*',

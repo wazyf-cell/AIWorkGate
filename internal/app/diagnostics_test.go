@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -138,63 +137,6 @@ func TestProbeAPluginTimeout(t *testing.T) {
 	out = (&App{}).probePluginConnectivity("officeace", "glm-5.3")
 	if out.errorCode != "timeout" {
 		t.Fatalf("ensure timeout = %+v", out)
-	}
-}
-
-// fakeAStack serves GET /health and GET /v1/models with two models.
-func fakeAStack(t *testing.T, models int) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/health":
-			io.WriteString(w, `{"status":"ok"}`)
-		case "/v1/models":
-			entries := make([]map[string]string, 0, models)
-			for i := 0; i < models; i++ {
-				entries = append(entries, map[string]string{"id": "a-model-" + string(rune('a'+i))})
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": entries})
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func TestProbeAHealthy(t *testing.T) {
-	srv := fakeAStack(t, 2)
-	a := &App{aBaseURL: srv.URL, aURL: srv.URL}
-	a.aDiscoverPort = func() (int, bool) { return 0, false }
-
-	out := a.probeAConnectivity()
-	if !out.ok || out.status != http.StatusOK || out.errorCode != "" {
-		t.Fatalf("outcome = %+v, want ok", out)
-	}
-	if out.target != "a" || out.targetID != hostPortOnly(srv.URL) {
-		t.Fatalf("target = %q/%q, want host:port %q", out.target, out.targetID, hostPortOnly(srv.URL))
-	}
-	if out.detail != "A 运行中 · 2 个模型" {
-		t.Fatalf("detail = %q", out.detail)
-	}
-	if strings.Contains(out.targetID, "http") || strings.Contains(out.targetID, "/") {
-		t.Fatalf("target_id still carries scheme/path: %q", out.targetID)
-	}
-}
-
-func TestProbeAUnreachable(t *testing.T) {
-	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	deadURL := dead.URL
-	dead.Close()
-
-	a := &App{aBaseURL: deadURL, aURL: deadURL}
-	a.aDiscoverPort = func() (int, bool) { return 0, false }
-	out := a.probeAConnectivity()
-	if out.ok || out.errorCode != "unreachable" {
-		t.Fatalf("unreachable outcome = %+v", out)
-	}
-	if out.targetID != hostPortOnly(deadURL) || out.detail == "" {
-		t.Fatalf("target/detail = %q/%q", out.targetID, out.detail)
 	}
 }
 

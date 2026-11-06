@@ -43,13 +43,11 @@ const scopedChatReply = `{"id":"chatcmpl-1","choices":[{"index":0,"message":{"ro
 
 func TestModelsFilteredByKeyScope(t *testing.T) {
 	reg, _, _ := chatPluginServers(t, scopedChatReply)
-	a := &fakeA{models: []model.ModelInfo{{ID: "bare-1"}, {ID: "bare-2"}}}
 	g := newTestGateway(t, Options{
 		Plugins: reg,
-		A:       a,
 		KeyRecord: staticKeyRecord(KeyRecord{
 			Enabled:    true,
-			ModelScope: []string{"p1/*", "bare-1"},
+			ModelScope: []string{"p1/*"},
 		}),
 	})
 
@@ -67,7 +65,7 @@ func TestModelsFilteredByKeyScope(t *testing.T) {
 	for _, entry := range payload.Data {
 		ids = append(ids, entry.ID)
 	}
-	if got, want := strings.Join(ids, ","), "p1/alpha,p1/beta,bare-1"; got != want {
+	if got, want := strings.Join(ids, ","), "p1/alpha,p1/beta"; got != want {
 		t.Fatalf("model ids = %q, want %q", got, want)
 	}
 }
@@ -109,26 +107,6 @@ func TestKeyScopeRejectsModelBeforeRouting(t *testing.T) {
 		}
 		if calls1.count() != 1 {
 			t.Fatalf("plugin p1 calls = %d, want 1", calls1.count())
-		}
-	})
-
-	t.Run("exact bare A model", func(t *testing.T) {
-		aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, scopedChatReply))
-		a := &fakeA{base: aSrv.URL, key: "sk-a"}
-		g := newTestGateway(t, Options{
-			Plugins:   reg,
-			A:         a,
-			KeyRecord: staticKeyRecord(KeyRecord{Enabled: true, ModelScope: []string{"bare-1"}}),
-		})
-		rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
-			`{"model":"bare-1","messages":[]}`))
-		if rr.Code != http.StatusOK || aCalls.count() != 1 {
-			t.Fatalf("status = %d, A calls = %d (body %s)", rr.Code, aCalls.count(), rr.Body.String())
-		}
-		rr = serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
-			`{"model":"bare-2","messages":[]}`))
-		if rr.Code != http.StatusNotFound || aCalls.count() != 1 {
-			t.Fatalf("unlisted bare model: status = %d, A calls = %d", rr.Code, aCalls.count())
 		}
 	})
 }
@@ -617,16 +595,15 @@ func TestDisabledKeyRejected(t *testing.T) {
 }
 
 // TestPassThroughHonorsKeyScopeAndQuota covers the audited bypass: embeddings
-// and images used to reach A without the key's model scope and without daily
-// quota admission. Both are billable inference now.
+// and images are billable inference, so the key's model scope and daily quota
+// apply before anything else answers.
 func TestPassThroughHonorsKeyScopeAndQuota(t *testing.T) {
 	paths := []string{"/v1/embeddings", "/v1/images/generations"}
 
 	t.Run("scope mismatch is 404", func(t *testing.T) {
 		for _, path := range paths {
-			aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"ok":true}`))
 			g := newTestGateway(t, Options{
-				A:         &fakeA{base: aSrv.URL, key: "sk-a"},
+				Plugins:   newFakeRegistry(),
 				KeyRecord: staticKeyRecord(KeyRecord{Enabled: true, ModelScope: []string{"p1/*"}}),
 			})
 			rr := serve(g, newChatRequest(t, path, clientKey, `{"model":"gpt-4o","input":"x"}`))
@@ -636,17 +613,13 @@ func TestPassThroughHonorsKeyScopeAndQuota(t *testing.T) {
 			if code := decodeError(t, rr).Error.Code; code != "model_not_found" {
 				t.Fatalf("%s error code = %q", path, code)
 			}
-			if aCalls.count() != 0 {
-				t.Fatalf("%s reached A despite the key scope", path)
-			}
 		}
 	})
 
 	t.Run("quota exhausted is 429", func(t *testing.T) {
 		for _, path := range paths {
-			aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"ok":true}`))
 			g := newTestGateway(t, Options{
-				A:             &fakeA{base: aSrv.URL, key: "sk-a"},
+				Plugins:       newFakeRegistry(),
 				KeyRecord:     staticKeyRecord(KeyRecord{Enabled: true, DailyQuota: 1}),
 				KeyUsageToday: func(string, string) (int, error) { return 1, nil },
 			})
@@ -657,18 +630,15 @@ func TestPassThroughHonorsKeyScopeAndQuota(t *testing.T) {
 			if code := decodeError(t, rr).Error.Code; code != "key_quota_exceeded" {
 				t.Fatalf("%s error code = %q", path, code)
 			}
-			if aCalls.count() != 0 {
-				t.Fatalf("%s reached A despite the exhausted quota", path)
-			}
 		}
 	})
 
 	t.Run("admitted request is counted once", func(t *testing.T) {
-		aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"ok":true}`))
+		reg, calls1, _ := chatPluginServers(t, scopedChatReply)
 		var usageCalls int
 		g := newTestGateway(t, Options{
-			A:         &fakeA{base: aSrv.URL, key: "sk-a"},
-			KeyRecord: staticKeyRecord(KeyRecord{ID: "key-1", Enabled: true, ModelScope: []string{"gpt-4o"}}),
+			Plugins:   reg,
+			KeyRecord: staticKeyRecord(KeyRecord{ID: "key-1", Enabled: true, ModelScope: []string{"p1/*"}}),
 			KeyUsage: func(keyID, day string, requests, prompt, completion, cached int, credits *float64) {
 				usageCalls++
 				if keyID != "key-1" || requests != 1 {
@@ -676,9 +646,9 @@ func TestPassThroughHonorsKeyScopeAndQuota(t *testing.T) {
 				}
 			},
 		})
-		rr := serve(g, newChatRequest(t, "/v1/embeddings", clientKey, `{"model":"gpt-4o","input":"x"}`))
-		if rr.Code != http.StatusOK || aCalls.count() != 1 {
-			t.Fatalf("status = %d, A calls = %d (body %s)", rr.Code, aCalls.count(), rr.Body.String())
+		rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"p1/alpha","messages":[]}`))
+		if rr.Code != http.StatusOK || calls1.count() != 1 {
+			t.Fatalf("status = %d, plugin calls = %d (body %s)", rr.Code, calls1.count(), rr.Body.String())
 		}
 		if usageCalls != 1 {
 			t.Fatalf("usage calls = %d, want exactly 1", usageCalls)
@@ -686,12 +656,11 @@ func TestPassThroughHonorsKeyScopeAndQuota(t *testing.T) {
 	})
 
 	t.Run("scope rejection releases the reservation", func(t *testing.T) {
-		aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"ok":true}`))
 		reserver := &countingReserver{}
 		useReserver(t, reserver)
 		usageCalls := 0
 		g := newTestGateway(t, Options{
-			A:         &fakeA{base: aSrv.URL, key: "sk-a"},
+			Plugins:   newFakeRegistry(),
 			KeyRecord: staticKeyRecord(KeyRecord{ID: "key-1", Enabled: true, DailyQuota: 5, ModelScope: []string{"p1/*"}}),
 			KeyUsage:  func(string, string, int, int, int, int, *float64) { usageCalls++ },
 		})
@@ -701,15 +670,9 @@ func TestPassThroughHonorsKeyScopeAndQuota(t *testing.T) {
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", rr.Code)
 		}
-		if aCalls.count() != 0 {
-			t.Fatalf("A called %d times", aCalls.count())
-		}
 		if reserver.reserves != 1 || reserver.released != 1 || reserver.used("key-1", "2026-10-21") != 0 {
 			t.Fatalf("reserve/release/used = %d/%d/%d, want 1/1/0",
 				reserver.reserves, reserver.released, reserver.used("key-1", "2026-10-21"))
-		}
-		if usageCalls != 0 {
-			t.Fatalf("scope rejection was counted %d times", usageCalls)
 		}
 	})
 }

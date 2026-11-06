@@ -456,12 +456,6 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 	// / pluginWithoutAccounts 走后者），不会对同一请求二次脱敏；把这里拆开会让
 	// scheduled 路径（attempt，见 dispatch.attempt）彻底失去脱敏。单一调用点
 	// 的属性由 TestRedactScheduledMaskOnce 锁定。
-	//
-	// origBody 是这一函数脱敏**之前**的原始体：errNotScheduled 兜底走 A 时，
-	// forwardA 自带脱敏（Route="a"），必须把未脱敏的原始体交给它——否则已脱敏
-	// 的 body 会被再扫一遍（第二遍 n=0，白烧 CPU）。这正是 task-30 要去掉的
-	// 双重 MaskJSONBody 的唯一真实发生点。
-	origBody := body
 	red := NewWiring(g.redact)
 	route := ""
 	if plugin, _, ok := strings.Cut(rec.model, "/"); ok && plugin != "" {
@@ -508,11 +502,6 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 					rec.model = tgt.status.Manifest.ID + "/" + tgt.inner
 					rec.source = "plugin:" + tgt.status.Manifest.ID
 					continue
-				default:
-					// A 兜底：body 必须用**未脱敏**的 origBody —— forwardA 自带脱敏
-					// （Route="a"），传已脱敏的 body 会白烧一遍第二遍扫描。
-					g.forwardA(w, r, rec, origBody)
-					return
 				}
 			}
 			if buffered != nil {

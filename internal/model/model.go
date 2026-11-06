@@ -563,11 +563,6 @@ type HostStatus struct {
 	Version        string `json:"version"`
 	Port           int    `json:"port"`
 	DataDir        string `json:"data_dir"`
-	AConfigured    bool   `json:"a_configured"`
-	ARunning       bool   `json:"a_running"`
-	APort          int    `json:"a_port,omitempty"`
-	AState         string `json:"a_state,omitempty"`
-	ADetail        string `json:"a_detail,omitempty"`
 	PluginsRunning int    `json:"plugins_running"`
 	PluginsTotal   int    `json:"plugins_total"`
 	// EgressAssigned counts accounts with an explicit proxy assignment;

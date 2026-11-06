@@ -158,11 +158,6 @@ export interface HostStatus {
   version: string
   port: number
   data_dir: string
-  a_configured: boolean
-  a_running: boolean
-  a_port?: number
-  a_state?: 'ok' | 'unauthorized' | 'down'
-  a_detail?: string
   plugins_running: number
   plugins_total: number
   /** Accounts with an explicit proxy assignment, and how many of those failed. */
@@ -1895,13 +1890,6 @@ export interface ProbeQuery {
  * tags). The UI edits the known fields and deep-merges them over the last raw
  * payload so unknown keys are round-tripped untouched.
  */
-export interface AConfig {
-  base_url: string
-  exe_path: string
-  auto_start: boolean
-  model_cache_minutes: number
-}
-
 export interface ProxyConfig {
   enabled: boolean
   http: string
@@ -1964,6 +1952,8 @@ export interface GatewayConfig {
   rate_limit_per_ip_per_minute?: number
   /** Hostnames a reverse proxy may send (e.g. ai.example.com). */
   public_hosts?: string[]
+  /** Plugin that serves bare model names (no "plugin/" prefix); empty = 404. */
+  default_plugin?: string
 }
 
 /**
@@ -2017,7 +2007,6 @@ export interface Settings {
   listen_lan: boolean
   /** Self-registration under HKCU Run on the next host start. */
   autostart: boolean
-  a: AConfig
   proxy: ProxyConfig
   egress: EgressConfig
   plugins: PluginsConfig
@@ -2034,12 +2023,6 @@ export const DEFAULT_SETTINGS: Settings = {
   port: 7865,
   listen_lan: false,
   autostart: true,
-  a: {
-    base_url: 'http://127.0.0.1:7864',
-    exe_path: '',
-    auto_start: false,
-    model_cache_minutes: 10,
-  },
   proxy: {
     enabled: false,
     http: '',
@@ -2325,15 +2308,6 @@ export const api = {
 
   saveSettings(settings: Record<string, unknown>): Promise<void> {
     return request<void>('/settings', { method: 'PUT', body: JSON.stringify(settings) })
-  },
-
-  aKey: {
-    status(): Promise<{ configured: boolean }> {
-      return request<{ configured: boolean }>('/secrets/a-key')
-    },
-    set(key: string): Promise<void> {
-      return request<void>('/secrets/a-key', { method: 'PUT', body: JSON.stringify({ key }) })
-    },
   },
 
   setLANPassword(password: string): Promise<void> {

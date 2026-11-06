@@ -134,8 +134,8 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if updated.Port != 7999 || !updated.Logging.DebugBody {
 		t.Fatalf("updated settings = %+v", updated)
 	}
-	if updated.A.BaseURL != config.DefaultABaseURL {
-		t.Fatalf("a.base_url = %q, want the previous default", updated.A.BaseURL)
+	if updated.Gateway.ServiceMode != "open" || updated.Checkin.DefaultTime != config.DefaultCheckinTime {
+		t.Fatalf("untouched settings changed: %+v", updated)
 	}
 
 	loaded, err := config.Load(dir)

@@ -8,12 +8,10 @@ import (
 	"time"
 
 	"aiworkgate/internal/config"
-	"aiworkgate/internal/hosts"
 	"aiworkgate/internal/logging"
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/notify"
 	"aiworkgate/internal/schedule"
-	"aiworkgate/internal/winutil"
 )
 
 // schedPlugins adapts the plugin manager to the scheduler's narrow interface.
@@ -62,20 +60,6 @@ func (p schedPlugins) CheckinTime(pluginID string) (string, bool) {
 	return "", false
 }
 
-// schedA adapts the AI Work 助手 executable for the manual "sign all" action.
-type schedA struct{ app *App }
-
-func (a schedA) ExePath() string {
-	if a.app == nil {
-		return ""
-	}
-	return a.app.aExePath()
-}
-
-func (a schedA) RunTask(ctx context.Context, exePath, taskKey string) (hosts.TaskResult, error) {
-	return hosts.RunTask(ctx, exePath, taskKey)
-}
-
 // logNotifier keeps the historical host-log line for every event and forwards
 // the events internal/notify owns. The scheduler's per-account checkin_failed
 // is intentionally not forwarded: the run aggregator below folds a whole run
@@ -103,7 +87,6 @@ func (a *App) initSchedule() {
 	a.sched = &schedule.Manager{
 		Plugins:     schedPlugins{app: a},
 		Store:       a.store,
-		A:           schedA{app: a},
 		Notify:      logNotifier{log: a.logger, emit: a.onScheduledNotify},
 		Log:         a.logger,
 		RetryDelays: retryDelaysFromConfig(cfg.Checkin.RetryCount, cfg.Checkin.RetryBackoffSeconds),
@@ -135,74 +118,6 @@ func (a *App) checkinAll() any {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	return map[string]any{"results": a.sched.CheckinAll(ctx)}
-}
-
-// startAIfConfigured launches A at host startup when the user enabled
-// a.auto_start. A already running (port open) is left untouched.
-func (a *App) startAIfConfigured() {
-	if a == nil || a.logger == nil {
-		return
-	}
-	cfg := a.configSnapshot()
-	if !cfg.A.AutoStart {
-		return
-	}
-	if hosts.PortOpen(a.aPort) {
-		a.logger.Info("app", "A is already running", map[string]any{"port": a.aPort})
-		return
-	}
-	exe := a.aExePath()
-	if exe == "" {
-		a.logger.Warn("app", "a.auto_start is on but A's executable was not found", nil)
-		return
-	}
-	if err := hosts.StartApp(exe); err != nil {
-		a.logger.Warn("app", "cannot start A", map[string]any{"exe": exe, "error": err.Error()})
-		return
-	}
-	a.logger.Info("app", "A started", map[string]any{"exe": exe})
-}
-
-// aExePath resolves A's executable: the configured path wins, otherwise scan
-// the HKCU Run entries for the AI Work 助手 autostart value.
-func (a *App) aExePath() string {
-	if a == nil {
-		return ""
-	}
-	if p := strings.TrimSpace(a.configSnapshot().A.ExePath); p != "" {
-		return p
-	}
-	entries, err := winutil.ListRunEntries()
-	if err != nil {
-		return ""
-	}
-	for _, raw := range entries {
-		exe := exeFromRunValue(raw)
-		low := strings.ToLower(exe)
-		if strings.Contains(low, "ai-work-assistant.exe") || strings.Contains(low, "ai work") {
-			return exe
-		}
-	}
-	return ""
-}
-
-// exeFromRunValue extracts the executable from a Run value such as
-// `"C:\path\app.exe" --flag`.
-func exeFromRunValue(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	if raw[0] == '"' {
-		if end := strings.IndexByte(raw[1:], '"'); end >= 0 {
-			return raw[1 : 1+end]
-		}
-		return ""
-	}
-	if end := strings.IndexAny(raw, " \t"); end >= 0 {
-		return raw[:end]
-	}
-	return raw
 }
 
 // ---------------------------------------------------------------- notifications

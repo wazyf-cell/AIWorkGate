@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"aiworkgate/internal/fsutil"
-	"aiworkgate/internal/hosts"
 	"aiworkgate/internal/model"
 )
 
@@ -220,24 +218,6 @@ func findClientKey(keys []model.ClientKey, id string) (model.ClientKey, bool) {
 		}
 	}
 	return model.ClientKey{}, false
-}
-
-// portFromBaseURL extracts an explicit port from a base URL, falling back to
-// A's default gateway port.
-func portFromBaseURL(raw string) int {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return hosts.DefaultGatewayPort
-	}
-	p := u.Port()
-	if p == "" {
-		return hosts.DefaultGatewayPort
-	}
-	n, err := strconv.Atoi(p)
-	if err != nil || n < 1 || n > 65535 {
-		return hosts.DefaultGatewayPort
-	}
-	return n
 }
 
 // newProxyID returns "px_" plus 8 hex characters.

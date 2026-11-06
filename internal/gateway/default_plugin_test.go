@@ -1,10 +1,7 @@
 package gateway
 
-// The default-plugin slot (plan 2026-10-21 S9a): a bare model name is no longer
-// hard-wired to A. It resolves through `gateway.default_plugin` when that is
-// set, and A keeps serving it only while `gateway.legacy_a_fallback` is on.
-// These tests are the zero-code-deletion acceptance: the same binary answers 404
-// with no default plugin and with the legacy fallback off, without a code change.
+// The default-plugin slot: a bare model name resolves through
+// `gateway.default_plugin` when set; otherwise it is a 404 model_not_found.
 
 import (
 	"context"
@@ -20,9 +17,8 @@ import (
 	"aiworkgate/internal/scheduler"
 )
 
-// newDefaultPluginGateway builds a gateway with the default-plugin switch under
-// explicit test control. newTestGateway forces LegacyA=true to keep the legacy
-// suites honest, so this test needs the raw constructor.
+// newDefaultPluginGateway builds a gateway with the default-plugin slot under
+// explicit test control.
 func newDefaultPluginGateway(t *testing.T, opts Options) *Gateway {
 	t.Helper()
 	if opts.Keys == nil {
@@ -42,7 +38,6 @@ func TestBareModelTargetResolution(t *testing.T) {
 		name       string
 		plugins    PluginRegistry
 		defaultPl  string
-		legacyA    bool
 		wantOK     bool
 		wantErr    error
 		wantErrHas string
@@ -57,19 +52,13 @@ func TestBareModelTargetResolution(t *testing.T) {
 		{
 			name: "default plugin missing",
 			// A configured default that is not installed must fail loudly rather
-			// than silently falling back to A.
+			// than silently choosing another plugin.
 			plugins: newFakeRegistry(), defaultPl: "oc", wantErrHas: "oc",
 		},
 		{
-			name: "no default, legacy fallback on",
-			// ok=false with a nil error is the signal for "keep the old A path".
-			plugins: reg, defaultPl: "", legacyA: true,
-		},
-		{
-			name: "no default, legacy fallback off",
-			// This is the zero-code-deletion switch: nothing answers, so callers
-			// write 404 model_not_found.
-			plugins: reg, defaultPl: "", legacyA: false, wantErr: errNoDefaultRoute,
+			name: "no default",
+			// Nothing answers, so callers write 404 model_not_found.
+			plugins: reg, defaultPl: "", wantErr: errNoDefaultRoute,
 		},
 	}
 	for _, tc := range cases {
@@ -77,7 +66,6 @@ func TestBareModelTargetResolution(t *testing.T) {
 			g := newDefaultPluginGateway(t, Options{
 				Plugins:       tc.plugins,
 				DefaultPlugin: tc.defaultPl,
-				LegacyA:       tc.legacyA,
 			})
 			tgt, ok, err := g.bareModelTarget("gpt-4o")
 			if tc.wantErr != nil {
@@ -121,16 +109,13 @@ func TestBareModelTargetResolution(t *testing.T) {
 // an explicit "oc/model" request uses.
 func TestDefaultPluginServesBareName(t *testing.T) {
 	pSrv, pCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"ok":true}`))
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":true}`))
 	reg := newFakeRegistry().add(
 		pluginStatus("oc", true, model.ModelInfo{ID: "gpt-4o"}), pSrv.URL, "oc-token")
 	logs := &fakeLogSink{}
 	g := newDefaultPluginGateway(t, Options{
 		Plugins:       reg,
-		A:             &fakeA{base: aSrv.URL, key: "sk-a"},
 		Log:           logs,
 		DefaultPlugin: "oc",
-		LegacyA:       false,
 	})
 
 	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
@@ -140,9 +125,6 @@ func TestDefaultPluginServesBareName(t *testing.T) {
 	}
 	if got := pCalls.count(); got != 1 {
 		t.Fatalf("plugin calls = %d, want 1", got)
-	}
-	if got := aCalls.count(); got != 0 {
-		t.Fatalf("A calls = %d, want 0 (a default plugin must not touch A)", got)
 	}
 
 	upstream := pCalls.last(t)
@@ -173,13 +155,11 @@ func TestDefaultPluginServesBareName(t *testing.T) {
 
 // TestDefaultPluginMissingIsUnavailable is acceptance case 2: the configured
 // plugin is not installed, so the bare request fails with 503 plugin_unavailable
-// naming the plugin instead of quietly reaching A.
+// naming the plugin.
 func TestDefaultPluginMissingIsUnavailable(t *testing.T) {
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":true}`))
 	logs := &fakeLogSink{}
 	g := newDefaultPluginGateway(t, Options{
 		Plugins:       newFakeRegistry(),
-		A:             &fakeA{base: aSrv.URL, key: "sk-a"},
 		Log:           logs,
 		DefaultPlugin: "oc",
 	})
@@ -195,31 +175,22 @@ func TestDefaultPluginMissingIsUnavailable(t *testing.T) {
 	if !strings.Contains(payload.Error.Message, "oc") {
 		t.Fatalf("message = %q, want it to name the missing plugin", payload.Error.Message)
 	}
-	if got := aCalls.count(); got != 0 {
-		t.Fatalf("A calls = %d, want 0", got)
-	}
 	rows := logs.wait(t, 1)
 	if rows[0].Status != http.StatusServiceUnavailable {
 		t.Fatalf("unexpected log row: %+v", rows[0])
 	}
 }
 
-// TestNoDefaultPluginAndNoLegacyAIsModelNotFound is acceptance case 3: with the
-// slot empty and the legacy fallback off, a bare name is a 404 and A is never
-// contacted. This is what clearing one config value must achieve.
-func TestNoDefaultPluginAndNoLegacyAIsModelNotFound(t *testing.T) {
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":true}`))
-	fa := &fakeA{base: aSrv.URL, key: "sk-a"}
+// TestNoDefaultPluginIsModelNotFound is acceptance case 3: with the slot empty,
+// a bare name is a 404 and no plugin is contacted.
+func TestNoDefaultPluginIsModelNotFound(t *testing.T) {
 	pSrv, pCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"p":true}`))
 	reg := newFakeRegistry().add(
 		pluginStatus("oc", true, model.ModelInfo{ID: "gpt-4o"}), pSrv.URL, "tok")
 	logs := &fakeLogSink{}
 	g := newDefaultPluginGateway(t, Options{
 		Plugins: reg,
-		A:       fa,
 		Log:     logs,
-		// DefaultPlugin empty, LegacyA false: the shipped product with the
-		// compatibility switch turned off.
 	})
 
 	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"gpt-4o"}`))
@@ -230,25 +201,17 @@ func TestNoDefaultPluginAndNoLegacyAIsModelNotFound(t *testing.T) {
 	if payload.Error.Code != "model_not_found" {
 		t.Fatalf("error code = %q, want model_not_found", payload.Error.Code)
 	}
-	if got := aCalls.count(); got != 0 {
-		t.Fatalf("A requests = %d, want 0 (A must not be reachable this way)", got)
-	}
 	if got := pCalls.count(); got != 0 {
 		t.Fatalf("plugin requests = %d, want 0", got)
-	}
-	if got := fa.calls(); got != 0 {
-		t.Fatalf("A model fetches = %d, want 0", got)
 	}
 	rows := logs.wait(t, 1)
 	if rows[0].Status != http.StatusNotFound {
 		t.Fatalf("unexpected log row: %+v", rows[0])
 	}
 
-	// The same switch applies to the translated endpoints, which historically
-	// forwarded bare names to A unchanged.
+	// The same rule applies to the translated endpoints.
 	for _, path := range []string{"/v1/completions", "/v1/responses", "/v1/messages", "/v1/embeddings"} {
 		t.Run(path, func(t *testing.T) {
-			beforeA := aCalls.count()
 			rr := serve(g, newChatRequest(t, path, clientKey, `{"model":"gpt-4o","input":"x"}`))
 			if rr.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404 (body %s)", rr.Code, rr.Body.String())
@@ -256,60 +219,22 @@ func TestNoDefaultPluginAndNoLegacyAIsModelNotFound(t *testing.T) {
 			if got := decodeError(t, rr).Error.Code; got != "model_not_found" {
 				t.Fatalf("error code = %q, want model_not_found", got)
 			}
-			if aCalls.count() != beforeA {
-				t.Fatal("A must not be contacted for a bare name")
-			}
 		})
 	}
 }
 
-// TestLegacyAFallbackKeepsBareNamesOnA is acceptance case 4: the shipped
-// default (LegacyAFallback=true) must not change behaviour.
-func TestLegacyAFallbackKeepsBareNamesOnA(t *testing.T) {
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":true}`))
-	logs := &fakeLogSink{}
-	g := newDefaultPluginGateway(t, Options{
-		Plugins: newFakeRegistry(),
-		A:       &fakeA{base: aSrv.URL, key: "sk-a"},
-		Log:     logs,
-		LegacyA: true,
-	})
-
-	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"gpt-4o"}`))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", rr.Code, rr.Body.String())
-	}
-	if got := rr.Body.String(); got != `{"a":true}` {
-		t.Fatalf("body = %q, want A's reply", got)
-	}
-	if got := rr.Header().Get(sourceHeader); got != "a" {
-		t.Fatalf("source header = %q, want a", got)
-	}
-	upstream := aCalls.last(t)
-	if upstream.Path != "/v1/chat/completions" || upstream.Authorization != "Bearer sk-a" {
-		t.Fatalf("A request = %s auth %q", upstream.Path, upstream.Authorization)
-	}
-	rows := logs.wait(t, 1)
-	if rows[0].Source != "a" {
-		t.Fatalf("unexpected log row: %+v", rows[0])
-	}
-}
-
-// TestDefaultPluginDoesNotChangePrefixedRouting is acceptance case 5: an
+// TestDefaultPluginDoesNotChangePrefixedRouting is acceptance case 4: an
 // explicit "oc/model" request behaves exactly as before, and another plugin's
 // prefix still wins over the default.
 func TestDefaultPluginDoesNotChangePrefixedRouting(t *testing.T) {
 	ocSrv, ocCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"oc":true}`))
 	p2Srv, p2Calls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"p2":true}`))
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":true}`))
 	reg := newFakeRegistry().
 		add(pluginStatus("oc", true, model.ModelInfo{ID: "gpt-4o"}), ocSrv.URL, "oc-token").
 		add(pluginStatus("p2", true, model.ModelInfo{ID: "m2"}), p2Srv.URL, "p2-token")
 	g := newDefaultPluginGateway(t, Options{
 		Plugins:       reg,
-		A:             &fakeA{base: aSrv.URL, key: "sk-a"},
 		DefaultPlugin: "oc",
-		LegacyA:       true, // the default plugin must win even when A is enabled
 	})
 
 	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"oc/gpt-4o"}`))
@@ -318,9 +243,6 @@ func TestDefaultPluginDoesNotChangePrefixedRouting(t *testing.T) {
 	}
 	if got := ocCalls.count(); got != 1 {
 		t.Fatalf("oc calls = %d, want 1", got)
-	}
-	if got := aCalls.count(); got != 0 {
-		t.Fatalf("A calls = %d, want 0", got)
 	}
 	if got := rr.Header().Get(sourceHeader); got != "plugin:oc" {
 		t.Fatalf("source header = %q, want plugin:oc", got)
@@ -336,8 +258,8 @@ func TestDefaultPluginDoesNotChangePrefixedRouting(t *testing.T) {
 	}
 
 	// An unknown prefix is not an installed plugin id, so matchPlugin leaves it
-	// to the bare-name route. With a default plugin configured, that slot wins
-	// over the legacy A fallback and the plugin itself rejects the model.
+	// to the bare-name route. With a default plugin configured, that slot owns
+	// the name and the plugin itself rejects the model.
 	rr = serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"other/x"}`))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 from the default plugin (body %s)", rr.Code, rr.Body.String())
@@ -345,9 +267,6 @@ func TestDefaultPluginDoesNotChangePrefixedRouting(t *testing.T) {
 	payload := decodeError(t, rr)
 	if payload.Error.Code != "model_not_found" || !strings.Contains(payload.Error.Message, "oc") {
 		t.Fatalf("unexpected error: %+v", payload.Error)
-	}
-	if got := aCalls.count(); got != 0 {
-		t.Fatalf("A calls = %d, want 0 (the default plugin owns bare names)", got)
 	}
 	if got := ocCalls.count(); got != 1 {
 		t.Fatalf("oc calls = %d, want 1 (an unknown model is rejected before the call)", got)
@@ -401,12 +320,10 @@ func TestDefaultPluginServesTranslatedEndpoints(t *testing.T) {
 	const chatReply = `{"id":"c1","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],` +
 		`"usage":{"prompt_tokens":1,"completion_tokens":1}}`
 	pSrv, pCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, chatReply))
-	aSrv, aCalls := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"a":true}`))
 	reg := newFakeRegistry().add(
 		pluginStatus("oc", true, model.ModelInfo{ID: "gpt-4o"}), pSrv.URL, "oc-token")
 	g := newDefaultPluginGateway(t, Options{
 		Plugins:       reg,
-		A:             &fakeA{base: aSrv.URL, key: "sk-a"},
 		DefaultPlugin: "oc",
 	})
 
@@ -436,9 +353,6 @@ func TestDefaultPluginServesTranslatedEndpoints(t *testing.T) {
 	}
 	if got := pCalls.count(); got != 2 {
 		t.Fatalf("plugin calls = %d, want 2", got)
-	}
-	if got := aCalls.count(); got != 0 {
-		t.Fatalf("A calls = %d, want 0 (translated endpoints must use the plugin)", got)
 	}
 }
 
