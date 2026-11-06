@@ -272,6 +272,14 @@ type Options struct {
 	ProbeConnectivity func(req ProbeRequest) (ProbeResult, error)
 	ProbeHistory      func(limit int, kind, targetID string) ([]store.ConnectivityProbe, error)
 
+	// Model test (P12-1, D-27/D-39). ModelTest sends one minimal chat request to
+	// a plugin model through the existing scheduling path and returns the
+	// magpie-shaped result {ok,status,ms,model,error,otherAPI}; ModelTestBatch
+	// tests many models with per-provider parallelism and persists every result
+	// in the diagnostics probes table. Nil callbacks answer 501.
+	ModelTest      func(provider, model string) (ModelTestResult, error)
+	ModelTestBatch func(items []ModelTestItem) ([]ModelTestResult, error)
+
 	// S3 scheduling center (§5.4). Every callback receives already validated
 	// input and returns a JSON payload (normally the refreshed overview).
 	SchedulerOverview     func() (any, error)
@@ -412,6 +420,8 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/custom-connections/{id}/models/import", s.handleCustomConnectionImport)
 	mux.HandleFunc("/api/diagnostics/probe", s.handleDiagnosticsProbe)
 	mux.HandleFunc("/api/diagnostics/probes", s.handleDiagnosticsProbes)
+	mux.HandleFunc("/api/models/test", s.handleModelTestBatch)
+	mux.HandleFunc("/api/models/{provider}/{model}/test", s.handleModelTest)
 	mux.HandleFunc("/api/scheduler", s.handleScheduler)
 	mux.HandleFunc("/api/scheduler/global", s.handleSchedulerGlobal)
 	mux.HandleFunc("/api/scheduler/pools/{plugin}", s.handleSchedulerPool)

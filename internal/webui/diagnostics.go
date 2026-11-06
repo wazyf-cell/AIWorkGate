@@ -35,6 +35,11 @@ const (
 	ProbeKindA           = "a"
 	ProbeKindPlugin      = "plugin"
 	ProbeKindCustomModel = "custom_model"
+	// ProbeKindModelTest is the kind the P12-1 model test writes into the same
+	// probes table (a row per tested model). It is never accepted as an input
+	// kind for POST /api/diagnostics/probe; it only has to be a legal filter for
+	// the history endpoint.
+	ProbeKindModelTest = "model_test"
 )
 
 // ProbeRequest is a validated probe request. Model is the bare model id (a
@@ -142,9 +147,9 @@ func (s *server) handleDiagnosticsProbes(w http.ResponseWriter, r *http.Request)
 	limit := parseLimit(query.Get("limit"), diagnosticsProbeDefaultLimit, diagnosticsProbeMaxLimit)
 	kind := strings.ToLower(strings.TrimSpace(query.Get("kind")))
 	switch kind {
-	case "", ProbeKindA, ProbeKindPlugin, ProbeKindCustomModel:
+	case "", ProbeKindA, ProbeKindPlugin, ProbeKindCustomModel, ProbeKindModelTest:
 	default:
-		writeError(w, http.StatusBadRequest, "kind 必须是 a、plugin 或 custom_model", "invalid_query")
+		writeError(w, http.StatusBadRequest, "kind 必须是 a、plugin、custom_model 或 model_test", "invalid_query")
 		return
 	}
 	targetID := strings.TrimSpace(query.Get("target_id"))

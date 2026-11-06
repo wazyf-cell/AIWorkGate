@@ -33,6 +33,9 @@ type Query struct {
 	Page     int
 	PageSize int
 	Model    string
+	// ConversationID narrows /api/usage/sessions to one conversation
+	// (D-32③ 聚合视图下钻；空 = 不过滤).
+	ConversationID string
 }
 
 // ParseQuery interprets from/to (YYYY-MM-DD local, inclusive), plugin, group
@@ -70,6 +73,8 @@ func ParseQuery(values url.Values, now time.Time) (Query, error) {
 		Page:     1,
 		PageSize: DefaultPageSize,
 		Model:    strings.TrimSpace(firstValue(values, "model")),
+		// D-32③：聚合视图下钻到逐请求的会话过滤
+		ConversationID: strings.TrimSpace(firstValue(values, "conversation_id")),
 		Filter: store.UsageFilter{
 			FromDay: from.Format("2006-01-02"),
 			ToDay:   to.Format("2006-01-02"),

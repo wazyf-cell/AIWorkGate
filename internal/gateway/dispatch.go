@@ -419,14 +419,25 @@ func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, cl
 // (mod.rs:551-563, pool.rs:823-896) and Retry-After-based 429 cooldown would
 // change pinned scheduler tests.
 func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *reqRecord, body []byte, path string) {
-	// P10：入站脱敏（scheduled 主路径的共享入口；Route=rec.model 的插件前缀），
+	// P10：入站脱敏（scheduled 主路径的唯一入口；Route=rec.model 的插件前缀），
 	// 所有 attempt/hedge 共用脱敏后的 body；审计进 rec。
+	//
+	// 只保留这一处调用点：forwardScheduled 与 forwardPlugin 是互斥分支（未调度
+	// / pluginWithoutAccounts 走后者），不会对同一请求二次脱敏；把这里拆开会让
+	// scheduled 路径（attempt，见 dispatch.attempt）彻底失去脱敏。单一调用点
+	// 的属性由 TestRedactScheduledMaskOnce 锁定。
+	//
+	// origBody 是这一函数脱敏**之前**的原始体：errNotScheduled 兜底走 A 时，
+	// forwardA 自带脱敏（Route="a"），必须把未脱敏的原始体交给它——否则已脱敏
+	// 的 body 会被再扫一遍（第二遍 n=0，白烧 CPU）。这正是 task-30 要去掉的
+	// 双重 MaskJSONBody 的唯一真实发生点。
+	origBody := body
 	red := NewWiring(g.redact)
+	route := ""
 	if plugin, _, ok := strings.Cut(rec.model, "/"); ok && plugin != "" {
-		body = red.MaskJSONBody(body, plugin)
-	} else {
-		body = red.MaskJSONBody(body, "")
+		route = plugin
 	}
+	body = red.MaskJSONBody(body, route)
 	rec.redactLine = red.AuditLine()
 
 	exclude := map[scheduler.AccountKey]bool{}
@@ -465,7 +476,9 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 					rec.source = "plugin:" + tgt.status.Manifest.ID
 					continue
 				default:
-					g.forwardA(w, r, rec, body)
+					// A 兜底：body 必须用**未脱敏**的 origBody —— forwardA 自带脱敏
+					// （Route="a"），传已脱敏的 body 会白烧一遍第二遍扫描。
+					g.forwardA(w, r, rec, origBody)
 					return
 				}
 			}

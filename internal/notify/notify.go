@@ -50,14 +50,19 @@ const (
 	KindCheckinDone = "checkin_done"
 	KindAccountDead = "account_dead"
 	KindQuotaLow    = "quota_low"
-	KindTest        = "test"
+	// KindQuotaExpiring is the P9-2 "券/批次将失效" alert (runsOutAt 临近).
+	KindQuotaExpiring = "quota_expiring"
+	// KindQuotaResetting is the P9-2 "周期重置前未用完" alert (resetsAt 临近
+	// 且 used/limit 低).
+	KindQuotaResetting = "quota_resetting"
+	KindTest           = "test"
 )
 
 // Channels lists the accepted channel identifiers in UI order.
 var Channels = []string{ChannelGeneric, ChannelBark, ChannelServerChan, ChannelWeCom}
 
 // Kinds lists the event kinds a user may subscribe to.
-var Kinds = []string{KindCheckinFail, KindCheckinDone, KindAccountDead, KindQuotaLow}
+var Kinds = []string{KindCheckinFail, KindCheckinDone, KindAccountDead, KindQuotaLow, KindQuotaExpiring, KindQuotaResetting}
 
 // URLSecretKey is the secrets.Store extra key that holds the webhook URL. The
 // URL is a credential: it never appears in config.json, logs or API responses.
@@ -83,7 +88,8 @@ func ValidChannel(name string) bool {
 // ValidKind reports whether kind is an accepted subscription.
 func ValidKind(kind string) bool {
 	switch kind {
-	case KindCheckinFail, KindCheckinDone, KindAccountDead, KindQuotaLow:
+	case KindCheckinFail, KindCheckinDone, KindAccountDead, KindQuotaLow,
+		KindQuotaExpiring, KindQuotaResetting:
 		return true
 	}
 	return false

@@ -8,6 +8,8 @@ import {
   type AccountGroup,
   type PluginStatus,
   type UsageAccountCredit,
+  type UsageConversation,
+  type UsageConversationsParams,
   type UsageFilterParams,
   type UsageKeyRow,
   type UsageKpis,
@@ -178,6 +180,7 @@ function resetFilters() {
   selected.group.splice(0)
   selected.account.splice(0)
   drill.value = null
+  convDrill.value = null
   applyPreset('7d')
   if (hadDrill && tab.value === 'sessions') void loadSessions()
 }
@@ -241,8 +244,115 @@ const sessionParams = computed<UsageSessionsParams>(() => {
     account: filterParams.value.account,
     page: sessionPage.value,
     page_size: PAGE_SIZE,
+    // D-32③：聚合视图下钻带会话过滤（store 支持前被后端忽略，就绪后自动生效）
+    conversation_id: convDrill.value?.conversation_id || undefined,
   }
 })
+
+/* ---- D-32③ 会话真聚合（骨架；/usage/conversations 后端就绪后自动点亮） ---- */
+
+type SessionMode = 'requests' | 'conversations'
+const sessionMode = ref<SessionMode>('requests')
+const conversations = ref<UsageConversation[]>([])
+const convHasMore = ref(false)
+const convNextCursor = ref('')
+/** 游标栈：keyset 分页无 OFFSET，上一页靠前端回退游标。 */
+const convCursorStack = ref<string[]>([])
+const convPage = ref(1)
+const conversationsLoaded = ref(false)
+let conversationsSeq = 0
+/** 展开一条聚合行看明细（模型/插件/账号分布，全部来自聚合响应本身）。 */
+const expandedConv = ref<string | null>(null)
+/** 聚合行下钻到逐请求视图（conversation_id 过滤）。 */
+const convDrill = ref<UsageConversation | null>(null)
+
+const convParams = computed<UsageConversationsParams>(() => {
+  const active = drill.value
+  const base: UsageConversationsParams = {
+    from: active?.day ?? filterParams.value.from,
+    to: active?.day ?? filterParams.value.to,
+    plugin: active?.plugin || filterParams.value.plugin,
+    group: filterParams.value.group,
+    account: filterParams.value.account,
+    page_size: PAGE_SIZE,
+  }
+  const cursor = convCursorStack.value[convCursorStack.value.length - 1]
+  if (cursor) base.cursor = cursor
+  return base
+})
+
+async function loadConversations() {
+  const token = ++conversationsSeq
+  loading.sessions = true
+  try {
+    const data = await api.usage.conversations(convParams.value)
+    if (token !== conversationsSeq) return
+    conversations.value = data?.items ?? []
+    convHasMore.value = data?.has_more ?? false
+    convNextCursor.value = data?.next_cursor ?? ''
+    conversationsLoaded.value = true
+    error.value = ''
+  } catch (e) {
+    if (token !== conversationsSeq) return
+    conversations.value = []
+    convHasMore.value = false
+    convNextCursor.value = ''
+    conversationsLoaded.value = true
+    error.value = errorMessage(e)
+  } finally {
+    if (token === conversationsSeq) loading.sessions = false
+  }
+}
+
+function setSessionMode(next: SessionMode) {
+  if (sessionMode.value === next) return
+  sessionMode.value = next
+  if (next === 'conversations' && !conversationsLoaded.value) void loadConversations()
+}
+
+function goConvPage(next: number) {
+  if (next === convPage.value) return
+  if (next > convPage.value) {
+    if (!convHasMore.value || !convNextCursor.value) return
+    convCursorStack.value = [...convCursorStack.value, convNextCursor.value]
+  } else {
+    if (convCursorStack.value.length === 0) return
+    convCursorStack.value = convCursorStack.value.slice(0, -1)
+  }
+  convPage.value = next
+  expandedConv.value = null
+  void loadConversations()
+}
+
+function toggleConv(id: string) {
+  expandedConv.value = expandedConv.value === id ? null : id
+}
+
+/** 聚合行 → 逐请求视图（conversation_id 过滤；store 支持前该参数被后端忽略）。 */
+function drillIntoConversation(item: UsageConversation) {
+  convDrill.value = item
+  sessionMode.value = 'requests'
+  sessionPage.value = 1
+  sessionsLoaded.value = false
+  sessions.value = []
+  sessionTotal.value = 0
+  void loadSessions()
+}
+
+function clearConvDrill() {
+  convDrill.value = null
+  sessionPage.value = 1
+  sessionsLoaded.value = false
+  sessions.value = []
+  sessionTotal.value = 0
+  void loadSessions()
+}
+
+function convWindow(item: UsageConversation): string {
+  const first = item.first_ts ? formatTimestamp(item.first_ts) : '—'
+  const last = item.last_ts ? formatTimestamp(item.last_ts) : '—'
+  return first === last ? first : `${first} → ${last}`
+}
 
 async function loadSummary() {
   const token = ++summarySeq
@@ -404,7 +514,7 @@ function setKeyDays(days: number) {
 function loadActiveTab() {
   if (tab.value === 'credits') return loadCredits()
   if (tab.value === 'expiry') return loadExpiry()
-  if (tab.value === 'sessions') return loadSessions()
+  if (tab.value === 'sessions') return sessionMode.value === 'conversations' ? loadConversations() : loadSessions()
   if (tab.value === 'latency') return loadLatency()
   if (tab.value === 'keys') return loadKeys()
   if (tab.value === 'models') return loadModels()
@@ -424,7 +534,11 @@ function setTab(next: Tab) {
   openMenu.value = ''
   if (next === 'credits' && !creditsLoaded.value) void loadCredits()
   else if (next === 'expiry' && !expiryLoaded.value) void loadExpiry()
-  else if (next === 'sessions' && !sessionsLoaded.value) void loadSessions()
+  else if (next === 'sessions') {
+    if (sessionMode.value === 'conversations') {
+      if (!conversationsLoaded.value) void loadConversations()
+    } else if (!sessionsLoaded.value) void loadSessions()
+  }
   else if (next === 'latency' && !latencyLoaded.value) void loadLatency()
   else if (next === 'keys' && !keysLoaded.value) void loadKeys()
   else if (next === 'models' && !modelsLoaded.value) void loadModels()
@@ -432,7 +546,15 @@ function setTab(next: Tab) {
 
 watch(filterKey, () => {
   drill.value = null
+  convDrill.value = null
   sessionPage.value = 1
+  convPage.value = 1
+  convCursorStack.value = []
+  expandedConv.value = null
+  conversationsLoaded.value = false
+  conversations.value = []
+  convHasMore.value = false
+  convNextCursor.value = ''
   creditsLoaded.value = false
   expiryLoaded.value = false
   sessionsLoaded.value = false
@@ -1549,7 +1671,7 @@ onBeforeUnmount(() => {
       </section>
     </template>
 
-    <!-- 会话明细 -->
+    <!-- 会话明细（逐请求 / D-32③ 会话聚合） -->
     <template v-else>
       <section class="card">
         <div class="card-head">
@@ -1559,9 +1681,134 @@ onBeforeUnmount(() => {
               下钻：{{ drill.day }}<template v-if="drill.plugin"> · {{ pluginLabel(drill.plugin) }}</template>
               <button type="button" class="drill-clear" aria-label="清除下钻" @click="clearDrill">×</button>
             </span>
+            <span v-if="sessionMode === 'requests' && convDrill" class="drill-chip">
+              会话：{{ convDrill.conversation_id || '—' }}
+              <button type="button" class="drill-clear" aria-label="清除会话过滤" @click="clearConvDrill">×</button>
+            </span>
+            <span class="mode-toggle" role="tablist" aria-label="会话视图">
+              <button
+                type="button"
+                class="btn sm"
+                :class="{ active: sessionMode === 'conversations' }"
+                @click="setSessionMode('conversations')"
+              >会话聚合</button>
+              <button
+                type="button"
+                class="btn sm"
+                :class="{ active: sessionMode === 'requests' }"
+                @click="setSessionMode('requests')"
+              >逐请求</button>
+            </span>
           </div>
-          <span class="sub">共 {{ formatNumber(sessionTotal) }} 条 · 每页 {{ PAGE_SIZE }} 条 · 点击行查看详情</span>
+          <span v-if="sessionMode === 'requests'" class="sub">
+            共 {{ formatNumber(sessionTotal) }} 条 · 每页 {{ PAGE_SIZE }} 条 · 点击行查看详情
+          </span>
+          <span v-else class="sub">
+            每行一个会话（跨插件归并）· 每页 {{ PAGE_SIZE }} 条 · 点击行展开明细
+          </span>
         </div>
+
+        <!-- D-32③ 会话聚合视图 -->
+        <div v-if="sessionMode === 'conversations'" class="table-wrap">
+          <table class="table sessions-table">
+            <thead>
+              <tr>
+                <th>会话</th>
+                <th>起止</th>
+                <th>请求</th>
+                <th>错误</th>
+                <th>输入</th>
+                <th>输出</th>
+                <th>积分</th>
+                <th>模型分布</th>
+                <th>插件</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-if="loading.sessions && !conversationsLoaded">
+                <tr v-for="n in 6" :key="`cvsk-${n}`">
+                  <td colspan="9"><span class="skeleton skeleton-line"></span></td>
+                </tr>
+              </template>
+              <template v-else>
+                <template v-for="(item, index) in conversations" :key="item.conversation_id || `conv-${index}`">
+                  <tr
+                    class="row-click"
+                    tabindex="0"
+                    @click="toggleConv(item.conversation_id || `conv-${index}`)"
+                    @keydown.enter="toggleConv(item.conversation_id || `conv-${index}`)"
+                  >
+                    <td class="small mono conv-cell truncate" :title="item.conversation_id || ''">
+                      {{ item.conversation_id || '（无会话 ID）' }}
+                    </td>
+                    <td class="num small">{{ convWindow(item) }}</td>
+                    <td class="num small">{{ formatNumber(item.requests) }}</td>
+                    <td class="num small">
+                      <span v-if="(item.errors ?? 0) > 0" class="badge plain err">{{ item.errors }}</span>
+                      <span v-else>0</span>
+                    </td>
+                    <td class="num small">{{ formatNumber(item.prompt_tokens) }}</td>
+                    <td class="num small">{{ formatNumber(item.completion_tokens) }}</td>
+                    <td class="num small">{{ formatNumber(item.credits) }}</td>
+                    <td class="small">
+                      <span
+                        v-for="m in (item.models ?? []).slice(0, 3)"
+                        :key="m"
+                        class="badge plain"
+                        :title="m"
+                      >{{ m }}</span>
+                      <span v-if="(item.models?.length ?? 0) > 3" class="muted small">
+                        +{{ (item.models?.length ?? 0) - 3 }}
+                      </span>
+                    </td>
+                    <td class="small">
+                      {{ (item.plugins ?? []).map(pluginLabel).join(', ') || '—' }}
+                      <span v-if="(item.plugins?.length ?? 0) > 1" class="muted small block">跨插件归并</span>
+                    </td>
+                  </tr>
+                  <tr v-if="expandedConv === (item.conversation_id || `conv-${index}`)">
+                    <td colspan="9">
+                      <div class="conv-detail">
+                        <span class="muted small">账号：{{ (item.accounts ?? []).join(', ') || '—' }}</span>
+                        <span class="muted small">
+                          模型：{{ (item.models ?? []).join(', ') || '—' }}
+                        </span>
+                        <button type="button" class="btn sm" @click.stop="drillIntoConversation(item)">
+                          查看逐请求
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+                <tr v-if="conversations.length === 0">
+                  <td colspan="9">
+                    <div class="empty">
+                      <strong>暂无会话聚合</strong>
+                      <span>调整筛选条件，或等待客户端产生请求。</span>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="sessionMode === 'conversations'" class="pager">
+          <span>第 {{ convPage }} 页</span>
+          <button
+            type="button"
+            class="btn sm"
+            :disabled="convPage <= 1 || loading.sessions"
+            @click="goConvPage(convPage - 1)"
+          >上一页</button>
+          <button
+            type="button"
+            class="btn sm"
+            :disabled="!convHasMore || loading.sessions"
+            @click="goConvPage(convPage + 1)"
+          >下一页</button>
+        </div>
+
+        <template v-if="sessionMode === 'requests'">
         <div class="table-wrap">
           <table class="table sessions-table">
             <thead>
@@ -1647,6 +1894,7 @@ onBeforeUnmount(() => {
             下一页
           </button>
         </div>
+        </template>
       </section>
     </template>
 

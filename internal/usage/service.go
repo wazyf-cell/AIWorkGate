@@ -236,7 +236,7 @@ func (s *Service) Sessions(q Query) (SessionsResponse, error) {
 		out.PageSize = MaxPageSize
 	}
 	offset := (out.Page - 1) * out.PageSize
-	rows, total, err := s.Store.UsageSessions(q.Filter, q.Model, out.PageSize, offset)
+	rows, total, err := s.Store.UsageSessions(q.Filter, q.Model, q.ConversationID, out.PageSize, offset)
 	if err != nil {
 		return out, err
 	}

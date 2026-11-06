@@ -156,6 +156,9 @@ func (a *App) webOptions() webui.Options {
 		ProbeConnectivity: a.probeConnectivity,
 		ProbeHistory:      a.listConnectivityProbes,
 
+		ModelTest:      a.modelTest,
+		ModelTestBatch: a.modelTestBatch,
+
 		SchedulerOverview:     a.schedulerOverview,
 		SaveSchedulerGlobal:   a.saveSchedulerGlobal,
 		SaveSchedulerPool:     a.saveSchedulerPool,

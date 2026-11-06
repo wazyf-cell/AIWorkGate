@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"aiworkgate/internal/model"
 )
 
 const (
@@ -74,7 +76,12 @@ const (
 var DefaultNoProxy = []string{"127.0.0.1", "localhost"}
 
 // DefaultNotifyEvents is the subscription every fresh install starts with.
-var DefaultNotifyEvents = []string{"checkin_fail", "checkin_done", "account_dead", "quota_low"}
+// The two P9-2 quota alert kinds are subscribed so the three independent alert
+// rules actually reach the user out of the box.
+var DefaultNotifyEvents = []string{
+	"checkin_fail", "checkin_done", "account_dead", "quota_low",
+	"quota_expiring", "quota_resetting",
+}
 
 // notifyChannels is the closed set accepted in config.json (unknown values are
 // normalized to generic so a hand-edited file still starts).
@@ -83,6 +90,8 @@ var notifyChannels = map[string]bool{"generic": true, "bark": true, "serverchan"
 // notifyEvents is the closed set of event kinds the host can emit.
 var notifyEvents = map[string]bool{
 	"checkin_fail": true, "checkin_done": true, "account_dead": true, "quota_low": true,
+	// P9-2: the two new quota alert kinds.
+	"quota_expiring": true, "quota_resetting": true,
 }
 
 var defaultRetryBackoff = []int{5, 20}
@@ -182,6 +191,89 @@ type PluginsConfig struct {
 	// configured every install must carry manifest.sig signed by one of these
 	// keys: an installed plugin is a process running as the gateway user.
 	TrustedKeys map[string]string `json:"trusted_keys,omitempty"`
+
+	// QuotaAlerts holds the global defaults for the three independent quota
+	// alert rules (P9-2, D-21③). A zero field disables that rule.
+	QuotaAlerts QuotaAlertsConfig `json:"quota_alerts"`
+
+	// QuotaAlertPluginOverrides maps a plugin id to per-plugin overrides of
+	// the alert thresholds (D-21③: a platform whose voucher only lives 3 days
+	// needs a shorter window than the global 7). A nil field in an override
+	// keeps the global default.
+	QuotaAlertPluginOverrides map[string]QuotaAlertPluginOverride `json:"quota_alert_plugin_overrides,omitempty"`
+}
+
+// QuotaAlertsConfig is the global defaults for the three quota alert rules.
+type QuotaAlertsConfig struct {
+	// RunsOutWarningDays is how many days before runsOutAt (or legacy
+	// expires_at) the "即将到期" rule fires.
+	RunsOutWarningDays int `json:"runs_out_warning_days"`
+	// ResetWarningDays is how many days before resetsAt the "即将重置" rule
+	// fires.
+	ResetWarningDays int `json:"reset_warning_days"`
+	// ResetWarningUsageRatio is the used/limit ratio below which the
+	// "即将重置" rule fires (most of the quota will reset unused).
+	ResetWarningUsageRatio float64 `json:"reset_warning_usage_ratio"`
+	// BalanceLowRatio is the used/limit ratio at/above which the "余额不足"
+	// rule fires.
+	BalanceLowRatio float64 `json:"balance_low_ratio"`
+	// BalanceLowAbsolute is the absolute remaining threshold used when the
+	// plugin reports no total (legacy single-group data often has total=0).
+	BalanceLowAbsolute float64 `json:"balance_low_absolute"`
+}
+
+// QuotaAlertPluginOverride overrides individual alert thresholds for one
+// plugin; a nil field keeps the global default.
+type QuotaAlertPluginOverride struct {
+	RunsOutWarningDays     *int     `json:"runs_out_warning_days,omitempty"`
+	ResetWarningDays       *int     `json:"reset_warning_days,omitempty"`
+	ResetWarningUsageRatio *float64 `json:"reset_warning_usage_ratio,omitempty"`
+	BalanceLowRatio        *float64 `json:"balance_low_ratio,omitempty"`
+	BalanceLowAbsolute     *float64 `json:"balance_low_absolute,omitempty"`
+}
+
+// ThresholdsFor resolves the effective thresholds for one plugin: the global
+// defaults with the plugin's overrides applied on top. A zero global field
+// stays zero (rule disabled) unless an override fills it.
+func (c QuotaAlertsConfig) ThresholdsFor(pluginID string, overrides map[string]QuotaAlertPluginOverride) model.QuotaAlertThresholds {
+	base := model.DefaultQuotaAlertThresholds()
+	// The config file may carry explicit zeros meaning "disabled", so start
+	// from the file's values rather than the model defaults when they are set.
+	if c.RunsOutWarningDays != 0 {
+		base.RunsOutWarningDays = c.RunsOutWarningDays
+	}
+	if c.ResetWarningDays != 0 {
+		base.ResetWarningDays = c.ResetWarningDays
+	}
+	if c.ResetWarningUsageRatio != 0 {
+		base.ResetWarningUsageRatio = c.ResetWarningUsageRatio
+	}
+	if c.BalanceLowRatio != 0 {
+		base.BalanceLowRatio = c.BalanceLowRatio
+	}
+	if c.BalanceLowAbsolute != 0 {
+		base.BalanceLowAbsolute = c.BalanceLowAbsolute
+	}
+	ov, ok := overrides[pluginID]
+	if !ok {
+		return base
+	}
+	if ov.RunsOutWarningDays != nil {
+		base.RunsOutWarningDays = *ov.RunsOutWarningDays
+	}
+	if ov.ResetWarningDays != nil {
+		base.ResetWarningDays = *ov.ResetWarningDays
+	}
+	if ov.ResetWarningUsageRatio != nil {
+		base.ResetWarningUsageRatio = *ov.ResetWarningUsageRatio
+	}
+	if ov.BalanceLowRatio != nil {
+		base.BalanceLowRatio = *ov.BalanceLowRatio
+	}
+	if ov.BalanceLowAbsolute != nil {
+		base.BalanceLowAbsolute = *ov.BalanceLowAbsolute
+	}
+	return base
 }
 
 // EgressConfig holds the host's own egress accounting switches. It is separate
@@ -268,6 +360,13 @@ func Default() Config {
 			StrictEgress:                false,
 			MarketUpdateIntervalMinutes: DefaultMarketUpdateIntervalMinutes,
 			MarketUpdatePolicy:          MarketUpdatePolicyPrompt,
+			QuotaAlerts: QuotaAlertsConfig{
+				RunsOutWarningDays:     7,
+				ResetWarningDays:       7,
+				ResetWarningUsageRatio: 0.30,
+				BalanceLowRatio:        0.90,
+				BalanceLowAbsolute:     100,
+			},
 		},
 		// Direct egress is recorded only when the user opts in: turning it on
 		// binds loopback listeners that plugins route through, so the shipped

@@ -32,6 +32,7 @@ const (
 const (
 	StrategyCreditFirst    = "credit_first"
 	StrategyRemainingFirst = "remaining_first"
+	StrategyExpiringFirst  = "expiring_first"
 	StrategyRandom         = "random"
 	StrategyWeighted3      = "weighted3"
 	StrategyP2C            = "p2c"
@@ -49,8 +50,8 @@ var (
 
 // StrategyNames lists the accepted in-pool strategies in UI order.
 var StrategyNames = []string{
-	StrategyCreditFirst, StrategyRemainingFirst, StrategyRandom,
-	StrategyWeighted3, StrategyP2C, StrategyFixed,
+	StrategyCreditFirst, StrategyRemainingFirst, StrategyExpiringFirst,
+	StrategyRandom, StrategyWeighted3, StrategyP2C, StrategyFixed,
 }
 
 // InterPoolNames lists the accepted inter-pool modes.
@@ -60,8 +61,8 @@ var InterPoolNames = []string{InterPoolSmart, InterPoolFixed}
 // empty string is accepted by the admin API as "reset to the default".
 func ValidStrategy(name string) bool {
 	switch name {
-	case StrategyCreditFirst, StrategyRemainingFirst, StrategyRandom,
-		StrategyWeighted3, StrategyP2C, StrategyFixed:
+	case StrategyCreditFirst, StrategyRemainingFirst, StrategyExpiringFirst,
+		StrategyRandom, StrategyWeighted3, StrategyP2C, StrategyFixed:
 		return true
 	}
 	return false
@@ -91,11 +92,20 @@ type Account struct {
 	// ok / expired / invalid / rate_limited / unknown, docs/插件开发指南.md).
 	// It is distinct from the host health overlay (status_kind) and is the only
 	// signal an account gives when its quota block is empty.
-	Status         string
-	Remaining      float64
-	Total          float64
-	Unlimited      bool
-	ExpiresAt      int64
+	Status    string
+	Remaining float64
+	Total     float64
+	Unlimited bool
+	ExpiresAt int64
+	// RunsOutAt is the F-14 "券/批次烧完" timestamp (0 = unknown). It is the
+	// primary signal of the expiring_first strategy; when the bridge supplies
+	// windows[] data (task-26) it is filled per account, and the legacy
+	// expires_at remains the fallback for single-group data.
+	RunsOutAt int64
+	// ResetAt is the F-14 "周期重置" timestamp (0 = unknown). Filled by the
+	// bridge from windows[] resetsAt; legacy data has no periodic reset, so
+	// the resetting alert rule stays silent.
+	ResetAt        int64
 	Plan           string
 	Priority       int
 	Weight         float64
@@ -1555,8 +1565,10 @@ func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []fl
 			if a.Remaining != b.Remaining {
 				return a.Remaining > b.Remaining
 			}
-			return expiryRank(a.ExpiresAt) < expiryRank(b.ExpiresAt)
+			return expiryLess(a.ExpiresAt, b.ExpiresAt)
 		}), scores
+	case StrategyExpiringFirst:
+		return indexByLess(accounts, expiringFirstLess), scores
 	case StrategyFixed:
 		return indexByLess(accounts, func(a, b Account) bool {
 			if a.Priority != b.Priority {
@@ -1566,8 +1578,13 @@ func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []fl
 		}), scores
 	default: // credit_first
 		return indexByLess(accounts, func(a, b Account) bool {
-			if ra, rb := expiryRank(a.ExpiresAt), expiryRank(b.ExpiresAt); ra != rb {
-				return ra < rb
+			sa, ka := expiryOf(a.ExpiresAt)
+			sb, kb := expiryOf(b.ExpiresAt)
+			if sa != sb {
+				return sa < sb
+			}
+			if ka != kb {
+				return ka < kb
 			}
 			if a.Remaining != b.Remaining {
 				return a.Remaining > b.Remaining
@@ -1793,19 +1810,17 @@ func accKey(pluginID, accountID string) AccountKey {
 	return AccountKey{PluginID: pluginID, AccountID: accountID}
 }
 
-func expiryRank(at int64) int64 {
-	if at <= 0 {
-		return math.MaxInt64
-	}
-	return at
-}
-
+// poolExpiry returns the earliest *known* expiry among the accounts, or
+// math.MaxInt64 when none is known. Unknown accounts are ignored rather than
+// being treated as never-expire: a pool whose accounts all report no expiry
+// must not look "more available forever" than one that does.
 func poolExpiry(accounts []Account) int64 {
 	best := int64(0)
 	for _, acc := range accounts {
-		at := expiryRank(acc.ExpiresAt)
-		if best == 0 || at < best {
-			best = at
+		if st, at := expiryOf(acc.ExpiresAt); st == expiryKnown {
+			if best == 0 || at < best {
+				best = at
+			}
 		}
 	}
 	if best == 0 {

@@ -429,7 +429,11 @@ func (s *Store) AccountDisplayNames() (map[string]string, error) {
 }
 
 // UsageSessions returns request-level rows newest first plus the total.
-func (s *Store) UsageSessions(f UsageFilter, modelFilter string, limit, offset int) ([]model.APIRequestLog, int, error) {
+// conversationFilter narrows the list to one conversation (D-32③ 聚合视图下钻)：
+// a "req:<req_id>:<id>" synthetic key (a row without a conversation_id) filters
+// by that exact request; any other value filters conversation_id = value; empty
+// means no filter.
+func (s *Store) UsageSessions(f UsageFilter, modelFilter, conversationFilter string, limit, offset int) ([]model.APIRequestLog, int, error) {
 	if s == nil || s.db == nil {
 		return nil, 0, fmt.Errorf("store: usage sessions: store is not open")
 	}
@@ -441,6 +445,25 @@ func (s *Store) UsageSessions(f UsageFilter, modelFilter string, limit, offset i
 			where += " AND model = ?"
 		}
 		args = append(args, filter)
+	}
+	if conv := strings.TrimSpace(conversationFilter); conv != "" {
+		if rest, ok := strings.CutPrefix(conv, "req:"); ok {
+			// 合成键：req_id 可能重复（探针重试），id 才是行唯一锚
+			reqID, rowID, _ := strings.Cut(rest, ":")
+			if where == "" {
+				where = " WHERE COALESCE(req_id, '') = ? AND id = ?"
+			} else {
+				where += " AND COALESCE(req_id, '') = ? AND id = ?"
+			}
+			args = append(args, reqID, rowID)
+		} else {
+			if where == "" {
+				where = " WHERE conversation_id = ?"
+			} else {
+				where += " AND conversation_id = ?"
+			}
+			args = append(args, conv)
+		}
 	}
 	ctx, cancel := s.ctx()
 	defer cancel()

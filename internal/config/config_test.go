@@ -34,6 +34,13 @@ func TestDefault(t *testing.T) {
 			StrictEgress:                false,
 			MarketUpdateIntervalMinutes: 360,
 			MarketUpdatePolicy:          "prompt",
+			QuotaAlerts: QuotaAlertsConfig{
+				RunsOutWarningDays:     7,
+				ResetWarningDays:       7,
+				ResetWarningUsageRatio: 0.30,
+				BalanceLowRatio:        0.90,
+				BalanceLowAbsolute:     100,
+			},
 		},
 		Checkin: CheckinConfig{
 			DefaultTime:         "09:00",
@@ -53,7 +60,7 @@ func TestDefault(t *testing.T) {
 		Notify: NotifyConfig{
 			Enabled:            false,
 			Channel:            "generic",
-			Events:             []string{"checkin_fail", "checkin_done", "account_dead", "quota_low"},
+			Events:             []string{"checkin_fail", "checkin_done", "account_dead", "quota_low", "quota_expiring", "quota_resetting"},
 			MinIntervalSeconds: 600,
 		},
 	}

@@ -570,6 +570,28 @@ var migrations = []migrationStep{
 			)`,
 		},
 	},
+	{ // version 12: model prefs (P12-2, D-27③④)
+		sql: []string{
+			// Model personalisation: the human display name, the vendor label
+			// and the kept reasoning levels of one model, stored separately
+			// from the vendor list and from model_overrides (catalog sync).
+			//
+			// Why a separate table: a catalog refresh (ReplaceModelCatalog)
+			// must never clobber a hand-set name or an effort cut, so the row
+			// keyed by (plugin_id, model_id) is written only by this API and read
+			// by the catalog merge. NULL display_name means "use the reported
+			// name"; NULL efforts means "keep all reported levels".
+			`CREATE TABLE IF NOT EXISTS model_prefs (
+				plugin_id    TEXT NOT NULL,
+				model_id     TEXT NOT NULL,
+				display_name TEXT,
+				vendor_label TEXT,
+				efforts      TEXT,
+				updated_at   INTEGER,
+				PRIMARY KEY (plugin_id, model_id)
+			)`,
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

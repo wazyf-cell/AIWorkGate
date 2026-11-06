@@ -883,6 +883,44 @@ export interface UsageSessionsResponse {
 export type UsageSessionsParams = UsageFilterParams & {
   page?: number
   page_size?: number
+  /** D-32③：按会话过滤逐请求列表（聚合视图展开用；后端就绪前被忽略）。 */
+  conversation_id?: string
+}
+
+/** D-32③ 会话真聚合：一条聚合行 = 一个 conversation_id（跨 provider 归并）。 */
+export interface UsageConversation {
+  conversation_id?: string
+  first_ts?: string
+  last_ts?: string
+  requests?: number
+  errors?: number
+  prompt_tokens?: number
+  completion_tokens?: number
+  credits?: number
+  /** 涉及的模型列表（去重，按出现顺序）。 */
+  models?: string[]
+  /** 涉及的插件/来源列表（去重）——跨 provider 归并时长度 >1。 */
+  plugins?: string[]
+  /** 涉及的账号列表（去重）。 */
+  accounts?: string[]
+}
+
+/**
+ * D-32③ 会话聚合响应：keyset 游标分页（对齐 magpie request_page 语义——
+ * 不做 COUNT(*)+OFFSET 全表扫，只物化当前页）。next_cursor 为空 = 没有下一页。
+ */
+export interface UsageConversationsResponse {
+  items?: UsageConversation[]
+  page?: number
+  page_size?: number
+  has_more?: boolean
+  next_cursor?: string
+}
+
+export type UsageConversationsParams = UsageFilterParams & {
+  page_size?: number
+  /** 上一页返回的 next_cursor；缺省 = 第一页（最新会话）。 */
+  cursor?: string
 }
 
 /** One day of /usage/latency. Null percentiles mean "no sample". */
@@ -2299,6 +2337,10 @@ export const api = {
     },
     sessions(params: UsageSessionsParams): Promise<UsageSessionsResponse> {
       return request<UsageSessionsResponse>(`/usage/sessions${qs({ ...params })}`)
+    },
+    /** D-32③ 会话真聚合：GROUP BY conversation_id 的 keyset 分页（后端就绪前 404）。 */
+    conversations(params: UsageConversationsParams): Promise<UsageConversationsResponse> {
+      return request<UsageConversationsResponse>(`/usage/conversations${qs({ ...params })}`)
     },
     /** Per-day latency/TTFB percentiles over successful requests (1–90 days). */
     latency(days: number): Promise<UsageLatencyDay[]> {
