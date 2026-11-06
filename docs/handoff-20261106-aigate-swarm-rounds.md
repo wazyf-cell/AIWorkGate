@@ -293,7 +293,7 @@ efd1707  P9：cheap 池间按配置价排序
 ab189af  D-31：缓存写侧/reasoning/purpose 五列
 dd7a976  P13：导出粒度/拆段 + Prompt 组成分析
 f8d6027  P11：组编辑器 + 意图规则框架
-（本轮提交） 退役内置 A 网关（D-60）
+e1b77c8  退役内置 A 网关（D-60）
 ```
 
 远端：`wazyf-cell/AIWorkGate` 的 `main` 在每批提交后按需推送；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。
