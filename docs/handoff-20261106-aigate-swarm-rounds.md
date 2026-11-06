@@ -316,7 +316,8 @@ c2a9c98  P13: record usage clears instead of deleting history
 | P13 | D-31 十列 + 按 served 统计 + 导出粒度/拆段（model/key）+ 用量清空事件 + 还能用多久估算 + Prompt 六段分析完成；47 列清单已冻结（`docs/p13/01-导出列清单.md`） |
 | P14 | `/me` 完成（限制卡/用量/按模型/最近记录，无正文） |
 | P7 | 构建/部署/回滚脚本与演练手册完成；**服务器实跑未做** |
-| P3/P4 | 未开工（P3 破坏性；P4 依赖服务器） |
+| P3 | 完成（2026-11-06）：11 个示例插件归档 `_archive/plugins-20261106/`，aichat 保留；整仓备份 SHA 已记录 |
+| P4 | 未开工（依赖服务器） |
 
 ### 12.3 当前验证基线
 
@@ -338,6 +339,7 @@ c2a9c98  P13: record usage clears instead of deleting history
 1. 服务器到位后按 `docs/p7/00-部署演练.md` 实跑，重点验收 `public_hosts` / `trusted_proxies` / 回滚。
 2. 真实 trae/workbuddy 登录后补 P1/P2 验收；真实 JEV key 补 P6 三例与 P11 意图规则一例。
 3. P13 已全部收尾（D-53 还能用多久、D-54 粒度/拆段/清空、D-55 Prompt 六段；列清单 `docs/p13/01-导出列清单.md`，验收记录 `docs/验收/2026-11-06-价格与导出.md`）。
-4. 下一步只剩用户/服务器依赖：真实登录验收（需登录 trae/workbuddy）→ P3 退役（需批准）→ P4/P7 服务器实跑（需服务器）。
-5. 内置 A 网关已按 D-60 删除：`config.a`、A 面板/Key、`forwardA` 与裸名兜底都不存在；`aichat` 插件保留但需自行配置上游。历史 `source="a"` 行仍可查询。
-6. 不要启用蜂群：本 agent 无多子代理能力。
+4. P1 真实 trae chat 已通过（复用 magpie 登录态；非流式/流式均 200）；P3 已按用户裁决完成（11 个归档、aichat 保留）。
+5. 下一步只剩：workbuddy 真实 chat（需重新登录）、真实 JEV Key（P6/P11）、P4/P7 服务器实跑。
+6. 内置 A 网关已按 D-60 删除：`config.a`、A 面板/Key、`forwardA` 与裸名兜底都不存在；`aichat` 插件保留但需自行配置上游。历史 `source="a"` 行仍可查询。
+7. 不要启用蜂群：本 agent 无多子代理能力。

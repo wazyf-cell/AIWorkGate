@@ -35,7 +35,7 @@ internal\
   hosts\                 Windows 系统代理发现（出口代理由 egress 管理）
   tray\ webui\ winutil\  托盘、管理页与 Windows 工具
 web\                     Vue 3 + Vite SPA（构建输出到 internal\webui\dist）
-plugins\                 12 个渠道插件（每个自带 go.mod，可单独构建/安装）
+plugins\                 仅保留 aichat（其余 11 个示例插件已归档到 _archive/plugins-20261106/）
 examples\plugin-template\ 最小插件模板（hello，自带 go.mod，无依赖）
 scripts\                 build.ps1 / dev.ps1 / pack-plugin.ps1 / test-plugins.ps1
 docs\                    用户手册、插件格式规范、插件开发指南
@@ -71,7 +71,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -SkipWeb -Version 0
 
 ### 发布包与插件
 
-Release 里的 zip 只包含**宿主 exe + 产品文档**，不含任何插件。`plugins\` 下的 12 个渠道插件源码保留在仓库里供参考和自行构建，但它们仍在完善中，不作为本版的发布物；需要时按插件目录逐个 `go build`，再在「插件」页安装该目录或 zip。宿主本身不依赖任何插件即可启动和查看管理页；接入任何平台都要装插件或添加自定义模型。
+Release 里的 zip 只包含**宿主 exe + 产品文档**，不含任何插件。`plugins\` 现仅保留 aichat；其余 11 个示例插件已归档到 `_archive/plugins-20261106/`（不参与构建与发布）。需要时可把归档目录移回 `plugins/` 后逐个 `go build`，再在「插件」页安装。宿主本身不依赖任何插件即可启动和查看管理页；接入任何平台都要装插件或添加自定义模型。
 
 ## 开发
 
@@ -91,7 +91,7 @@ go run ./cmd/aiworkgate
 
 ```powershell
 go test ./...
-powershell -ExecutionPolicy Bypass -File .\scripts\test-plugins.ps1   # 12 个插件 module 逐个跑
+powershell -ExecutionPolicy Bypass -File .\scripts\test-plugins.ps1   # plugins/ 下每个 module 逐个跑（当前仅 aichat）
 ```
 
 ## 文档
