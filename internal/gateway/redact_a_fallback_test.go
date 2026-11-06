@@ -10,15 +10,21 @@ package gateway
 //   ① A 收到的是脱敏体（保护不丢）；
 //   ② 最终审计行必须是「脱到值的那一遍」（含 "redact masked:" 与计数），
 //      而不是被第二遍 n=0 覆盖的 "redact: no values masked"。
+//
+// 兜底的触发条件是**快照在路由与调度之间变化**：handleChat 的 hasBinding
+// 看到绑定，forwardScheduled 的 scheduleModel 再读时绑定已消失（无默认插件、
+// LegacyA 打开）。用带计数的 snapshot 复现这个真实窗口；不能再用
+// "p1/m1 + 有 p1 池" 构造——那种名字调度器一定持有，走不到 errNotScheduled。
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
-	"aiworkgate/internal/model"
 	"aiworkgate/internal/scheduler"
 )
 
@@ -29,31 +35,41 @@ func TestRedactABranchSinglePass(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"a":true}`)
 	})
-	reg := newFakeRegistry().add(pluginStatus("p1", true, model.ModelInfo{ID: "m1"}), "http://p1.invalid", "tok")
+	reg := newFakeRegistry()
 
-	// p1 的池**没有模型**：调度器不持有该名 → errNotScheduled → bareModelTarget
-	// 无默认插件且 LegacyA 打开 → ok=false, err=nil → 走 forwardScheduled 的 A 兜底。
-	snap := &scheduler.Snapshot{
+	withBinding := &scheduler.Snapshot{
+		InterPool: scheduler.InterPoolSmart,
+		Bindings: map[string]scheduler.Binding{
+			"m1": {Logical: "m1", Items: []scheduler.Source{{PluginID: "p1", Model: "m1"}}},
+		},
+		Pools: map[string]*scheduler.Pool{},
+	}
+	empty := &scheduler.Snapshot{
 		InterPool: scheduler.InterPoolSmart,
 		Bindings:  map[string]scheduler.Binding{},
-		Pools: map[string]*scheduler.Pool{
-			"p1": {PluginID: "p1", Name: "p1", APIVersion: 2, UpstreamEnabled: true,
-				Strategy: scheduler.StrategyFixed, Accounts: fixedPoolAccounts("acc1")},
-		},
+		Pools:     map[string]*scheduler.Pool{},
 	}
+	var reads atomic.Int64
+	snapshot := func(context.Context) (*scheduler.Snapshot, error) {
+		if reads.Add(1) == 1 {
+			return withBinding, nil // handleChat hasBinding: the model is bound
+		}
+		return empty, nil // scheduleModel: the snapshot no longer owns it
+	}
+
 	logs := &fakeLogSink{}
 	g := newTestGateway(t, Options{
 		Plugins:  reg,
 		A:        &fakeA{base: aSrv.URL, key: "sk-a"},
 		Log:      logs,
 		Schedule: scheduler.New(scheduler.Options{}),
-		Snapshot: staticSnapshot(snap),
+		Snapshot: snapshot,
 		LegacyA:  true,
 	})
 	g.redact = RedactOptions{On: true}
 
 	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
-		`{"model":"p1/m1","messages":[{"role":"user","content":"mail `+email+` key `+key+`"}]}`))
+		`{"model":"m1","messages":[{"role":"user","content":"mail `+email+` key `+key+`"}]}`))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
