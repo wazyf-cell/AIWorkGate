@@ -338,6 +338,7 @@ d2b8e4c  P3: archive the eleven demo plugins
   - `opencode-workbuddy-auth` → `/meta` 报 `workbuddy`(15)+`workbuddy-ai`(16) 两个独立 provider（符合 Q1 修订），模型字段完整。
   - **WorkBuddy 宿主监管**（2026-11-06 22:12）：桥以 `bridge-wb` 装入宿主 → 插件启动（pid 9780 / 端口 12498），网关发布 **31 个模型**（`bridge-wb/workbuddy/*` + `bridge-wb/workbuddy-ai/*`）；`/api/accounts` 显示 `workbuddy`、`workbuddy-ai` 两个独立账号（符合 Q1 修订）；签到开关同样正确（workbuddy-ai 409 pluginCheckins）。
   - **宿主监管联调**（2026-11-06 22:11）：把桥编译成 exe 装进隔离预览实例 → 宿主启动插件、网关 `/v1/models` 发布 `bridge-trae/trae-cn/*` 等 11 个模型；签到调度正确区分 trae-cn（尝试）与 trae-global（409 pluginCheckins 关闭）；杀掉桥进程后 1s 内以新端口重启（pid 15488 / 4346），状态仍 1/1；无凭据 chat 在调度层返回 503「no eligible account (no credential)」。
+  - **P14 `/me` 运行态**（2026-11-06）：有效 Key 登录 200；编辑 `expires_at` 后已登录会话立即 401「Key 已过期」；删除 Key 后立即 401；`/me/api/me`、`/me/api/logs` 均无正文列。过程中修复 `app.updateKey` 丢弃 `expires_at/allowed_ips/owner/max_requests_total/share` 的 bug。
   - **真实 chat**（2026-11-06）：桥新增 magpie 登录态导入 → trae-cn 非流式 200（31.27s）、流式 200（34.01s）；workbuddy 导入后 chat 仍 401 `needs_sign_in`，需重新登录。验收记录见 `docs/验收/2026-11-06-真实登录验收.md`。
 
 ### 12.4 接手首要事项

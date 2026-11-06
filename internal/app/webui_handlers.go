@@ -2426,7 +2426,11 @@ func (a *App) updateKey(id string, spec webui.KeySpec) (model.ClientKey, error) 
 	if a.store == nil {
 		return model.ClientKey{}, errors.New("app: key services are not available")
 	}
-	scope := store.ClientKeyScope{ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota}
+	scope := store.ClientKeyScope{
+		ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota,
+		ExpiresAt: spec.ExpiresAt, AllowedIPs: spec.AllowedIPs, Owner: spec.Owner,
+		MaxRequestsTotal: spec.MaxRequestsTotal, Share: spec.Share,
+	}
 	if err := a.store.UpdateClientKey(id, spec.Name, spec.Enabled, scope); err != nil {
 		return model.ClientKey{}, err
 	}
