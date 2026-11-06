@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/store"
@@ -237,5 +238,28 @@ func TestKeyDeleteAndScopesUnsupported(t *testing.T) {
 	recorder = doRequest(t, legacy, http.MethodPut, "/api/keys/agk_l", `{"name":"x"}`)
 	if recorder.Code != http.StatusNotImplemented {
 		t.Fatalf("legacy update = %d, want 501", recorder.Code)
+	}
+}
+
+func TestShareKeyRequiresExpiry(t *testing.T) {
+	fixture := &keyScopeFixture{}
+	handler := New(fixture.options())
+
+	rec := doRequest(t, handler, http.MethodPost, "/api/keys", `{"name":"friend","share":true}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "分享 Key") {
+		t.Fatalf("share without expiry = %d (%s), want 400", rec.Code, rec.Body.String())
+	}
+	if len(fixture.created) != 0 {
+		t.Fatalf("rejected share key reached the store")
+	}
+
+	expires := time.Now().Add(24 * time.Hour).Unix()
+	rec = doRequest(t, handler, http.MethodPost, "/api/keys",
+		fmt.Sprintf(`{"name":"friend","share":true,"expires_at":%d}`, expires))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("share with expiry = %d (%s)", rec.Code, rec.Body.String())
+	}
+	if len(fixture.created) != 1 || !fixture.created[0].Share || fixture.created[0].ExpiresAt != expires {
+		t.Fatalf("created spec = %+v", fixture.created)
 	}
 }

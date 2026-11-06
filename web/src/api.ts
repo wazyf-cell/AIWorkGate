@@ -1604,6 +1604,8 @@ export interface ClientKey {
   owner?: boolean
   /** Lifetime request cap; 0 = unlimited (P5-1). */
   max_requests_total?: number
+  /** Key handed to another person; requires an expiry. */
+  share?: boolean
 }
 
 /** Body of POST /keys (name required) and PUT /keys/{id} (any subset). */
@@ -1617,6 +1619,7 @@ export interface KeyScopeInput {
   allowed_ips?: string[]
   owner?: boolean
   max_requests_total?: number
+  share?: boolean
 }
 
 export interface CreateKeyResponse {

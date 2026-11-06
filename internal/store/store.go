@@ -620,6 +620,11 @@ var migrations = []migrationStep{
 			{"api_logs", "model_served", "TEXT"},
 		},
 	},
+	{ // version 18: share-key marker (P5-1: share keys must expire)
+		columns: []columnMigration{
+			{"client_keys", "share", "INTEGER NOT NULL DEFAULT 0"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

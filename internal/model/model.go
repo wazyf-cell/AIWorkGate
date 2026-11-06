@@ -370,6 +370,8 @@ type ClientKey struct {
 	Owner bool `json:"owner,omitempty"`
 	// MaxRequestsTotal caps the key's lifetime requests; 0 = unlimited (P5-1).
 	MaxRequestsTotal int `json:"max_requests_total,omitempty"`
+	// Share marks a key handed to another person (must have an expiry).
+	Share bool `json:"share,omitempty"`
 	// Scope and quota (plan 2026-10-21 §1, mirroring A's ApiKeyEntry in
 	// api_keys.rs:254-293). An empty ModelScope means every model, an empty
 	// BindPool means every pool and DailyQuota 0 means unlimited.

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -204,32 +205,27 @@ func TestModelUsageSummaryRankingAndNullCredits(t *testing.T) {
 	today := now.Format("2006-01-02")
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 
-	if err := s.UpsertUsageDaily(model.UsageDailyRow{
-		Day: yesterday, PluginID: "p", AccountID: "a1", Model: "kimi-k2",
-		Requests: 3, PromptTokens: 100, CompletionTokens: 40, Credits: 1.5,
-	}); err != nil {
-		t.Fatalf("upsert kimi yesterday: %v", err)
+	seed := func(day, modelName, suffix string, prompt, completion int64, credits *float64) {
+		t.Helper()
+		if err := s.InsertAPIRequestLog(model.APIRequestLog{
+			TS: day + "T10:00:00Z", ReqID: day + "-" + modelName + "-" + suffix,
+			Model: modelName, ModelServed: modelName, Status: 200,
+			PromptTokens: prompt, CompletionTokens: completion, Credits: credits,
+		}); err != nil {
+			t.Fatalf("insert log: %v", err)
+		}
 	}
-	if err := s.UpsertUsageDaily(model.UsageDailyRow{
-		Day: today, PluginID: "p", AccountID: "a1", Model: "kimi-k2",
-		Requests: 2, PromptTokens: 50, CompletionTokens: 10, Credits: 0.5,
-	}); err != nil {
-		t.Fatalf("upsert kimi today: %v", err)
+	credit15 := 1.5
+	credit05 := 0.5
+	seed(yesterday, "kimi-k2", "1", 34, 14, &credit15)
+	seed(yesterday, "kimi-k2", "2", 33, 13, nil)
+	seed(yesterday, "kimi-k2", "3", 33, 13, nil)
+	seed(today, "kimi-k2", "1", 25, 5, &credit05)
+	seed(today, "kimi-k2", "2", 25, 5, nil)
+	for i := 0; i < 6; i++ {
+		seed(today, "gpt-4o", fmt.Sprintf("%d", i+1), 1, 1, nil)
 	}
-	// Credits reported by no one: the column stays NULL, not 0.
-	if _, err := s.db.Exec(`INSERT INTO usage_daily
-		(day, plugin_id, account_id, model, requests, prompt_tokens, completion_tokens, credits)
-		VALUES (?, 'p', 'a2', 'gpt-4o', 6, 10, 5, NULL)`, today); err != nil {
-		t.Fatalf("insert gpt-4o: %v", err)
-	}
-	// Outside the two-day window, must not be aggregated.
-	if err := s.UpsertUsageDaily(model.UsageDailyRow{
-		Day: now.AddDate(0, 0, -10).Format("2006-01-02"), PluginID: "p",
-		AccountID: "a1", Model: "old-model", Requests: 99,
-	}); err != nil {
-		t.Fatalf("upsert old: %v", err)
-	}
-
+	seed(now.AddDate(0, 0, -10).Format("2006-01-02"), "old-model", "1", 0, 0, nil)
 	rows, err := s.ModelUsageSummary(2)
 	if err != nil {
 		t.Fatalf("ModelUsageSummary: %v", err)

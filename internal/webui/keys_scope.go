@@ -59,6 +59,8 @@ type KeySpec struct {
 	Owner bool
 	// MaxRequestsTotal caps lifetime requests; 0 = unlimited (P5-1).
 	MaxRequestsTotal int
+	// Share marks a key handed to another person; it must expire.
+	Share bool
 }
 
 // scope returns the stored triple of a spec.
@@ -66,7 +68,7 @@ func (s KeySpec) scope() store.ClientKeyScope {
 	return store.ClientKeyScope{
 		ModelScope: s.ModelScope, BindPool: s.BindPool, DailyQuota: s.DailyQuota,
 		ExpiresAt: s.ExpiresAt, AllowedIPs: s.AllowedIPs, Owner: s.Owner,
-		MaxRequestsTotal: s.MaxRequestsTotal,
+		MaxRequestsTotal: s.MaxRequestsTotal, Share: s.Share,
 	}
 }
 
@@ -188,6 +190,7 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 		AllowedIPs:       current.AllowedIPs,
 		Owner:            current.Owner,
 		MaxRequestsTotal: current.MaxRequestsTotal,
+		Share:            current.Share,
 	}
 	if err := applyKeyPatch(&spec, body); err != nil {
 		writeKeySpecError(w, err)
@@ -215,7 +218,7 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 			CreatedAt: current.CreatedAt, LastUsedAt: current.LastUsedAt,
 			ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota,
 			ExpiresAt: spec.ExpiresAt, AllowedIPs: spec.AllowedIPs, Owner: spec.Owner,
-			MaxRequestsTotal: spec.MaxRequestsTotal, UsedToday: current.UsedToday,
+			MaxRequestsTotal: spec.MaxRequestsTotal, Share: spec.Share, UsedToday: current.UsedToday,
 		}
 	}
 	updated.QuotaLeft = store.ClientKeyQuotaLeft(updated.DailyQuota, updated.UsedToday)
@@ -302,6 +305,12 @@ func applyKeyPatch(spec *KeySpec, body map[string]json.RawMessage) error {
 				return err
 			}
 			spec.MaxRequestsTotal = maxTotal
+		case "share":
+			var share bool
+			if err := json.Unmarshal(raw, &share); err != nil {
+				return fmt.Errorf("%w: share must be true or false", ErrInvalidRequest)
+			}
+			spec.Share = share
 		case "name":
 			var name string
 			if err := json.Unmarshal(raw, &name); err != nil {
@@ -365,6 +374,9 @@ func (s *server) normalizeKeySpec(spec KeySpec) (KeySpec, error) {
 		if !ids[spec.BindPool] {
 			return KeySpec{}, fmt.Errorf("%w: bind_pool %q is not an installed plugin", ErrInvalidRequest, spec.BindPool)
 		}
+	}
+	if spec.Share && spec.ExpiresAt <= 0 {
+		return KeySpec{}, fmt.Errorf("%w: 分享 Key 必须设置到期时间（expires_at）", ErrInvalidRequest)
 	}
 	return spec, nil
 }

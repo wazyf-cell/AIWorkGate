@@ -99,3 +99,21 @@ func TestClientKeyMaxRequestsTotalRoundtrip(t *testing.T) {
 		t.Fatalf("negative max_requests_total must be rejected")
 	}
 }
+
+func TestClientKeyShareRoundtrip(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.UpsertClientKeyScoped("k1", "friend", "agk_a", "hash-1", true, 100, ClientKeyScope{Share: true}); err != nil {
+		t.Fatalf("UpsertClientKeyScoped: %v", err)
+	}
+	key, _, err := s.GetClientKey("k1")
+	if err != nil || !key.Share {
+		t.Fatalf("share = %v err=%v", key.Share, err)
+	}
+	if err := s.SetClientKeyScope("k1", ClientKeyScope{}); err != nil {
+		t.Fatalf("SetClientKeyScope: %v", err)
+	}
+	key, _, _ = s.GetClientKey("k1")
+	if key.Share {
+		t.Fatalf("share should be cleared")
+	}
+}

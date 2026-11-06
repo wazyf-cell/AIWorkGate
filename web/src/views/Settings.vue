@@ -312,6 +312,7 @@ const keyDraft = reactive({
   allowed_ips: '',
   owner: false,
   max_requests_total: 0,
+  share: false,
 })
 
 /** Epoch seconds → the date input's YYYY-MM-DD (local day). */
@@ -386,6 +387,7 @@ function openKeyEditor(item: ClientKey) {
   keyDraft.allowed_ips = (item.allowed_ips ?? []).join('\n')
   keyDraft.owner = Boolean(item.owner)
   keyDraft.max_requests_total = item.max_requests_total ?? 0
+  keyDraft.share = Boolean(item.share)
 }
 
 function closeKeyEditor() {
@@ -412,6 +414,7 @@ async function saveKeyEdit() {
       allowed_ips: parseCorsOrigins(keyDraft.allowed_ips),
       owner: keyDraft.owner,
       max_requests_total: Math.max(0, Math.floor(Number(keyDraft.max_requests_total) || 0)),
+      share: keyDraft.share,
     })
     editingKey.value = null
     message.value = '客户端 Key 已更新。'
@@ -1857,6 +1860,16 @@ async function saveLanPassword() {
             </label>
             <span class="help">
               whitelist 服务模式下只有勾选“属主 Key”的客户端 Key 可以使用；open 模式下无影响。
+            </span>
+          </div>
+          <div class="field">
+            <label class="switch">
+              <input v-model="keyDraft.share" type="checkbox" :disabled="keyEditBusy" />
+              <span class="switch-track"></span>
+              分享 Key
+            </label>
+            <span class="help">
+              分享给他人的 Key 必须同时设置到期时间；勾选后保存时若未填到期日会被拒绝。
             </span>
           </div>
           <div class="row">
