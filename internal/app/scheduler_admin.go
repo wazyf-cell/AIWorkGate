@@ -701,7 +701,16 @@ func (a *App) poolDetail(pluginID string) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		// P12-3: the catalog view shows the P12-2 personalisation (rename /
+		// vendor label / effort cut) without touching the synced rows.
+		prefs, err := a.store.GetModelPrefs(pluginID)
+		if err != nil {
+			return nil, err
+		}
 		for _, entry := range catalogRows {
+			if p, ok := prefs[entry.ModelID]; ok {
+				entry = p.ApplyEntry(entry)
+			}
 			catalog = append(catalog, catalogEntryPayload(entry))
 		}
 	}

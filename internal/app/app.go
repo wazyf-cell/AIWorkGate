@@ -508,6 +508,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		Snapshot:      a.schedulerSnapshot,
 		SchedLog:      logger,
 		Overrides:     a.store.GetModelOverrides,
+		Prefs:         a.store.GetModelPrefs,
 		KeyRecord:     a.keyRecord,
 		KeyUsageToday: a.keyUsageToday,
 		KeyUsage:      a.recordKeyUsage,

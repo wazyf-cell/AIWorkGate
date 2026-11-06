@@ -121,6 +121,71 @@ func TestModelsMergedPrefixedAndDeduped(t *testing.T) {
 	}
 }
 
+func TestModelsPublishesD35FieldsAndPrefs(t *testing.T) {
+	noTemperature := false
+	reg := newFakeRegistry()
+	reg.add(pluginStatus("p1", true, model.ModelInfo{
+		ID: "thinker", Name: "Thinker", Tools: true, Thinking: []string{"low", "high"},
+		Released: "2026-09-30", Family: "kimi", Tiers: []string{"priority", "ultrafast"},
+		AlwaysThinks: true, DynamicTools: true, DefaultEffort: "high",
+		Temperature: &noTemperature, Structured: true,
+	}, model.ModelInfo{
+		ID: "plain", Name: "Plain", SupportedParameters: []string{"tools"},
+	}), "", "")
+
+	g := newTestGateway(t, Options{
+		Plugins: reg,
+		Prefs: func(pluginID string) (map[string]ModelPrefs, error) {
+			if pluginID != "p1" {
+				return nil, nil
+			}
+			name := "我的思考者"
+			kept := []string{"high"}
+			return map[string]ModelPrefs{"thinker": {DisplayName: &name, Efforts: &kept}}, nil
+		},
+	})
+
+	rr := serve(g, newGetRequest(t, "/v1/models", clientKey))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
+	}
+	payload := decodeModels(t, rr)
+	var thinker, plain *modelEntry
+	for i := range payload.Data {
+		switch payload.Data[i].ID {
+		case "p1/thinker":
+			thinker = &payload.Data[i]
+		case "p1/plain":
+			plain = &payload.Data[i]
+		}
+	}
+	if thinker == nil || plain == nil {
+		t.Fatalf("published ids = %v", modelIDs(payload))
+	}
+	if thinker.Name != "我的思考者" {
+		t.Fatalf("rename = %q, want the pref name", thinker.Name)
+	}
+	if len(thinker.Thinking) != 1 || thinker.Thinking[0] != "high" {
+		t.Fatalf("efforts = %v, want the kept [high]", thinker.Thinking)
+	}
+	if thinker.Released != "2026-09-30" || thinker.Family != "kimi" ||
+		len(thinker.Tiers) != 2 || !thinker.AlwaysThinks || !thinker.DynamicTools ||
+		thinker.DefaultEffort != "high" || !thinker.Structured {
+		t.Fatalf("D-35 fields lost: %+v", thinker)
+	}
+	if thinker.Temperature == nil || *thinker.Temperature != false {
+		t.Fatalf("temperature = %v, want false", thinker.Temperature)
+	}
+	if len(thinker.SupportedParameters) != 3 || thinker.SupportedParameters[0] != "tools" ||
+		thinker.SupportedParameters[2] != "reasoning" {
+		t.Fatalf("derived supported_parameters = %v", thinker.SupportedParameters)
+	}
+	// A reported list wins over the derivation.
+	if len(plain.SupportedParameters) != 1 || plain.SupportedParameters[0] != "tools" {
+		t.Fatalf("reported supported_parameters = %v", plain.SupportedParameters)
+	}
+}
+
 func TestModelsAStaleServesLastCache(t *testing.T) {
 	reg := newFakeRegistry().add(
 		pluginStatus("p", true, model.ModelInfo{ID: "chat"}), "", "")

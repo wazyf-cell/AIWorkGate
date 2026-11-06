@@ -33,6 +33,18 @@ type modelEntry struct {
 	Multiplier *float64 `json:"multiplier,omitempty"`
 	Thinking   []string `json:"thinking,omitempty"`
 	Free       bool     `json:"free,omitempty"`
+	// D-35 publication fields (absent = the source did not say).
+	Released            string   `json:"released,omitempty"`
+	Family              string   `json:"family,omitempty"`
+	Tiers               []string `json:"tiers,omitempty"`
+	AlwaysThinks        bool     `json:"always_thinks,omitempty"`
+	DynamicTools        bool     `json:"dynamic_tools,omitempty"`
+	DefaultEffort       string   `json:"default_effort,omitempty"`
+	SupportedParameters []string `json:"supported_parameters,omitempty"`
+	Temperature         *bool    `json:"temperature,omitempty"`
+	// Structured marks a decision model (D-18④): clients must call
+	// /v1/systemone instead of /v1/chat/completions.
+	Structured bool `json:"structured,omitempty"`
 	// Overridden lists the fields taken from the human override layer, so a
 	// client can tell a hand-edited value from the plugin's own report.
 	Overridden []string `json:"overridden,omitempty"`
@@ -114,6 +126,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 			}
 			mods, _ := g.pluginModelList(r.Context(), st)
 			overrides := g.modelOverridesFor(id)
+			prefs := g.modelPrefsFor(id)
 			for _, m := range mods {
 				if set, ok := exposed[id]; ok && !set[CanonicalModelID(m.ID)] {
 					continue
@@ -134,20 +147,35 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 					m = o.ApplyInfo(m)
 					overridden = o.Fields()
 				}
+				// P12-3: the personalisation layer (rename / vendor label /
+				// effort cut) is applied after the override layer, so the user's
+				// newer preference wins when both set the same field.
+				if p, ok := prefsForModel(prefs, m.ID); ok {
+					m = p.ApplyInfo(m)
+				}
 				name := m.Name
 				entries = append(entries, modelEntry{
-					ID:            full,
-					Object:        "model",
-					OwnedBy:       "plugin:" + id,
-					Name:          name,
-					ContextLength: m.ContextLength,
-					Tools:         m.Tools,
-					Vision:        m.Vision,
-					Vendor:        m.Vendor,
-					Multiplier:    catalogMultiplier(m.Multiplier),
-					Thinking:      m.Thinking,
-					Free:          m.Free,
-					Overridden:    overridden,
+					ID:                  full,
+					Object:              "model",
+					OwnedBy:             "plugin:" + id,
+					Name:                name,
+					ContextLength:       m.ContextLength,
+					Tools:               m.Tools,
+					Vision:              m.Vision,
+					Vendor:              m.Vendor,
+					Multiplier:          catalogMultiplier(m.Multiplier),
+					Thinking:            m.Thinking,
+					Free:                m.Free,
+					Released:            m.Released,
+					Family:              m.Family,
+					Tiers:               m.Tiers,
+					AlwaysThinks:        m.AlwaysThinks,
+					DynamicTools:        m.DynamicTools,
+					DefaultEffort:       m.DefaultEffort,
+					SupportedParameters: supportedParameters(m),
+					Temperature:         m.Temperature,
+					Structured:          m.Structured,
+					Overridden:          overridden,
 				})
 			}
 		}
@@ -176,24 +204,37 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 	}
 
 	aModels, stale := g.aModelList(r.Context())
+	aPrefs := g.modelPrefsFor("a")
 	for _, m := range aModels {
 		key := CanonicalModelID(m.ID)
 		if m.ID == "" || seen[key] {
 			continue
 		}
 		seen[key] = true
+		if p, ok := prefsForModel(aPrefs, m.ID); ok {
+			m = p.ApplyInfo(m)
+		}
 		entries = append(entries, modelEntry{
-			ID:            m.ID,
-			Object:        "model",
-			OwnedBy:       "a",
-			Name:          m.Name,
-			ContextLength: m.ContextLength,
-			Tools:         m.Tools,
-			Vision:        m.Vision,
-			Vendor:        m.Vendor,
-			Multiplier:    catalogMultiplier(m.Multiplier),
-			Thinking:      m.Thinking,
-			Free:          m.Free,
+			ID:                  m.ID,
+			Object:              "model",
+			OwnedBy:             "a",
+			Name:                m.Name,
+			ContextLength:       m.ContextLength,
+			Tools:               m.Tools,
+			Vision:              m.Vision,
+			Vendor:              m.Vendor,
+			Multiplier:          catalogMultiplier(m.Multiplier),
+			Thinking:            m.Thinking,
+			Free:                m.Free,
+			Released:            m.Released,
+			Family:              m.Family,
+			Tiers:               m.Tiers,
+			AlwaysThinks:        m.AlwaysThinks,
+			DynamicTools:        m.DynamicTools,
+			DefaultEffort:       m.DefaultEffort,
+			SupportedParameters: supportedParameters(m),
+			Temperature:         m.Temperature,
+			Structured:          m.Structured,
 		})
 	}
 
@@ -221,6 +262,9 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 // ModelOverride aliases the store row so Options stays free of a concrete
 // store dependency.
 type ModelOverride = store.ModelOverride
+
+// ModelPrefs aliases the P12-2 personalisation row for the same reason.
+type ModelPrefs = store.ModelPrefs
 
 // modelOverridesFor returns the human override layer of one plugin keyed by
 // model id. It is read on every list so an edit saved in the resource page is
@@ -255,6 +299,54 @@ func overrideForModel(overrides map[string]ModelOverride, modelID string) (Model
 		}
 	}
 	return ModelOverride{}, false
+}
+
+// modelPrefsFor returns the P12-2 personalisation of one plugin keyed by model
+// id. Errors degrade to "no prefs", like the override layer.
+func (g *Gateway) modelPrefsFor(pluginID string) map[string]ModelPrefs {
+	if g.prefs == nil || pluginID == "" {
+		return nil
+	}
+	prefs, err := g.prefs(pluginID)
+	if err != nil {
+		return nil
+	}
+	return prefs
+}
+
+// prefsForModel finds one model's pref row, tolerating case/whitespace
+// variants of the id the same way overrideForModel does.
+func prefsForModel(prefs map[string]ModelPrefs, modelID string) (ModelPrefs, bool) {
+	if len(prefs) == 0 {
+		return ModelPrefs{}, false
+	}
+	if p, ok := prefs[modelID]; ok {
+		return p, true
+	}
+	key := CanonicalModelID(modelID)
+	for id, p := range prefs {
+		if CanonicalModelID(id) == key {
+			return p, true
+		}
+	}
+	return ModelPrefs{}, false
+}
+
+// supportedParameters publishes the OpenAI-style capability list. A reported
+// list wins; otherwise derive the same defaults magpie publishes for chat
+// models (tools/tool_choice, plus reasoning when the model thinks).
+func supportedParameters(m model.ModelInfo) []string {
+	if len(m.SupportedParameters) > 0 {
+		return m.SupportedParameters
+	}
+	if !m.Tools && len(m.Thinking) == 0 && !m.AlwaysThinks {
+		return nil
+	}
+	params := []string{"tools", "tool_choice"}
+	if len(m.Thinking) > 0 || m.AlwaysThinks {
+		params = append(params, "reasoning")
+	}
+	return params
 }
 
 // aModelList returns A's models, fetching at most once per TTL. The second

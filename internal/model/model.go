@@ -137,6 +137,21 @@ type ModelInfo struct {
 	Multiplier float64  `json:"multiplier,omitempty"`
 	Thinking   []string `json:"thinking,omitempty"`
 	Free       bool     `json:"free,omitempty"`
+
+	// D-35 publication fields (ported from magpie's catalog.Model/Entry). They
+	// are optional: absent means the source did not say, which is different
+	// from a false/zero value.
+	Released            string   `json:"released,omitempty"`             // YYYY-MM-DD
+	Family              string   `json:"family,omitempty"`               // family label
+	Tiers               []string `json:"tiers,omitempty"`                // service tiers
+	AlwaysThinks        bool     `json:"always_thinks,omitempty"`        // cannot turn thinking off
+	DynamicTools        bool     `json:"dynamic_tools,omitempty"`        // loads tools mid-conversation
+	DefaultEffort       string   `json:"default_effort,omitempty"`       // effort when none is asked
+	SupportedParameters []string `json:"supported_parameters,omitempty"` // OpenAI-style capability list
+	Temperature         *bool    `json:"temperature,omitempty"`          // false = refuses temperature/top_p
+	// Structured marks a decision model: /v1/chat/completions must not accept
+	// it, clients should call /v1/systemone or /v1/decision instead (D-18④).
+	Structured bool `json:"structured,omitempty"`
 }
 
 type CheckinConfig struct {

@@ -83,6 +83,10 @@ type Options struct {
 	// keyed by model id. Nil means "no override layer" (tests, standalone).
 	Overrides func(pluginID string) (map[string]ModelOverride, error)
 
+	// Prefs supplies the P12-2 personalisation (display name, vendor label,
+	// kept efforts) for one plugin, keyed by model id. Nil means "none".
+	Prefs func(pluginID string) (map[string]ModelPrefs, error)
+
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
 	// key of one entry; the key is never part of CustomModel. Both nil disable
@@ -167,6 +171,7 @@ type Gateway struct {
 	snapshot       func(context.Context) (*scheduler.Snapshot, error)
 	schedLog       SchedLogger
 	overrides      func(pluginID string) (map[string]ModelOverride, error)
+	prefs          func(pluginID string) (map[string]ModelPrefs, error)
 	customModels   func() ([]CustomModel, error)
 	customModelKey func(id string) (string, bool)
 	keyRecord      func(keyID string) (KeyRecord, bool, error)
@@ -270,6 +275,7 @@ func newGateway(opts Options) *Gateway {
 		snapshot:       opts.Snapshot,
 		schedLog:       opts.SchedLog,
 		overrides:      opts.Overrides,
+		prefs:          opts.Prefs,
 		customModels:   opts.CustomModels,
 		customModelKey: opts.CustomModelKey,
 		keyRecord:      opts.KeyRecord,
