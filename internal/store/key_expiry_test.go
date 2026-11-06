@@ -31,3 +31,29 @@ func TestClientKeyExpiryRoundtrip(t *testing.T) {
 		t.Fatalf("negative expires_at must be rejected")
 	}
 }
+
+func TestClientKeyAllowedIPsRoundtrip(t *testing.T) {
+	s := openTestStore(t)
+	scope := ClientKeyScope{AllowedIPs: []string{"192.168.1.0/24", "10.0.0.5"}}
+	if err := s.UpsertClientKeyScoped("k1", "laptop", "agk_a", "hash-1", true, 100, scope); err != nil {
+		t.Fatalf("UpsertClientKeyScoped: %v", err)
+	}
+	key, ok, err := s.GetClientKey("k1")
+	if err != nil || !ok {
+		t.Fatalf("GetClientKey: ok=%v err=%v", ok, err)
+	}
+	if len(key.AllowedIPs) != 2 || key.AllowedIPs[0] != "192.168.1.0/24" || key.AllowedIPs[1] != "10.0.0.5" {
+		t.Fatalf("allowed_ips = %v", key.AllowedIPs)
+	}
+
+	if err := s.SetClientKeyScope("k1", ClientKeyScope{AllowedIPs: []string{"not-an-ip"}}); err == nil {
+		t.Fatalf("invalid allowed_ips must be rejected")
+	}
+	if err := s.SetClientKeyScope("k1", ClientKeyScope{}); err != nil {
+		t.Fatalf("clear allowed_ips: %v", err)
+	}
+	key, _, _ = s.GetClientKey("k1")
+	if len(key.AllowedIPs) != 0 {
+		t.Fatalf("allowed_ips after clear = %v", key.AllowedIPs)
+	}
+}

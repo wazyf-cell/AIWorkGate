@@ -305,6 +305,7 @@ const keyDraft = reactive({
   bind_pool: '',
   daily_quota: 0,
   expires_at: '',
+  allowed_ips: '',
 })
 
 /** Epoch seconds → the date input's YYYY-MM-DD (local day). */
@@ -376,6 +377,7 @@ function openKeyEditor(item: ClientKey) {
   keyDraft.bind_pool = item.bind_pool ?? ''
   keyDraft.daily_quota = item.daily_quota ?? 0
   keyDraft.expires_at = epochToDateInput(item.expires_at)
+  keyDraft.allowed_ips = (item.allowed_ips ?? []).join('\n')
 }
 
 function closeKeyEditor() {
@@ -399,6 +401,7 @@ async function saveKeyEdit() {
       bind_pool: keyDraft.bind_pool,
       daily_quota: normalizeQuota(keyDraft.daily_quota),
       expires_at: dateInputToEpoch(keyDraft.expires_at),
+      allowed_ips: parseCorsOrigins(keyDraft.allowed_ips),
     })
     editingKey.value = null
     message.value = '客户端 Key 已更新。'
@@ -1747,6 +1750,21 @@ async function saveLanPassword() {
             />
             <span class="help">
               留空 = 永不过期。到期后该 Key 的请求返回 401，并提示具体到期时间；分享给他人的 Key 建议必填。
+            </span>
+          </div>
+          <div class="field">
+            <label for="key-edit-ips">允许的来源 IP（可选）</label>
+            <textarea
+              id="key-edit-ips"
+              v-model="keyDraft.allowed_ips"
+              class="input mono"
+              rows="2"
+              spellcheck="false"
+              placeholder="留空 = 不额外限制&#10;192.168.1.0/24"
+              :disabled="keyEditBusy"
+            ></textarea>
+            <span class="help">
+              每行一个 IP 或 CIDR；只在该 Key 被使用时校验，范围外的请求返回 403 <code>key_ip_not_allowed</code>。反代场景按真实客户端 IP 判定。
             </span>
           </div>
           <div class="row">

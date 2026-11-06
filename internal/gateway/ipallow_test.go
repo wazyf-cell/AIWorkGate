@@ -95,3 +95,18 @@ func TestSetAllowIPsTakesEffectLive(t *testing.T) {
 		t.Fatalf("after update = %d, want 401 (passed the gate)", rec.Code)
 	}
 }
+
+func TestKeyAllowsIP(t *testing.T) {
+	g := newTestGateway(t, Options{})
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.RemoteAddr = "192.168.1.7:1000"
+	if !g.keyAllowsIP(req, nil) {
+		t.Fatalf("empty allowed_ips must not restrict")
+	}
+	if !g.keyAllowsIP(req, []string{"192.168.0.0/16"}) {
+		t.Fatalf("cidr should admit the address")
+	}
+	if g.keyAllowsIP(req, []string{"10.0.0.0/8"}) {
+		t.Fatalf("outside cidr must be refused")
+	}
+}

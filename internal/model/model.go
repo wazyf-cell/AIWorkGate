@@ -362,6 +362,9 @@ type ClientKey struct {
 	// ExpiresAt is the unix second after which the key is refused (P5-1);
 	// 0 means it never expires.
 	ExpiresAt int64 `json:"expires_at,omitempty"`
+	// AllowedIPs restricts this key to these source IPs/CIDRs (P5-1/D-42);
+	// empty means every address the global allowlist admits.
+	AllowedIPs []string `json:"allowed_ips,omitempty"`
 	// Scope and quota (plan 2026-10-21 §1, mirroring A's ApiKeyEntry in
 	// api_keys.rs:254-293). An empty ModelScope means every model, an empty
 	// BindPool means every pool and DailyQuota 0 means unlimited.

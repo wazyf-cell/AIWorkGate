@@ -583,6 +583,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"该客户端 Key 已停用，请在宿主的「设置 → 客户端 Key」中重新启用")
 			return
 		}
+		if !g.keyAllowsIP(r, kr.AllowedIPs) {
+			rec.errText = "source ip not allowed for this key"
+			g.fail(w, rec, http.StatusForbidden, "permission_error", "key_ip_not_allowed",
+				"来源 IP 不在该 Key 的允许列表：请在宿主的「设置 → 客户端 Key」调整 allowed_ips")
+			return
+		}
 		r = r.WithContext(withKeyRecord(r.Context(), kr))
 	}
 	rec.billable = isInferencePath(path)

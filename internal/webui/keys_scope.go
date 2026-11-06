@@ -53,11 +53,16 @@ type KeySpec struct {
 	DailyQuota int
 	// ExpiresAt is the unix second the key stops working; 0 = never (P5-1).
 	ExpiresAt int64
+	// AllowedIPs restricts the key to these source IPs/CIDRs (P5-1/D-42).
+	AllowedIPs []string
 }
 
 // scope returns the stored triple of a spec.
 func (s KeySpec) scope() store.ClientKeyScope {
-	return store.ClientKeyScope{ModelScope: s.ModelScope, BindPool: s.BindPool, DailyQuota: s.DailyQuota, ExpiresAt: s.ExpiresAt}
+	return store.ClientKeyScope{
+		ModelScope: s.ModelScope, BindPool: s.BindPool, DailyQuota: s.DailyQuota,
+		ExpiresAt: s.ExpiresAt, AllowedIPs: s.AllowedIPs,
+	}
 }
 
 // handleKeysAPI serves GET and POST /api/keys.
@@ -175,6 +180,7 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 		BindPool:   current.BindPool,
 		DailyQuota: current.DailyQuota,
 		ExpiresAt:  current.ExpiresAt,
+		AllowedIPs: current.AllowedIPs,
 	}
 	if err := applyKeyPatch(&spec, body); err != nil {
 		writeKeySpecError(w, err)
@@ -201,7 +207,7 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 			ID: id, Name: spec.Name, Prefix: current.Prefix, Enabled: spec.Enabled,
 			CreatedAt: current.CreatedAt, LastUsedAt: current.LastUsedAt,
 			ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota,
-			ExpiresAt: spec.ExpiresAt, UsedToday: current.UsedToday,
+			ExpiresAt: spec.ExpiresAt, AllowedIPs: spec.AllowedIPs, UsedToday: current.UsedToday,
 		}
 	}
 	updated.QuotaLeft = store.ClientKeyQuotaLeft(updated.DailyQuota, updated.UsedToday)
@@ -270,6 +276,12 @@ func applyKeyPatch(spec *KeySpec, body map[string]json.RawMessage) error {
 				return err
 			}
 			spec.ExpiresAt = expires
+		case "allowed_ips":
+			ips, err := keyAllowedIPs(raw)
+			if err != nil {
+				return err
+			}
+			spec.AllowedIPs = ips
 		case "name":
 			var name string
 			if err := json.Unmarshal(raw, &name); err != nil {
@@ -418,4 +430,17 @@ func keyExpiresAt(raw json.RawMessage) (int64, error) {
 		return 0, fmt.Errorf("%w: expires_at must not be negative", ErrInvalidRequest)
 	}
 	return at, nil
+}
+
+// keyAllowedIPs parses the optional source-address list; entries are validated
+// by the store (IP or CIDR).
+func keyAllowedIPs(raw json.RawMessage) ([]string, error) {
+	if jsonIsNull(raw) {
+		return nil, nil
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, fmt.Errorf("%w: allowed_ips must be a string array", ErrInvalidRequest)
+	}
+	return list, nil
 }

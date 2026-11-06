@@ -598,6 +598,11 @@ var migrations = []migrationStep{
 			{"client_keys", "expires_at", "INTEGER NOT NULL DEFAULT 0"},
 		},
 	},
+	{ // version 14: per-key source-address allowlist (P5-1/D-42)
+		columns: []columnMigration{
+			{"client_keys", "allowed_ips", "TEXT"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

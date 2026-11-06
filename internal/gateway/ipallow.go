@@ -129,6 +129,16 @@ func (g *Gateway) clientIP(r *http.Request) net.IP {
 	return peerIP
 }
 
+// keyAllowsIP enforces a key's own source-address list (P5-1/D-42) using the
+// same clientIP/parseAllowlist rules as the global gate. Empty means no extra
+// restriction.
+func (g *Gateway) keyAllowsIP(r *http.Request, entries []string) bool {
+	if len(entries) == 0 {
+		return true
+	}
+	return parseAllowlist(entries).allows(g.clientIP(r))
+}
+
 // ipAllowed checks the effective client address (see clientIP).
 func (g *Gateway) ipAllowed(r *http.Request) bool {
 	stored := g.allowIPs.Load()

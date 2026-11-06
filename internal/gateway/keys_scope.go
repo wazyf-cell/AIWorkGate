@@ -44,6 +44,7 @@ type KeyRecord struct {
 	ModelScope []string
 	BindPool   string
 	DailyQuota int
+	AllowedIPs []string
 }
 
 // keyRecordContextKey is the request-context slot holding the snapshot.

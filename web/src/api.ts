@@ -1598,6 +1598,8 @@ export interface ClientKey {
   quota_left?: number
   /** Unix second the key stops working; omit/0 = never (P5-1). */
   expires_at?: number
+  /** Source IPs/CIDRs this key may be used from; empty = no extra limit. */
+  allowed_ips?: string[]
 }
 
 /** Body of POST /keys (name required) and PUT /keys/{id} (any subset). */
@@ -1608,6 +1610,7 @@ export interface KeyScopeInput {
   bind_pool?: string
   daily_quota?: number
   expires_at?: number
+  allowed_ips?: string[]
 }
 
 export interface CreateKeyResponse {

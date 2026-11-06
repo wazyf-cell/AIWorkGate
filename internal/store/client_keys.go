@@ -49,7 +49,7 @@ func (s *Store) ListClientKeys() ([]model.ClientKey, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT k.id, COALESCE(k.name, ''), COALESCE(k.prefix, ''),
 		COALESCE(k.enabled, 0), COALESCE(k.created_at, 0), COALESCE(k.last_used_at, 0),
 		COALESCE(k.model_scope, ''), COALESCE(k.bind_pool, ''), COALESCE(k.daily_quota, 0),
-		COALESCE(k.expires_at, 0), COALESCE(u.requests, 0)
+		COALESCE(k.expires_at, 0), COALESCE(k.allowed_ips, ''), COALESCE(u.requests, 0)
 		FROM client_keys k
 		LEFT JOIN client_key_usage u ON u.key_id = k.id AND u.day = ?
 		ORDER BY k.created_at DESC, k.id DESC`, ClientKeyUsageDay(time.Now()))

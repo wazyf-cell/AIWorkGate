@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -48,12 +49,16 @@ type ClientKeyScope struct {
 	// ExpiresAt is the unix second after which the key is refused (P5-1).
 	// 0 means the key never expires.
 	ExpiresAt int64
+	// AllowedIPs restricts the key to these source IPs/CIDRs (P5-1/D-42).
+	// Empty means every address the global allowlist admits.
+	AllowedIPs []string
 }
 
 // Empty reports whether the scope restricts nothing.
 func (s ClientKeyScope) Empty() bool {
 	return len(normalizeClientKeyScope(s.ModelScope)) == 0 &&
-		strings.TrimSpace(s.BindPool) == "" && s.DailyQuota == 0 && s.ExpiresAt == 0
+		strings.TrimSpace(s.BindPool) == "" && s.DailyQuota == 0 && s.ExpiresAt == 0 &&
+		len(normalizeClientKeyAllowedIPs(s.AllowedIPs)) == 0
 }
 
 // Validate rejects a scope the schema/UI cannot represent. The webui validates
@@ -81,6 +86,19 @@ func (s ClientKeyScope) Validate() error {
 	if s.ExpiresAt < 0 {
 		return fmt.Errorf("store: client key scope: %w: expires_at must not be negative",
 			ErrInvalidArgument)
+	}
+	allowed := normalizeClientKeyAllowedIPs(s.AllowedIPs)
+	if len(allowed) > MaxClientKeyAllowedIPs {
+		return fmt.Errorf("store: client key scope: %w: allowed_ips accepts at most %d entries",
+			ErrInvalidArgument, MaxClientKeyAllowedIPs)
+	}
+	for _, entry := range allowed {
+		if net.ParseIP(entry) == nil {
+			if _, _, err := net.ParseCIDR(entry); err != nil {
+				return fmt.Errorf("store: client key scope: %w: allowed_ips entry %q is not an IP or CIDR",
+					ErrInvalidArgument, entry)
+			}
+		}
 	}
 	return nil
 }
@@ -130,7 +148,7 @@ func (s *Store) GetClientKey(id string) (model.ClientKey, bool, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT k.id, COALESCE(k.name, ''), COALESCE(k.prefix, ''),
 		COALESCE(k.enabled, 0), COALESCE(k.created_at, 0), COALESCE(k.last_used_at, 0),
 		COALESCE(k.model_scope, ''), COALESCE(k.bind_pool, ''), COALESCE(k.daily_quota, 0),
-		COALESCE(k.expires_at, 0), COALESCE(u.requests, 0)
+		COALESCE(k.expires_at, 0), COALESCE(k.allowed_ips, ''), COALESCE(u.requests, 0)
 		FROM client_keys k
 		LEFT JOIN client_key_usage u ON u.key_id = k.id AND u.day = ?
 		WHERE k.id = ?`, ClientKeyUsageDay(time.Now()), id)
@@ -152,15 +170,17 @@ func scanClientKeyWithUsage(row interface{ Scan(...any) error }) (model.ClientKe
 		enabled   int64
 		scopeRaw  string
 		dailyQ    int64
+		ipsRaw    string
 		usedToday int64
 	)
 	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &enabled, &key.CreatedAt, &key.LastUsedAt,
-		&scopeRaw, &key.BindPool, &dailyQ, &key.ExpiresAt, &usedToday); err != nil {
+		&scopeRaw, &key.BindPool, &dailyQ, &key.ExpiresAt, &ipsRaw, &usedToday); err != nil {
 		return model.ClientKey{}, err
 	}
 	key.Enabled = enabled != 0
 	key.ModelScope = decodeClientKeyScope(scopeRaw)
 	key.DailyQuota = int(dailyQ)
+	key.AllowedIPs = decodeClientKeyAllowedIPs(ipsRaw)
 	key.UsedToday = int(usedToday)
 	key.QuotaLeft = ClientKeyQuotaLeft(key.DailyQuota, key.UsedToday)
 	return key, nil
@@ -182,11 +202,15 @@ func (s *Store) UpsertClientKeyScoped(id, name, prefix, hash string, enabled boo
 	if err != nil {
 		return fmt.Errorf("store: upsert client key: %w", err)
 	}
+	ipsJSON, err := encodeClientKeyAllowedIPs(scope.AllowedIPs)
+	if err != nil {
+		return fmt.Errorf("store: upsert client key: %w", err)
+	}
 	ctx, cancel := s.ctx()
 	defer cancel()
 	_, err = s.db.ExecContext(ctx, `INSERT INTO client_keys
-		(id, name, prefix, hash, enabled, created_at, last_used_at, model_scope, bind_pool, daily_quota, expires_at)
-		VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, 0), CAST(strftime('%s','now') AS INTEGER)), 0, ?, ?, ?, ?)
+		(id, name, prefix, hash, enabled, created_at, last_used_at, model_scope, bind_pool, daily_quota, expires_at, allowed_ips)
+		VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, 0), CAST(strftime('%s','now') AS INTEGER)), 0, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			prefix = excluded.prefix,
@@ -196,9 +220,10 @@ func (s *Store) UpsertClientKeyScoped(id, name, prefix, hash string, enabled boo
 			bind_pool = excluded.bind_pool,
 			daily_quota = excluded.daily_quota,
 			expires_at = excluded.expires_at,
+			allowed_ips = excluded.allowed_ips,
 			created_at = CASE WHEN ? <> 0 THEN ? ELSE client_keys.created_at END`,
 		id, name, prefix, hash, boolInt(enabled), createdAt, scopeJSON,
-		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, createdAt, createdAt)
+		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, ipsJSON, createdAt, createdAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert client key: %w", err)
 	}
@@ -217,11 +242,15 @@ func (s *Store) SetClientKeyScope(id string, scope ClientKeyScope) error {
 	if err != nil {
 		return fmt.Errorf("store: set client key scope: %w", err)
 	}
+	ipsJSON, err := encodeClientKeyAllowedIPs(scope.AllowedIPs)
+	if err != nil {
+		return fmt.Errorf("store: set client key scope: %w", err)
+	}
 	ctx, cancel := s.ctx()
 	defer cancel()
 	res, err := s.db.ExecContext(ctx, `UPDATE client_keys
-		SET model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ? WHERE id = ?`,
-		scopeJSON, strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, id)
+		SET model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ?, allowed_ips = ? WHERE id = ?`,
+		scopeJSON, strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, ipsJSON, id)
 	if err != nil {
 		return fmt.Errorf("store: set client key scope: %w", err)
 	}
@@ -246,13 +275,17 @@ func (s *Store) UpdateClientKey(id, name string, enabled bool, scope ClientKeySc
 	if err != nil {
 		return fmt.Errorf("store: update client key: %w", err)
 	}
+	ipsJSON, err := encodeClientKeyAllowedIPs(scope.AllowedIPs)
+	if err != nil {
+		return fmt.Errorf("store: update client key: %w", err)
+	}
 	ctx, cancel := s.ctx()
 	defer cancel()
 	res, err := s.db.ExecContext(ctx, `UPDATE client_keys
-		SET name = ?, enabled = ?, model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ?
+		SET name = ?, enabled = ?, model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ?, allowed_ips = ?
 		WHERE id = ?`,
 		strings.TrimSpace(name), boolInt(enabled), scopeJSON,
-		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, id)
+		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, ipsJSON, id)
 	if err != nil {
 		return fmt.Errorf("store: update client key: %w", err)
 	}
@@ -489,4 +522,50 @@ func decodeClientKeyScope(raw string) []string {
 		return nil
 	}
 	return normalizeClientKeyScope(scope)
+}
+
+// MaxClientKeyAllowedIPs bounds one key's source-address list.
+const MaxClientKeyAllowedIPs = 32
+
+// normalizeClientKeyAllowedIPs trims and dedupes the list; invalid entries are
+// dropped here and rejected by Validate on the write path.
+func normalizeClientKeyAllowedIPs(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	seen := map[string]bool{}
+	for _, raw := range entries {
+		value := strings.TrimSpace(raw)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func encodeClientKeyAllowedIPs(entries []string) (any, error) {
+	list := normalizeClientKeyAllowedIPs(entries)
+	if len(list) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
+}
+
+func decodeClientKeyAllowedIPs(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return nil
+	}
+	return normalizeClientKeyAllowedIPs(list)
 }

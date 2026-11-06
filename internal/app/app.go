@@ -1199,6 +1199,7 @@ func (a *App) keyRecord(id string) (gateway.KeyRecord, bool, error) {
 		ModelScope: key.ModelScope,
 		BindPool:   key.BindPool,
 		DailyQuota: key.DailyQuota,
+		AllowedIPs: key.AllowedIPs,
 	}, true, nil
 }
 

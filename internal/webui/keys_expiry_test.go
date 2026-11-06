@@ -33,3 +33,15 @@ func TestKeyExpiresAtParsing(t *testing.T) {
 		})
 	}
 }
+
+func TestKeyAllowedIPsParsing(t *testing.T) {
+	if got, err := keyAllowedIPs(json.RawMessage(`null`)); err != nil || got != nil {
+		t.Fatalf("null = %v, %v", got, err)
+	}
+	if got, err := keyAllowedIPs(json.RawMessage(`["10.0.0.5","192.168.0.0/16"]`)); err != nil || len(got) != 2 {
+		t.Fatalf("list = %v, %v", got, err)
+	}
+	if _, err := keyAllowedIPs(json.RawMessage(`"10.0.0.5"`)); err == nil {
+		t.Fatalf("a bare string must be rejected")
+	}
+}
