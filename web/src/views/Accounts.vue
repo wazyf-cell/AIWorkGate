@@ -19,6 +19,7 @@ import {
   type LoginStatus,
   type PluginStatus,
   type Proxy,
+  type QuotaWindow,
 } from '../api'
 import { formatDate, formatNumber, formatTimestamp, percent, toDate } from '../format'
 
@@ -910,6 +911,25 @@ function quotaTone(row: Account): string {
   if (value < 10) return 'low'
   if (value < 30) return 'mid'
   return ''
+}
+
+/** P9-1: prefer the vendor's own display string, else show amount/limit. */
+function windowText(w: QuotaWindow): string {
+  if (w.display) return w.display
+  const amount = Number(w.amount)
+  const limit = Number(w.limit)
+  if (Number.isFinite(amount) && Number.isFinite(limit) && limit > 0) {
+    return `${formatNumber(amount)} / ${formatNumber(limit)}`
+  }
+  if (Number.isFinite(limit) && limit > 0) return formatNumber(limit)
+  return '未上报'
+}
+
+/** Window timestamps arrive as RFC3339; the formatter wants Unix seconds. */
+function isoSeconds(raw?: string): number {
+  if (!raw) return 0
+  const ms = Date.parse(raw)
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0
 }
 
 /* ---- Health: one merged verdict from the host ---- */
@@ -2336,6 +2356,24 @@ onUnmounted(() => {
                                 <dd>{{ checkedInText(row) }}</dd>
                                 <dt>限流</dt>
                                 <dd>{{ row.quota?.rate_limited ? '是' : '否' }}</dd>
+                              </dl>
+                            </div>
+
+                            <div v-if="row.quota?.windows?.length" class="detail-block">
+                              <h4>额度窗口</h4>
+                              <dl class="kv">
+                                <template v-for="(w, index) in row.quota.windows" :key="`${w.name || 'window'}-${index}`">
+                                  <dt>{{ w.name || `窗口 ${index + 1}` }}</dt>
+                                  <dd>
+                                    {{ windowText(w) }}
+                                    <template v-if="isoSeconds(w.resetsAt)">
+                                      · <span class="small muted">重置 {{ formatTimestamp(isoSeconds(w.resetsAt)) }}</span>
+                                    </template>
+                                    <template v-if="isoSeconds(w.runsOutAt)">
+                                      · <span class="small muted">失效 {{ formatTimestamp(isoSeconds(w.runsOutAt)) }}</span>
+                                    </template>
+                                  </dd>
+                                </template>
                               </dl>
                             </div>
 

@@ -170,6 +170,22 @@ export interface HostStatus {
   egress_failed?: number
 }
 
+export interface QuotaWindow {
+  name?: string
+  amount?: number
+  limit?: number
+  used?: number
+  unit?: string
+  /** RFC3339; periodic reset (F-14 resetsAt). */
+  resetsAt?: string
+  /** RFC3339; when the券/batch burns out (F-14 runsOutAt). */
+  runsOutAt?: string
+  runsOut?: number
+  /** The vendor's own one-line rendering, e.g. "876 / 4600 · 100 即将过期". */
+  display?: string
+  [key: string]: unknown
+}
+
 export interface Quota {
   remaining?: number
   total?: number
@@ -180,6 +196,10 @@ export interface Quota {
   rate_limited?: boolean
   today_checked_in?: boolean
   checked_in_at?: number
+  /** P9-1: per-window allowance, passed through from the bridge verbatim. */
+  windows?: QuotaWindow[]
+  display?: string
+  read_at?: string
 }
 
 export interface Identity {

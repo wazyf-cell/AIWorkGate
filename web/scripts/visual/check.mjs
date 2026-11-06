@@ -86,6 +86,41 @@ export const PAGES = [
     variants: ['light', 'dark'],
   },
   {
+    slug: 'accounts-quota-windows',
+    path: '/accounts',
+    title: '账号 · 多窗口额度',
+    ready: () => document.querySelectorAll('[class*="account"]').length > 0,
+    prepare: [
+      `(() => {
+        const row = [...document.querySelectorAll('tbody tr')].find((tr) => tr.textContent.includes('示例账号 Alpha'));
+        if (!row) throw new Error('Alpha row missing');
+        const trigger = row.querySelector('.menu-trigger');
+        if (!trigger) throw new Error('menu trigger missing');
+        trigger.click();
+      })()`,
+      `(async () => {
+        const item = [...document.querySelectorAll('.row-menu [role="menuitem"]')].find((el) => el.textContent.includes('查看额度详情'));
+        if (!item) throw new Error('quota menu item missing');
+        item.click();
+        const deadline = performance.now() + 5000;
+        let panel = null;
+        while (performance.now() < deadline) {
+          panel = document.querySelector('.detail-panel');
+          if (panel && panel.textContent.includes('额度窗口')) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (!panel) throw new Error('quota panel never rendered');
+        panel.scrollIntoView({ block: 'center' });
+      })()`,
+    ],
+    settled: () => {
+      const panel = document.querySelector('.detail-panel');
+      return !!panel && panel.textContent.includes('额度窗口') && panel.textContent.includes('820 / 1000 · 100 即将过期');
+    },
+    fullPage: false,
+    variants: ['light', 'dark'],
+  },
+  {
     slug: 'scheduler-explain',
     path: '/scheduler',
     title: '调度 · 解释结果',
