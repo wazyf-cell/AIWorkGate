@@ -1,7 +1,10 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -35,6 +38,106 @@ func newUsageTestApp(t *testing.T) (*App, *model.APIRequestLog) {
 		t.Fatalf("insert api log: %v", err)
 	}
 	return app, &rec
+}
+
+func TestUsageConversationsPageCursor(t *testing.T) {
+	app, _ := newUsageTestApp(t)
+	for i, id := range []string{"c1", "c2", "c3"} {
+		if err := app.store.InsertAPIRequestLog(model.APIRequestLog{
+			TS:    time.Date(2026, 10, 20, 10, i+1, 0, 0, time.Local).Format(time.RFC3339),
+			ReqID: "req-" + id, Source: "plugin:mock", Account: "acc_1", Model: "m1",
+			ConversationID: id, Status: 200,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+
+	query := map[string][]string{"from": {"2026-10-20"}, "to": {"2026-10-20"}, "page_size": {"2"}}
+	first, err := app.usageConversationsPage(query)
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	page1, ok := first.(usage.ConversationsResponse)
+	if !ok {
+		t.Fatalf("page 1 type = %T", first)
+	}
+	if len(page1.Items) != 2 || page1.Items[0].ConversationID != "c3" ||
+		page1.Items[1].ConversationID != "c2" || !page1.HasMore || page1.NextCursor == "" {
+		t.Fatalf("page 1 = %+v", page1)
+	}
+
+	query["cursor"] = []string{page1.NextCursor}
+	second, err := app.usageConversationsPage(query)
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	page2, ok := second.(usage.ConversationsResponse)
+	if !ok {
+		t.Fatalf("page 2 type = %T", second)
+	}
+	if len(page2.Items) != 2 || page2.Items[0].ConversationID != "c1" ||
+		!strings.HasPrefix(page2.Items[1].ConversationID, "req:req-body:") ||
+		page2.HasMore || page2.NextCursor != "" {
+		t.Fatalf("page 2 = %+v", page2)
+	}
+
+	bad := map[string][]string{"cursor": {"not-a-cursor"}}
+	if _, err := app.usageConversationsPage(bad); !errors.Is(err, webui.ErrInvalidRequest) {
+		t.Fatalf("invalid cursor err = %v, want webui.ErrInvalidRequest", err)
+	}
+}
+
+// TestUsageConversationsRouteUsesRealOptions drives the mounted route through
+// the same webui.Options the app serves, so a forgotten options entry cannot
+// hide behind a stubbed callback.
+func TestUsageConversationsRouteUsesRealOptions(t *testing.T) {
+	app, _ := newUsageTestApp(t)
+	if err := app.store.InsertAPIRequestLog(model.APIRequestLog{
+		TS:    time.Date(2026, 10, 20, 10, 5, 0, 0, time.Local).Format(time.RFC3339),
+		ReqID: "req-conv", Source: "plugin:mock", Account: "acc_1", Model: "m1",
+		ConversationID: "c1", Status: 200,
+	}); err != nil {
+		t.Fatalf("insert api log: %v", err)
+	}
+
+	handler := webui.New(app.webOptions())
+	// Exchange the launch token for the admin session cookie, exactly like the
+	// tray-opened page does; /api routes are closed without it.
+	tokener, ok := handler.(interface{ LaunchToken() string })
+	if !ok {
+		t.Fatalf("handler is %T, want a launch token carrier", handler)
+	}
+	sessionReq := httptest.NewRequest(http.MethodPost, "/api/session?t="+url.QueryEscape(tokener.LaunchToken()), nil)
+	sessionRec := httptest.NewRecorder()
+	handler.ServeHTTP(sessionRec, sessionReq)
+	if sessionRec.Code != http.StatusOK {
+		t.Fatalf("session exchange = %d (%s)", sessionRec.Code, sessionRec.Body.String())
+	}
+	var cookie *http.Cookie
+	for _, c := range sessionRec.Result().Cookies() {
+		if c.Name == "dsh_admin_session" {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatalf("session exchange did not set the admin cookie")
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/usage/conversations?from=2026-10-20&to=2026-10-20&page_size=1", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+	}
+	var payload usage.ConversationsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].ConversationID != "c1" || !payload.HasMore {
+		t.Fatalf("payload = %+v", payload)
+	}
 }
 
 func TestLogBodyRespectsDebugSwitch(t *testing.T) {

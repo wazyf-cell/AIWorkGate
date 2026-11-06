@@ -36,6 +36,9 @@ type Query struct {
 	// ConversationID narrows /api/usage/sessions to one conversation
 	// (D-32③ 聚合视图下钻；空 = 不过滤).
 	ConversationID string
+	// Cursor is the opaque keyset cursor of /api/usage/conversations
+	// (上一页返回的 next_cursor；空 = 第一页).
+	Cursor string
 }
 
 // ParseQuery interprets from/to (YYYY-MM-DD local, inclusive), plugin, group
@@ -75,6 +78,7 @@ func ParseQuery(values url.Values, now time.Time) (Query, error) {
 		Model:    strings.TrimSpace(firstValue(values, "model")),
 		// D-32③：聚合视图下钻到逐请求的会话过滤
 		ConversationID: strings.TrimSpace(firstValue(values, "conversation_id")),
+		Cursor:         strings.TrimSpace(firstValue(values, "cursor")),
 		Filter: store.UsageFilter{
 			FromDay: from.Format("2006-01-02"),
 			ToDay:   to.Format("2006-01-02"),

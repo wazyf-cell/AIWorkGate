@@ -203,11 +203,12 @@ type Options struct {
 
 	// S2 usage views. Each callback receives the raw query parameters so
 	// repeatable and comma-separated filters stay available to the host.
-	UsageSummary  func(query map[string][]string) (any, error)
-	UsageCredits  func(query map[string][]string) (any, error)
-	UsageExpiry   func(query map[string][]string) (any, error)
-	UsageSessions func(query map[string][]string) (any, error)
-	UsageExport   func(w io.Writer, query map[string][]string) (filename string, err error)
+	UsageSummary       func(query map[string][]string) (any, error)
+	UsageCredits       func(query map[string][]string) (any, error)
+	UsageExpiry        func(query map[string][]string) (any, error)
+	UsageSessions      func(query map[string][]string) (any, error)
+	UsageConversations func(query map[string][]string) (any, error)
+	UsageExport        func(w io.Writer, query map[string][]string) (filename string, err error)
 
 	// Observability over raw request logs (plan 2026-10-21 §5): per-day
 	// latency/TTFB percentiles and per-key token/credit totals. Both take an
@@ -403,6 +404,7 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/usage/credits", s.handleUsageCredits)
 	mux.HandleFunc("/api/usage/expiry", s.handleUsageExpiry)
 	mux.HandleFunc("/api/usage/sessions", s.handleUsageSessions)
+	mux.HandleFunc("/api/usage/conversations", s.handleUsageConversations)
 	mux.HandleFunc("/api/usage/export", s.handleUsageExport)
 	mux.HandleFunc("/api/usage/latency", s.handleUsageLatency)
 	mux.HandleFunc("/api/usage/latency/models", s.handleUsageModelLatency)

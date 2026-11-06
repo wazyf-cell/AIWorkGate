@@ -123,6 +123,10 @@ func (s *server) handleUsageSessions(w http.ResponseWriter, r *http.Request) {
 	s.serveUsage(w, r, "usage sessions", s.opts.UsageSessions)
 }
 
+func (s *server) handleUsageConversations(w http.ResponseWriter, r *http.Request) {
+	s.serveUsage(w, r, "usage conversations", s.opts.UsageConversations)
+}
+
 func (s *server) serveUsage(w http.ResponseWriter, r *http.Request, action string, fn func(map[string][]string) (any, error)) {
 	if !allowMethods(w, r, http.MethodGet) {
 		return

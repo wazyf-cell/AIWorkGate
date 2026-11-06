@@ -84,6 +84,47 @@ func TestUsageEndpointsAndExport(t *testing.T) {
 	}
 }
 
+func TestUsageConversationsEndpoint(t *testing.T) {
+	var captured map[string][]string
+	handler := New(Options{
+		UsageConversations: func(query map[string][]string) (any, error) {
+			captured = query
+			return map[string]any{
+				"items":     []any{map[string]any{"conversation_id": "c1", "requests": 2}},
+				"has_more":  true,
+				"page_size": 2,
+			}, nil
+		},
+	})
+
+	recorder := doRequest(t, handler, http.MethodGet,
+		"/api/usage/conversations?cursor=abc&page_size=2&plugin=mock", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("conversations status = %d (%s)", recorder.Code, recorder.Body.String())
+	}
+	if captured["cursor"][0] != "abc" || captured["page_size"][0] != "2" || captured["plugin"][0] != "mock" {
+		t.Fatalf("query forwarded as %+v", captured)
+	}
+	var payload struct {
+		Items []struct {
+			ConversationID string `json:"conversation_id"`
+			Requests       int    `json:"requests"`
+		} `json:"items"`
+		HasMore bool `json:"has_more"`
+	}
+	decodeJSONBody(t, recorder, &payload)
+	if len(payload.Items) != 1 || payload.Items[0].ConversationID != "c1" ||
+		payload.Items[0].Requests != 2 || !payload.HasMore {
+		t.Fatalf("payload = %+v", payload)
+	}
+
+	empty := New(Options{})
+	recorder = doRequest(t, empty, http.MethodGet, "/api/usage/conversations", "")
+	if recorder.Code != http.StatusNotImplemented {
+		t.Fatalf("missing callback status = %d, want 501", recorder.Code)
+	}
+}
+
 func TestRequestLogsExtendedFilters(t *testing.T) {
 	var captured map[string]string
 	handler := New(Options{

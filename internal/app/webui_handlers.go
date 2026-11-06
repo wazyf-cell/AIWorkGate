@@ -110,13 +110,14 @@ func (a *App) webOptions() webui.Options {
 		RequestLogs: a.requestLogs,
 		RuntimeLogs: a.runtimeLogs,
 
-		UsageSummary:  a.usageSummary,
-		UsageCredits:  a.usageCredits,
-		UsageExpiry:   a.usageExpiry,
-		UsageSessions: a.usageSessionsPage,
-		UsageExport:   a.usageExport,
-		UsageLatency:  a.usageLatency,
-		UsageKeyUsage: a.usageKeyUsage,
+		UsageSummary:       a.usageSummary,
+		UsageCredits:       a.usageCredits,
+		UsageExpiry:        a.usageExpiry,
+		UsageSessions:      a.usageSessionsPage,
+		UsageConversations: a.usageConversationsPage,
+		UsageExport:        a.usageExport,
+		UsageLatency:       a.usageLatency,
+		UsageKeyUsage:      a.usageKeyUsage,
 
 		UsageModels:       a.usageModels,
 		UsageModelLatency: a.usageModelLatency,
@@ -2735,6 +2736,21 @@ func (a *App) usageSessionsPage(query map[string][]string) (any, error) {
 		return nil, err
 	}
 	return a.usageSvc.Sessions(q)
+}
+
+func (a *App) usageConversationsPage(query map[string][]string) (any, error) {
+	q, err := a.parseUsageQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	page, err := a.usageSvc.Conversations(q, q.Cursor)
+	if err != nil {
+		if errors.Is(err, usage.ErrBadQuery) {
+			return nil, fmt.Errorf("%w: %v", webui.ErrInvalidRequest, err)
+		}
+		return nil, err
+	}
+	return page, nil
 }
 
 func (a *App) usageExport(w io.Writer, query map[string][]string) (string, error) {

@@ -249,10 +249,10 @@ const sessionParams = computed<UsageSessionsParams>(() => {
   }
 })
 
-/* ---- D-32③ 会话真聚合（骨架；/usage/conversations 后端就绪后自动点亮） ---- */
+/* ---- D-32③ 会话真聚合（默认视图；/api/usage/conversations keyset 分页） ---- */
 
 type SessionMode = 'requests' | 'conversations'
-const sessionMode = ref<SessionMode>('requests')
+const sessionMode = ref<SessionMode>('conversations')
 const conversations = ref<UsageConversation[]>([])
 const convHasMore = ref(false)
 const convNextCursor = ref('')
@@ -328,7 +328,7 @@ function toggleConv(id: string) {
   expandedConv.value = expandedConv.value === id ? null : id
 }
 
-/** 聚合行 → 逐请求视图（conversation_id 过滤；store 支持前该参数被后端忽略）。 */
+/** 聚合行 → 逐请求视图（conversation_id 过滤）。 */
 function drillIntoConversation(item: UsageConversation) {
   convDrill.value = item
   sessionMode.value = 'requests'

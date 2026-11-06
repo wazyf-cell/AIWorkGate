@@ -883,7 +883,7 @@ export interface UsageSessionsResponse {
 export type UsageSessionsParams = UsageFilterParams & {
   page?: number
   page_size?: number
-  /** D-32③：按会话过滤逐请求列表（聚合视图展开用；后端就绪前被忽略）。 */
+  /** D-32③：按会话过滤逐请求列表（聚合视图展开用）。 */
   conversation_id?: string
 }
 
@@ -2338,7 +2338,7 @@ export const api = {
     sessions(params: UsageSessionsParams): Promise<UsageSessionsResponse> {
       return request<UsageSessionsResponse>(`/usage/sessions${qs({ ...params })}`)
     },
-    /** D-32③ 会话真聚合：GROUP BY conversation_id 的 keyset 分页（后端就绪前 404）。 */
+    /** D-32③ 会话真聚合：GROUP BY conversation_id 的 keyset 分页。 */
     conversations(params: UsageConversationsParams): Promise<UsageConversationsResponse> {
       return request<UsageConversationsResponse>(`/usage/conversations${qs({ ...params })}`)
     },
