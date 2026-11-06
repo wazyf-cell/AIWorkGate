@@ -603,6 +603,11 @@ var migrations = []migrationStep{
 			{"client_keys", "allowed_ips", "TEXT"},
 		},
 	},
+	{ // version 15: owner key marker for D-11 whitelist mode
+		columns: []columnMigration{
+			{"client_keys", "owner", "INTEGER NOT NULL DEFAULT 0"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

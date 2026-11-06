@@ -82,6 +82,7 @@ const form = reactive({
   gateway_cors: '',
   gateway_allow_ips: '',
   gateway_trusted_proxies: '',
+  gateway_service_mode: 'open' as 'open' | 'paused' | 'whitelist',
 })
 
 /** Last raw payload from the host; keeps unknown keys for the round trip. */
@@ -306,6 +307,7 @@ const keyDraft = reactive({
   daily_quota: 0,
   expires_at: '',
   allowed_ips: '',
+  owner: false,
 })
 
 /** Epoch seconds → the date input's YYYY-MM-DD (local day). */
@@ -378,6 +380,7 @@ function openKeyEditor(item: ClientKey) {
   keyDraft.daily_quota = item.daily_quota ?? 0
   keyDraft.expires_at = epochToDateInput(item.expires_at)
   keyDraft.allowed_ips = (item.allowed_ips ?? []).join('\n')
+  keyDraft.owner = Boolean(item.owner)
 }
 
 function closeKeyEditor() {
@@ -402,6 +405,7 @@ async function saveKeyEdit() {
       daily_quota: normalizeQuota(keyDraft.daily_quota),
       expires_at: dateInputToEpoch(keyDraft.expires_at),
       allowed_ips: parseCorsOrigins(keyDraft.allowed_ips),
+      owner: keyDraft.owner,
     })
     editingKey.value = null
     message.value = '客户端 Key 已更新。'
@@ -706,6 +710,7 @@ async function load() {
     form.gateway_cors = asStringList(gateway.cors_allow_origins, defaults.gateway.cors_allow_origins ?? []).join('\n')
     form.gateway_allow_ips = asStringList(gateway.allow_ips, defaults.gateway.allow_ips ?? []).join('\n')
     form.gateway_trusted_proxies = asStringList(gateway.trusted_proxies, defaults.gateway.trusted_proxies ?? []).join('\n')
+    form.gateway_service_mode = (gateway.service_mode === 'paused' || gateway.service_mode === 'whitelist' ? gateway.service_mode : 'open')
     savedSignature.value = settingsSignature()
   } catch (e) {
     error.value = errorMessage(e)
@@ -864,6 +869,7 @@ async function save() {
       cors_allow_origins: corsOrigins,
       allow_ips: allowIPs,
       trusted_proxies: trustedProxies,
+      service_mode: form.gateway_service_mode,
     },
     // The notification policy lives in the same config.json block; sending it
     // here keeps a page-wide save from reverting a card edit. The webhook URL
@@ -1476,6 +1482,17 @@ async function saveLanPassword() {
       </div>
       <div class="card-body stack">
         <div class="field">
+          <label for="set-service-mode">服务模式</label>
+          <select id="set-service-mode" v-model="form.gateway_service_mode" class="select">
+            <option value="open">open · 正常服务</option>
+            <option value="paused">paused · 全部 /v1 返回 503</option>
+            <option value="whitelist">whitelist · 仅属主 Key</option>
+          </select>
+          <span class="help">
+            <code>paused</code> 在鉴权前拒绝所有 /v1 请求（维护/止损用）；<code>whitelist</code> 只放行在「客户端 Key」里勾选“属主 Key”的 Key。保存后即时生效。
+          </span>
+        </div>
+        <div class="field">
           <label for="set-cors">允许的跨源来源</label>
           <textarea
             id="set-cors"
@@ -1765,6 +1782,16 @@ async function saveLanPassword() {
             ></textarea>
             <span class="help">
               每行一个 IP 或 CIDR；只在该 Key 被使用时校验，范围外的请求返回 403 <code>key_ip_not_allowed</code>。反代场景按真实客户端 IP 判定。
+            </span>
+          </div>
+          <div class="field">
+            <label class="switch">
+              <input v-model="keyDraft.owner" type="checkbox" :disabled="keyEditBusy" />
+              <span class="switch-track"></span>
+              属主 Key
+            </label>
+            <span class="help">
+              whitelist 服务模式下只有勾选“属主 Key”的客户端 Key 可以使用；open 模式下无影响。
             </span>
           </div>
           <div class="row">

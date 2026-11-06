@@ -101,6 +101,8 @@ type Options struct {
 	// TrustedProxies lists reverse proxies whose X-Forwarded-For is believed
 	// (P5-4). Empty means the header is never trusted.
 	TrustedProxies []string
+	// ServiceMode is open (default), paused or whitelist (D-11).
+	ServiceMode string
 
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
@@ -200,6 +202,7 @@ type Gateway struct {
 	corsOrigins    atomic.Value // []string, set by SetCorsOrigins
 	allowIPs       atomic.Value // ipAllowlist, set by SetAllowIPs
 	trustedProxies atomic.Value // ipAllowlist, set by SetTrustedProxies
+	serviceMode    atomic.Int32 // serviceOpen / servicePaused / serviceWhitelist
 	defaultPlugin  string
 	legacyA        bool
 	now            func() time.Time
@@ -315,6 +318,7 @@ func newGateway(opts Options) *Gateway {
 	g.SetCorsOrigins(opts.CorsAllowOrigins)
 	g.SetAllowIPs(opts.AllowIPs)
 	g.SetTrustedProxies(opts.TrustedProxies)
+	g.SetServiceMode(opts.ServiceMode)
 	return g
 }
 
@@ -539,6 +543,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// D-11: paused stops every /v1 request before authentication.
+	if g.serviceMode.Load() == servicePaused {
+		rec.errText = "service paused"
+		g.fail(w, rec, http.StatusServiceUnavailable, "service_unavailable", "service_paused",
+			"服务已暂停：请在宿主的「设置 → 网关」把服务模式改回 open")
+		return
+	}
+
 	if allowed, origin := g.corsFor(r.Header.Get("Origin")); origin != "" && allowed {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
@@ -587,6 +599,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rec.errText = "source ip not allowed for this key"
 			g.fail(w, rec, http.StatusForbidden, "permission_error", "key_ip_not_allowed",
 				"来源 IP 不在该 Key 的允许列表：请在宿主的「设置 → 客户端 Key」调整 allowed_ips")
+			return
+		}
+		// D-11 whitelist: only keys marked as the owner are admitted.
+		if g.serviceMode.Load() == serviceWhitelist && !kr.Owner {
+			rec.errText = "service whitelist: owner key required"
+			g.fail(w, rec, http.StatusForbidden, "permission_error", "service_whitelist",
+				"服务处于白名单模式：只有标记为「属主」的客户端 Key 可以使用")
 			return
 		}
 		r = r.WithContext(withKeyRecord(r.Context(), kr))

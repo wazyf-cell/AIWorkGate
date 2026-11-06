@@ -143,6 +143,10 @@ type GatewayConfig struct {
 	// spoof their source.
 	TrustedProxies []string `json:"trusted_proxies"`
 
+	// ServiceMode is open (default), paused (every /v1 request gets 503) or
+	// whitelist (only keys marked as owner are admitted), D-11.
+	ServiceMode string `json:"service_mode"`
+
 	// DefaultPlugin serves bare model names (no "id/" prefix). Empty means a
 	// bare name is answered with 404 model_not_found.
 	DefaultPlugin string `json:"default_plugin"`
@@ -403,7 +407,8 @@ func Default() Config {
 			LegacyAFallback: true,
 			// D-40: /v1 answers the local machine only until the user names the
 			// networks that may reach it.
-			AllowIPs: []string{"127.0.0.1", "::1"},
+			AllowIPs:    []string{"127.0.0.1", "::1"},
+			ServiceMode: "open",
 		},
 		// Redaction is off by default this phase; Route awareness on.
 		Redact: RedactConfig{RouteAware: true},
@@ -482,6 +487,7 @@ func (c *Config) Normalize() {
 	c.Gateway.CorsAllowOrigins = normalizeOriginList(c.Gateway.CorsAllowOrigins)
 	c.Gateway.AllowIPs = normalizeAllowIPs(c.Gateway.AllowIPs)
 	c.Gateway.TrustedProxies = normalizeIPList(c.Gateway.TrustedProxies, nil)
+	c.Gateway.ServiceMode = normalizeServiceMode(c.Gateway.ServiceMode)
 	c.Gateway.DefaultPlugin = strings.ToLower(strings.TrimSpace(c.Gateway.DefaultPlugin))
 
 	// Redact: default key file lives beside the data dir; kinds/categories
@@ -567,6 +573,26 @@ func normalizeOriginList(in []string) []string {
 }
 
 var timeOfDayPattern = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
+
+// Service modes (D-11).
+const (
+	ServiceModeOpen      = "open"
+	ServiceModePaused    = "paused"
+	ServiceModeWhitelist = "whitelist"
+)
+
+// normalizeServiceMode folds unknown/empty values to open so a hand-edited
+// config still starts.
+func normalizeServiceMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case ServiceModePaused:
+		return ServiceModePaused
+	case ServiceModeWhitelist:
+		return ServiceModeWhitelist
+	default:
+		return ServiceModeOpen
+	}
+}
 
 // normalizeAllowIPs keeps valid IP/CIDR entries, dedupes them and falls back to
 // loopback when nothing valid remains (D-40).

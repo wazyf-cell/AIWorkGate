@@ -502,6 +502,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		CorsAllowOrigins: cfg.Gateway.CorsAllowOrigins,
 		AllowIPs:         cfg.Gateway.AllowIPs,
 		TrustedProxies:   cfg.Gateway.TrustedProxies,
+		ServiceMode:      cfg.Gateway.ServiceMode,
 		// Bare model names route to the configured default plugin; the legacy A
 		// fallback only applies while that slot is empty and the switch is on.
 		DefaultPlugin: cfg.Gateway.DefaultPlugin,
@@ -1200,6 +1201,7 @@ func (a *App) keyRecord(id string) (gateway.KeyRecord, bool, error) {
 		BindPool:   key.BindPool,
 		DailyQuota: key.DailyQuota,
 		AllowedIPs: key.AllowedIPs,
+		Owner:      key.Owner,
 	}, true, nil
 }
 

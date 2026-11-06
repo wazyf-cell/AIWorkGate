@@ -365,6 +365,9 @@ type ClientKey struct {
 	// AllowedIPs restricts this key to these source IPs/CIDRs (P5-1/D-42);
 	// empty means every address the global allowlist admits.
 	AllowedIPs []string `json:"allowed_ips,omitempty"`
+	// Owner marks the key as the host owner's own: whitelist service mode
+	// admits only these keys (D-11).
+	Owner bool `json:"owner,omitempty"`
 	// Scope and quota (plan 2026-10-21 §1, mirroring A's ApiKeyEntry in
 	// api_keys.rs:254-293). An empty ModelScope means every model, an empty
 	// BindPool means every pool and DailyQuota 0 means unlimited.

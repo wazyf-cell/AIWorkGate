@@ -55,7 +55,7 @@ func TestDefault(t *testing.T) {
 			ProxyLogDays:    7,
 		},
 		Logging: LoggingConfig{DebugBody: false},
-		Gateway: GatewayConfig{DefaultPlugin: "", LegacyAFallback: true, AllowIPs: []string{"127.0.0.1", "::1"}},
+		Gateway: GatewayConfig{DefaultPlugin: "", LegacyAFallback: true, AllowIPs: []string{"127.0.0.1", "::1"}, ServiceMode: "open"},
 		Redact:  RedactConfig{RouteAware: true}, // P10-2：新增段，缺省即默认表
 		Notify: NotifyConfig{
 			Enabled:            false,
@@ -113,6 +113,21 @@ func TestNormalizeTrustedProxies(t *testing.T) {
 				t.Fatalf("normalizeIPList(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeServiceMode(t *testing.T) {
+	cases := map[string]string{
+		"":          "open",
+		"open":      "open",
+		" PAUSED ":  "paused",
+		"whitelist": "whitelist",
+		"bogus":     "open",
+	}
+	for in, want := range cases {
+		if got := normalizeServiceMode(in); got != want {
+			t.Fatalf("normalizeServiceMode(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

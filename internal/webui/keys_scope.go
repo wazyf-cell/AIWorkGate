@@ -55,13 +55,15 @@ type KeySpec struct {
 	ExpiresAt int64
 	// AllowedIPs restricts the key to these source IPs/CIDRs (P5-1/D-42).
 	AllowedIPs []string
+	// Owner marks the host owner's key (D-11 whitelist mode).
+	Owner bool
 }
 
 // scope returns the stored triple of a spec.
 func (s KeySpec) scope() store.ClientKeyScope {
 	return store.ClientKeyScope{
 		ModelScope: s.ModelScope, BindPool: s.BindPool, DailyQuota: s.DailyQuota,
-		ExpiresAt: s.ExpiresAt, AllowedIPs: s.AllowedIPs,
+		ExpiresAt: s.ExpiresAt, AllowedIPs: s.AllowedIPs, Owner: s.Owner,
 	}
 }
 
@@ -181,6 +183,7 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 		DailyQuota: current.DailyQuota,
 		ExpiresAt:  current.ExpiresAt,
 		AllowedIPs: current.AllowedIPs,
+		Owner:      current.Owner,
 	}
 	if err := applyKeyPatch(&spec, body); err != nil {
 		writeKeySpecError(w, err)
@@ -207,7 +210,8 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 			ID: id, Name: spec.Name, Prefix: current.Prefix, Enabled: spec.Enabled,
 			CreatedAt: current.CreatedAt, LastUsedAt: current.LastUsedAt,
 			ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota,
-			ExpiresAt: spec.ExpiresAt, AllowedIPs: spec.AllowedIPs, UsedToday: current.UsedToday,
+			ExpiresAt: spec.ExpiresAt, AllowedIPs: spec.AllowedIPs, Owner: spec.Owner,
+			UsedToday: current.UsedToday,
 		}
 	}
 	updated.QuotaLeft = store.ClientKeyQuotaLeft(updated.DailyQuota, updated.UsedToday)
@@ -282,6 +286,12 @@ func applyKeyPatch(spec *KeySpec, body map[string]json.RawMessage) error {
 				return err
 			}
 			spec.AllowedIPs = ips
+		case "owner":
+			var owner bool
+			if err := json.Unmarshal(raw, &owner); err != nil {
+				return fmt.Errorf("%w: owner must be true or false", ErrInvalidRequest)
+			}
+			spec.Owner = owner
 		case "name":
 			var name string
 			if err := json.Unmarshal(raw, &name); err != nil {

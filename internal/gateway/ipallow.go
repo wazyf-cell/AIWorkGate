@@ -67,6 +67,27 @@ func (l ipAllowlist) allows(ip net.IP) bool {
 	return false
 }
 
+const (
+	serviceOpen int32 = iota
+	servicePaused
+	serviceWhitelist
+)
+
+// SetServiceMode applies D-11 live. Unknown values fall back to open.
+func (g *Gateway) SetServiceMode(mode string) {
+	if g == nil {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "paused":
+		g.serviceMode.Store(servicePaused)
+	case "whitelist":
+		g.serviceMode.Store(serviceWhitelist)
+	default:
+		g.serviceMode.Store(serviceOpen)
+	}
+}
+
 // SetAllowIPs replaces the allowlist while the gateway serves traffic.
 func (g *Gateway) SetAllowIPs(entries []string) {
 	if g == nil {

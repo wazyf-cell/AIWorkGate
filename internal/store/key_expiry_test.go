@@ -57,3 +57,21 @@ func TestClientKeyAllowedIPsRoundtrip(t *testing.T) {
 		t.Fatalf("allowed_ips after clear = %v", key.AllowedIPs)
 	}
 }
+
+func TestClientKeyOwnerRoundtrip(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.UpsertClientKeyScoped("k1", "laptop", "agk_a", "hash-1", true, 100, ClientKeyScope{Owner: true}); err != nil {
+		t.Fatalf("UpsertClientKeyScoped: %v", err)
+	}
+	key, ok, err := s.GetClientKey("k1")
+	if err != nil || !ok || !key.Owner {
+		t.Fatalf("owner = %v ok=%v err=%v", key.Owner, ok, err)
+	}
+	if err := s.SetClientKeyScope("k1", ClientKeyScope{Owner: false}); err != nil {
+		t.Fatalf("SetClientKeyScope: %v", err)
+	}
+	key, _, _ = s.GetClientKey("k1")
+	if key.Owner {
+		t.Fatalf("owner should be cleared")
+	}
+}

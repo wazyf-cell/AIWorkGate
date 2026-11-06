@@ -1600,6 +1600,8 @@ export interface ClientKey {
   expires_at?: number
   /** Source IPs/CIDRs this key may be used from; empty = no extra limit. */
   allowed_ips?: string[]
+  /** D-11: this key belongs to the host owner (whitelist mode admits it). */
+  owner?: boolean
 }
 
 /** Body of POST /keys (name required) and PUT /keys/{id} (any subset). */
@@ -1611,6 +1613,7 @@ export interface KeyScopeInput {
   daily_quota?: number
   expires_at?: number
   allowed_ips?: string[]
+  owner?: boolean
 }
 
 export interface CreateKeyResponse {
@@ -1863,6 +1866,8 @@ export interface GatewayConfig {
   allow_ips?: string[]
   /** P5-4: reverse proxies whose X-Forwarded-For is believed; empty = never. */
   trusted_proxies?: string[]
+  /** D-11: open | paused (503 for every /v1 call) | whitelist (owner keys only). */
+  service_mode?: 'open' | 'paused' | 'whitelist'
 }
 
 /**
@@ -1972,6 +1977,7 @@ export const DEFAULT_SETTINGS: Settings = {
     cors_allow_origins: [],
     allow_ips: ['127.0.0.1', '::1'],
     trusted_proxies: [],
+    service_mode: 'open',
   },
   notify: {
     enabled: false,

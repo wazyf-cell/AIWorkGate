@@ -45,6 +45,7 @@ type KeyRecord struct {
 	BindPool   string
 	DailyQuota int
 	AllowedIPs []string
+	Owner      bool
 }
 
 // keyRecordContextKey is the request-context slot holding the snapshot.
