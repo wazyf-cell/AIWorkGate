@@ -344,7 +344,23 @@ d2b8e4c  P3: archive the eleven demo plugins
   - **P14 `/me` 运行态**（2026-11-06）：有效 Key 登录 200；编辑 `expires_at` 后已登录会话立即 401「Key 已过期」；删除 Key 后立即 401；`/me/api/me`、`/me/api/logs` 均无正文列。过程中修复 `app.updateKey` 丢弃 `expires_at/allowed_ips/owner/max_requests_total/share` 的 bug。
   - **真实 chat**（2026-11-06）：桥新增 magpie 登录态导入 → trae-cn 非流式 200（31.27s）、流式 200（34.01s）；workbuddy 导入后 chat 仍 401 `needs_sign_in`，需重新登录。验收记录见 `docs/验收/2026-11-06-真实登录验收.md`。
 
-### 12.4 接手首要事项
+### 12.4 完成审计（2026-11-06 22:47）
+
+| 阶段 | 状态 | 证据 |
+|---|---|---|
+| P1 桥/宿主 | **真实 chat 已过（trae-cn 非流式+流式 200）**；OAuth 回调登录未验 | `docs/验收/2026-11-06-真实登录验收.md`；桥 78/78；宿主监管重启/发布会话 |
+| P2 市场/凭据 | 目录与双 provider 已验；workbuddy 真实 chat 需重登 | 同上；`bridge-wb` 探针记录 |
+| P3 插件退役 | **完成**（11 归档、aichat 保留） | `docs/验收/2026-11-06-P3退役.md`；`_archive/plugins-20261106/` |
+| P5 网关安全 | 本地验收全过；Caddy/服务器项待外部 | P5 运行态实测记录（401/403/whitelist/allowed_ips/XFF） |
+| P6 协议 | Gemini 入站含工具双向翻译；SystemOne 本地测试过；**真实 JEV key 未验** | `internal/gateway/gemini_inbound_test.go`、`docs/p6/` |
+| P7 部署 | 脚本与演练手册完成；**服务器实跑未做** | `docs/p7/`、Linux ELF + dry-run |
+| P9/P10/P11/P12 | 本地实现与测试完成；P11 真实 JEV 判定待 key | 各包测试、视觉基线、`docs/p11/` |
+| P13 用量/导出 | **完成**（D-31 十列、粒度/拆段/Key/cache_read、清空、runway、Prompt 六段、47 列清单） | `docs/p13/`、`docs/验收/2026-11-06-价格与导出.md` |
+| P14 `/me` | 本地运行态验收完成 | 有效 Key/过期/吊销/无正文实测 |
+
+**结论**：本地可实现与可离线验证项全部完成；未完成项仅依赖用户登录（workbuddy）、真实 JEV key、服务器四类外部条件。
+
+### 12.5 接手首要事项
 
 1. 服务器到位后按 `docs/p7/00-部署演练.md` 实跑，重点验收 `public_hosts` / `trusted_proxies` / 回滚。
 2. 真实 trae/workbuddy 登录后补 P1/P2 验收；真实 JEV key 补 P6 三例与 P11 意图规则一例。
