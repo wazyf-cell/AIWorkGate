@@ -77,7 +77,7 @@ const apiLogColumns = `ts, COALESCE(req_id, ''), COALESCE(source, ''), COALESCE(
 	COALESCE(account, ''), COALESCE(conversation_id, ''), COALESCE(stream, 0), COALESCE(status, 0),
 	COALESCE(latency_ms, 0), COALESCE(ttfb_ms, 0), COALESCE(first_token_at, ''),
 	COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0), credits,
-	COALESCE(error, ''), COALESCE(body_req, ''), COALESCE(body_resp, '')`
+	cost_usd, COALESCE(pricing_model, ''), COALESCE(error, ''), COALESCE(body_req, ''), COALESCE(body_resp, '')`
 
 // apiLogColumnsNoBodies mirrors apiLogColumns without the two body columns so
 // list/timeline queries never load large previews.
@@ -86,7 +86,8 @@ const apiLogColumnsNoBodies = `COALESCE(ts, ''), COALESCE(req_id, ''), COALESCE(
 	COALESCE(logical_model, ''), COALESCE(key_id, ''), COALESCE(key_name, ''),
 	COALESCE(account, ''), COALESCE(conversation_id, ''), COALESCE(stream, 0), COALESCE(status, 0),
 	COALESCE(latency_ms, 0), COALESCE(ttfb_ms, 0), COALESCE(first_token_at, ''),
-	COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0), credits, COALESCE(error, '')`
+	COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0), credits,
+	cost_usd, COALESCE(pricing_model, ''), COALESCE(error, '')`
 
 // InsertAPIRequestLog stores one request log row.
 func (s *Store) InsertAPIRequestLog(rec model.APIRequestLog) error {
@@ -103,8 +104,9 @@ func (s *Store) InsertAPIRequestLog(rec model.APIRequestLog) error {
 		(ts, req_id, source, model, model_requested, model_upstream, model_served,
 		 logical_model, key_id, key_name, account,
 		 conversation_id, stream, status, latency_ms, ttfb_ms, first_token_at,
-		 prompt_tokens, completion_tokens, cached_tokens, credits, error, body_req, body_resp)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 prompt_tokens, completion_tokens, cached_tokens, credits, cost_usd, pricing_model,
+		 error, body_req, body_resp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ts,
 		nullStr(rec.ReqID), nullStr(rec.Source), nullStr(rec.Model),
 		nullStr(rec.ModelRequested), nullStr(rec.ModelUpstream), nullStr(rec.ModelServed),
@@ -112,7 +114,8 @@ func (s *Store) InsertAPIRequestLog(rec model.APIRequestLog) error {
 		nullStr(rec.KeyID), nullStr(rec.KeyName), nullStr(rec.Account), nullStr(rec.ConversationID),
 		boolInt(rec.Stream), rec.Status,
 		rec.LatencyMS, rec.TTFBMS, nullStr(rec.FirstTokenAt), rec.PromptTokens, rec.CompletionTokens,
-		rec.CachedTokens, optFloat(rec.Credits), nullStr(rec.Error), nullStr(rec.BodyReq), nullStr(rec.BodyResp),
+		rec.CachedTokens, optFloat(rec.Credits), optFloat(rec.CostUSD), nullStr(rec.PricingModel),
+		nullStr(rec.Error), nullStr(rec.BodyReq), nullStr(rec.BodyResp),
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert api log: %w", err)
@@ -187,6 +190,7 @@ func (s *Store) QueryAPILogsTimelinePage(f Filter, beforeAt, beforeID int64, lim
 			row     APILogRow
 			stream  int64
 			credits sql.NullFloat64
+			cost    sql.NullFloat64
 		)
 		if err := rows.Scan(
 			&row.ID, &row.Log.TS, &row.Log.ReqID, &row.Log.Source, &row.Log.Model,
@@ -195,7 +199,7 @@ func (s *Store) QueryAPILogsTimelinePage(f Filter, beforeAt, beforeID int64, lim
 			&row.Log.ConversationID, &stream, &row.Log.Status,
 			&row.Log.LatencyMS, &row.Log.TTFBMS, &row.Log.FirstTokenAt,
 			&row.Log.PromptTokens, &row.Log.CompletionTokens, &row.Log.CachedTokens,
-			&credits, &row.Log.Error,
+			&credits, &cost, &row.Log.PricingModel, &row.Log.Error,
 		); err != nil {
 			return nil, fmt.Errorf("store: query api logs page: scan: %w", err)
 		}
@@ -203,6 +207,10 @@ func (s *Store) QueryAPILogsTimelinePage(f Filter, beforeAt, beforeID int64, lim
 		if credits.Valid {
 			v := credits.Float64
 			row.Log.Credits = &v
+		}
+		if cost.Valid {
+			v := cost.Float64
+			row.Log.CostUSD = &v
 		}
 		out = append(out, row)
 	}
@@ -266,6 +274,7 @@ func (s *Store) queryAPIRequestLogs(f Filter, limit, offset int) ([]model.APIReq
 			rec     model.APIRequestLog
 			stream  int64
 			credits sql.NullFloat64
+			cost    sql.NullFloat64
 		)
 		if f.NoBodies {
 			if err := rows.Scan(
@@ -273,7 +282,8 @@ func (s *Store) queryAPIRequestLogs(f Filter, limit, offset int) ([]model.APIReq
 				&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed, &rec.LogicalModel,
 				&rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID, &stream, &rec.Status,
 				&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
-				&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &rec.Error,
+				&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &cost,
+				&rec.PricingModel, &rec.Error,
 			); err != nil {
 				return nil, 0, fmt.Errorf("store: query api logs: scan: %w", err)
 			}
@@ -282,8 +292,8 @@ func (s *Store) queryAPIRequestLogs(f Filter, limit, offset int) ([]model.APIReq
 			&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed, &rec.LogicalModel,
 			&rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID, &stream, &rec.Status,
 			&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
-			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits,
-			&rec.Error, &rec.BodyReq, &rec.BodyResp,
+			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &cost,
+			&rec.PricingModel, &rec.Error, &rec.BodyReq, &rec.BodyResp,
 		); err != nil {
 			return nil, 0, fmt.Errorf("store: query api logs: scan: %w", err)
 		}
@@ -291,6 +301,10 @@ func (s *Store) queryAPIRequestLogs(f Filter, limit, offset int) ([]model.APIReq
 		if credits.Valid {
 			v := credits.Float64
 			rec.Credits = &v
+		}
+		if cost.Valid {
+			v := cost.Float64
+			rec.CostUSD = &v
 		}
 		out = append(out, rec)
 	}

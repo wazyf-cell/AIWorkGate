@@ -893,18 +893,24 @@ func (s *Store) QueryAPILogsSince(id int64, fromDay, toDay string, limit int) ([
 			rowID   int64
 			stream  int64
 			credits sql.NullFloat64
+			cost    sql.NullFloat64
 		)
 		if err := rows.Scan(&rowID, &rec.TS, &rec.ReqID, &rec.Source, &rec.Model,
 			&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed,
 			&rec.LogicalModel, &rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID,
 			&stream, &rec.Status, &rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
-			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &rec.Error); err != nil {
+			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &cost,
+			&rec.PricingModel, &rec.Error); err != nil {
 			return nil, id, fmt.Errorf("store: api logs since: scan: %w", err)
 		}
 		rec.Stream = stream != 0
 		if credits.Valid {
 			v := credits.Float64
 			rec.Credits = &v
+		}
+		if cost.Valid {
+			v := cost.Float64
+			rec.CostUSD = &v
 		}
 		lastID = rowID
 		out = append(out, rec)

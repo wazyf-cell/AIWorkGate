@@ -453,6 +453,10 @@ type APIRequestLog struct {
 	// cache_read_input_tokens). Zero means the upstream did not report it.
 	CachedTokens int64    `json:"cached_tokens,omitempty"`
 	Credits      *float64 `json:"credits,omitempty"`
+	// CostUSD is the configured price × tokens × multiplier (D-31③); nil means
+	// the model had no configured price, not "free".
+	CostUSD      *float64 `json:"cost_usd,omitempty"`
+	PricingModel string   `json:"pricing_model,omitempty"`
 	Error        string   `json:"error,omitempty"`
 	// Redact is the P10 masking audit line for the request (categories/counts/
 	// lines/elapsed, never the masked values; gateway/redact_wiring.go).

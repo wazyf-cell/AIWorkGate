@@ -112,6 +112,9 @@ type Options struct {
 	// DecisionUpstreams supplies the configured structured-decision endpoints
 	// (P6/D-18). Nil disables /v1/systemone and /v1/decision.
 	DecisionUpstreams func() []DecisionUpstream
+	// PriceFor returns the configured price of one model and the pricing key
+	// that matched (D-31③). Nil disables cost calculation.
+	PriceFor func(model string) (Price, string, bool)
 
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
@@ -217,6 +220,7 @@ type Gateway struct {
 	ratePerIP         atomic.Int64 // P5-5 per-IP requests per minute
 	limiter           *rateLimiter
 	decisionUpstreams func() []DecisionUpstream
+	priceFor          func(model string) (Price, string, bool)
 	defaultPlugin     string
 	legacyA           bool
 	now               func() time.Time
@@ -329,6 +333,7 @@ func newGateway(opts Options) *Gateway {
 		lim:               newLimiter(),
 		limiter:           newRateLimiter(),
 		decisionUpstreams: opts.DecisionUpstreams,
+		priceFor:          opts.PriceFor,
 		pCache:            make(map[string]pluginModels),
 	}
 	g.debugBody.Store(opts.DebugBody)
@@ -1654,6 +1659,11 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 	}
 	if !rec.firstTokenAt.IsZero() {
 		row.FirstTokenAt = rec.firstTokenAt.Format(time.RFC3339)
+	}
+	if price, key, ok := g.priceForModel(rec.modelServed, rec.modelUpstream, rec.modelRequested, rec.model); ok {
+		cost := price.cost(rec.prompt, rec.cached, rec.completion)
+		row.CostUSD = &cost
+		row.PricingModel = key
 	}
 	if g.debugBody.Load() {
 		row.BodyReq = truncateUTF8(rec.bodyReq, requestPreviewBytes)

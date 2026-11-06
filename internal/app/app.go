@@ -521,6 +521,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		KeyUsageTotal:     a.totalKeyUsage,
 		KeyUsage:          a.recordKeyUsage,
 		DecisionUpstreams: a.decisionUpstreams,
+		PriceFor:          a.priceFor,
 		// User-defined custom models route straight to their own upstream
 		// (Settings → 自定义模型); the key is read from the DPAPI store.
 		CustomModels:   a.gatewayCustomModels,

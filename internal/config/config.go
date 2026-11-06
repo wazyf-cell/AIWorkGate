@@ -117,6 +117,25 @@ type Config struct {
 	// RoutingGroups are P11 pattern groups: each id is routable and resolves to
 	// the models matching Match at snapshot time (* glob or re:<regexp>).
 	RoutingGroups []RoutingGroupConfig `json:"routing_groups"`
+	// Pricing is the D-31③ configuration price table (per 1M tokens).
+	Pricing PricingConfig `json:"pricing"`
+}
+
+// PricingConfig carries the configured token prices. Models are keyed by the
+// served/upstream model id; a missing entry means "price unknown".
+type PricingConfig struct {
+	Currency string           `json:"currency"`
+	Models   map[string]Price `json:"models"`
+}
+
+// Price is USD (or Currency) per 1M tokens; Multiplier scales the result and
+// defaults to 1.
+type Price struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cache_read"`
+	CacheWrite float64 `json:"cache_write"`
+	Multiplier float64 `json:"multiplier"`
 }
 
 // RoutingGroupConfig is one pattern-based routing group.
@@ -559,6 +578,7 @@ func (c *Config) Normalize() {
 	c.Gateway.ServiceMode = normalizeServiceMode(c.Gateway.ServiceMode)
 	c.Decision.Upstreams = normalizeDecisionUpstreams(c.Decision.Upstreams)
 	c.RoutingGroups = normalizeRoutingGroups(c.RoutingGroups)
+	c.Pricing = normalizePricing(c.Pricing)
 	c.Gateway.RateLimitPerMinute = clampRateLimit(c.Gateway.RateLimitPerMinute)
 	c.Gateway.RateLimitPerIPPerMinute = clampRateLimit(c.Gateway.RateLimitPerIPPerMinute)
 	c.Gateway.PublicHosts = normalizePublicHosts(c.Gateway.PublicHosts)
@@ -677,6 +697,39 @@ func clampRateLimit(value int) int {
 		return 1_000_000
 	}
 	return value
+}
+
+// normalizePricing upper-cases the currency, trims/dedupes model ids and drops
+// entries that name no price at all (all four fields zero and no multiplier).
+func normalizePricing(in PricingConfig) PricingConfig {
+	out := PricingConfig{Currency: strings.ToUpper(strings.TrimSpace(in.Currency))}
+	if out.Currency == "" {
+		out.Currency = "USD"
+	}
+	out.Models = make(map[string]Price, len(in.Models))
+	for id, price := range in.Models {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		p := price
+		for _, v := range []*float64{&p.Input, &p.Output, &p.CacheRead, &p.CacheWrite} {
+			if *v < 0 {
+				*v = 0
+			}
+		}
+		if p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0 {
+			continue
+		}
+		if p.Multiplier <= 0 {
+			p.Multiplier = 1
+		}
+		out.Models[id] = p
+	}
+	if len(out.Models) == 0 {
+		out.Models = nil
+	}
+	return out
 }
 
 // normalizeRoutingGroups trims ids/patterns, dedupes ids and drops a group

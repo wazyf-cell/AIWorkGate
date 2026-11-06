@@ -625,6 +625,12 @@ var migrations = []migrationStep{
 			{"client_keys", "share", "INTEGER NOT NULL DEFAULT 0"},
 		},
 	},
+	{ // version 19: D-31③ cost columns
+		columns: []columnMigration{
+			{"api_logs", "cost_usd", "REAL"},
+			{"api_logs", "pricing_model", "TEXT"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

@@ -803,3 +803,20 @@ func TestNormalizeRoutingWeights(t *testing.T) {
 		t.Fatalf("weights = %v", got)
 	}
 }
+
+func TestNormalizePricing(t *testing.T) {
+	got := normalizePricing(PricingConfig{Models: map[string]Price{
+		" gpt-4o ": {Input: 2, Output: 8, Multiplier: 0.8},
+		"free":     {},
+		"negative": {Input: -1, Output: 1},
+	}})
+	if got.Currency != "USD" || len(got.Models) != 2 {
+		t.Fatalf("pricing = %+v", got)
+	}
+	if p := got.Models["gpt-4o"]; p.Multiplier != 0.8 || p.Input != 2 {
+		t.Fatalf("gpt-4o = %+v", p)
+	}
+	if p := got.Models["negative"]; p.Input != 0 || p.Output != 1 || p.Multiplier != 1 {
+		t.Fatalf("negative = %+v", p)
+	}
+}

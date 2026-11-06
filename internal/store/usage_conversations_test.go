@@ -200,3 +200,22 @@ func TestModelUsageSummaryRanksServedModel(t *testing.T) {
 		t.Fatalf("rows = %+v", out)
 	}
 }
+
+func TestAPILogCostColumnsRoundtrip(t *testing.T) {
+	s := openTestStore(t)
+	cost := 0.0048
+	if err := s.InsertAPIRequestLog(model.APIRequestLog{
+		TS: "2026-01-15T10:00:00Z", ReqID: "r1", Model: "m1", Status: 200,
+		CostUSD: &cost, PricingModel: "m1",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := s.QueryAPILogsTimelinePage(Filter{Limit: 10}, 0, 0, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %d err=%v", len(rows), err)
+	}
+	log := rows[0].Log
+	if log.CostUSD == nil || *log.CostUSD != cost || log.PricingModel != "m1" {
+		t.Fatalf("cost = %v pricing = %q", log.CostUSD, log.PricingModel)
+	}
+}

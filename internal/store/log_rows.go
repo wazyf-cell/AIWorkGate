@@ -25,13 +25,15 @@ func (s *Store) APILogByReqID(reqID string) (model.APIRequestLog, bool, error) {
 		rec     model.APIRequestLog
 		stream  int64
 		credits sql.NullFloat64
+		cost    sql.NullFloat64
 	)
 	err := row.Scan(
 		&rec.TS, &rec.ReqID, &rec.Source, &rec.Model,
 		&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed, &rec.LogicalModel,
 		&rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID, &stream, &rec.Status,
 		&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
-		&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &rec.Error,
+		&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &cost,
+		&rec.PricingModel, &rec.Error,
 	)
 	if err == sql.ErrNoRows {
 		return model.APIRequestLog{}, false, nil
@@ -43,6 +45,10 @@ func (s *Store) APILogByReqID(reqID string) (model.APIRequestLog, bool, error) {
 	if credits.Valid {
 		v := credits.Float64
 		rec.Credits = &v
+	}
+	if cost.Valid {
+		v := cost.Float64
+		rec.CostUSD = &v
 	}
 	return rec, true, nil
 }
