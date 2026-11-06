@@ -12,7 +12,7 @@ import (
 // and obtain the session cookie. Only loopback names are accepted on a local
 // install; LAN mode additionally accepts IP literals (a DNS name is exactly
 // what rebinding needs). Ports are ignored.
-func allowedRequestHost(host string, listenLAN bool) bool {
+func allowedRequestHost(host string, listenLAN bool, publicHosts []string) bool {
 	h := strings.TrimSpace(host)
 	if h == "" {
 		return false
@@ -23,7 +23,18 @@ func allowedRequestHost(host string, listenLAN bool) bool {
 		h = strings.Trim(h, "[]")
 	}
 	h = strings.Trim(h, "[]")
-	switch strings.ToLower(h) {
+	h = strings.ToLower(h)
+	for _, allowed := range publicHosts {
+		allowed = strings.TrimSpace(strings.ToLower(allowed))
+		if hn, _, err := net.SplitHostPort(allowed); err == nil {
+			allowed = hn
+		}
+		allowed = strings.Trim(allowed, "[]")
+		if allowed != "" && allowed == h {
+			return true
+		}
+	}
+	switch h {
 	case "localhost", "127.0.0.1", "::1":
 		return true
 	}

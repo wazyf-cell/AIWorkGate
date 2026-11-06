@@ -880,7 +880,7 @@ func (a *App) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	cfg := a.configSnapshot()
 	// See hostcheck.go: a rebinding page presents its own hostname, which the
 	// same-origin guard would otherwise accept.
-	if !allowedRequestHost(r.Host, cfg.ListenLAN) {
+	if !allowedRequestHost(r.Host, cfg.ListenLAN, cfg.Gateway.PublicHosts) {
 		http.Error(w, "invalid host header", http.StatusForbidden)
 		a.logger.Warn("app", "rejected request with unexpected Host", map[string]any{"host": r.Host})
 		return

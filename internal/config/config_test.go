@@ -741,3 +741,21 @@ func TestNormalizeDecisionUpstreams(t *testing.T) {
 		t.Fatalf("protocol = %q, want decision", got[1].Protocol)
 	}
 }
+
+func TestNormalizePublicHosts(t *testing.T) {
+	got := normalizePublicHosts([]string{
+		" HTTPS://AI.Example.com/path?q=1 ",
+		"ai.example.com",
+		"",
+		"[::1]:8443",
+	})
+	want := []string{"ai.example.com", "[::1]:8443"}
+	if len(got) != len(want) {
+		t.Fatalf("hosts = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("hosts = %v, want %v", got, want)
+		}
+	}
+}

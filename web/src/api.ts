@@ -1875,6 +1875,8 @@ export interface GatewayConfig {
   rate_limit_per_minute?: number
   /** P5-5: requests per rolling minute per source IP; 0 = off. */
   rate_limit_per_ip_per_minute?: number
+  /** Hostnames a reverse proxy may send (e.g. ai.example.com). */
+  public_hosts?: string[]
 }
 
 /**
@@ -1987,6 +1989,7 @@ export const DEFAULT_SETTINGS: Settings = {
     service_mode: 'open',
     rate_limit_per_minute: 0,
     rate_limit_per_ip_per_minute: 0,
+    public_hosts: [],
   },
   notify: {
     enabled: false,

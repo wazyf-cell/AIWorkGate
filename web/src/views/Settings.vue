@@ -85,6 +85,7 @@ const form = reactive({
   gateway_service_mode: 'open' as 'open' | 'paused' | 'whitelist',
   gateway_rate_key: 0,
   gateway_rate_ip: 0,
+  gateway_public_hosts: '',
 })
 
 /** Last raw payload from the host; keeps unknown keys for the round trip. */
@@ -718,6 +719,7 @@ async function load() {
     form.gateway_service_mode = (gateway.service_mode === 'paused' || gateway.service_mode === 'whitelist' ? gateway.service_mode : 'open')
     form.gateway_rate_key = asNumber(gateway.rate_limit_per_minute, defaults.gateway.rate_limit_per_minute ?? 0)
     form.gateway_rate_ip = asNumber(gateway.rate_limit_per_ip_per_minute, defaults.gateway.rate_limit_per_ip_per_minute ?? 0)
+    form.gateway_public_hosts = asStringList(gateway.public_hosts, defaults.gateway.public_hosts ?? []).join('\n')
     savedSignature.value = settingsSignature()
   } catch (e) {
     error.value = errorMessage(e)
@@ -824,6 +826,7 @@ async function save() {
   }
   const allowIPs = parseCorsOrigins(form.gateway_allow_ips)
   const trustedProxies = parseCorsOrigins(form.gateway_trusted_proxies)
+  const publicHosts = parseCorsOrigins(form.gateway_public_hosts)
 
   const notifyInterval = Number(notifyForm.min_interval_seconds)
   if (!Number.isInteger(notifyInterval) || notifyInterval < 60 || notifyInterval > 86400) {
@@ -879,6 +882,7 @@ async function save() {
       service_mode: form.gateway_service_mode,
       rate_limit_per_minute: Math.max(0, Math.floor(Number(form.gateway_rate_key) || 0)),
       rate_limit_per_ip_per_minute: Math.max(0, Math.floor(Number(form.gateway_rate_ip) || 0)),
+      public_hosts: publicHosts,
     },
     // The notification policy lives in the same config.json block; sending it
     // here keeps a page-wide save from reverting a card edit. The webhook URL
@@ -1574,6 +1578,20 @@ async function saveLanPassword() {
           </span>
           <span class="help">
             本机 Caddy/Nginx 反代填 <code>127.0.0.1</code>；反代与宿主不在同一台机器时填反代出口 IP/CIDR。保存后即时生效。
+          </span>
+        </div>
+        <div class="field">
+          <label for="set-public-hosts">对外域名</label>
+          <textarea
+            id="set-public-hosts"
+            v-model="form.gateway_public_hosts"
+            class="input mono"
+            rows="2"
+            spellcheck="false"
+            placeholder="ai.example.com"
+          ></textarea>
+          <span class="help">
+            反代会把公网域名放进 <code>Host</code>；不在此列表的域名会被 DNS 重绑定防护拒绝（403 invalid host header）。本机访问不需要填。
           </span>
         </div>
       </div>

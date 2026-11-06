@@ -173,6 +173,11 @@ type GatewayConfig struct {
 	// 0 = off. Heavy protection belongs at the reverse proxy (P5-5).
 	RateLimitPerIPPerMinute int `json:"rate_limit_per_ip_per_minute"`
 
+	// PublicHosts lists the hostnames a reverse proxy may send while the host
+	// itself is loopback-only. Without it, the DNS-rebinding guard rejects a
+	// public Host and every proxied request gets 403 (P4/P5).
+	PublicHosts []string `json:"public_hosts"`
+
 	// DefaultPlugin serves bare model names (no "id/" prefix). Empty means a
 	// bare name is answered with 404 model_not_found.
 	DefaultPlugin string `json:"default_plugin"`
@@ -517,6 +522,7 @@ func (c *Config) Normalize() {
 	c.Decision.Upstreams = normalizeDecisionUpstreams(c.Decision.Upstreams)
 	c.Gateway.RateLimitPerMinute = clampRateLimit(c.Gateway.RateLimitPerMinute)
 	c.Gateway.RateLimitPerIPPerMinute = clampRateLimit(c.Gateway.RateLimitPerIPPerMinute)
+	c.Gateway.PublicHosts = normalizePublicHosts(c.Gateway.PublicHosts)
 	c.Gateway.DefaultPlugin = strings.ToLower(strings.TrimSpace(c.Gateway.DefaultPlugin))
 
 	// Redact: default key file lives beside the data dir; kinds/categories
@@ -665,6 +671,34 @@ func normalizeDecisionUpstreams(in []DecisionUpstreamConfig) []DecisionUpstreamC
 		}
 		seen[entry.ID] = true
 		out = append(out, entry)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizePublicHosts keeps bare host[:port] values lower-cased and deduped;
+// a pasted scheme or path is dropped rather than silently accepted.
+func normalizePublicHosts(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, raw := range in {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" {
+			continue
+		}
+		if idx := strings.Index(value, "://"); idx >= 0 {
+			value = value[idx+3:]
+		}
+		if idx := strings.IndexAny(value, "/?#"); idx >= 0 {
+			value = value[:idx]
+		}
+		if value == "" || seen[value] || strings.ContainsAny(value, " \t") {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
 	}
 	if len(out) == 0 {
 		return nil
