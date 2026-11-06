@@ -21,6 +21,7 @@ func TestResolveRoutingGroupsPatterns(t *testing.T) {
 		{ID: "ruled", Match: []string{"trae/*"}, Rules: []config.RoutingRuleConfig{{
 			Name: "big", Match: []string{"workbuddy/*"}, When: config.RoutingWhen{MinChars: 500, Image: true},
 		}}},
+		{ID: "weighted", Match: []string{"trae/*"}, Weights: map[string]int{"trae/glm-5": 3}},
 	}
 	out := resolveRoutingGroups(groups, universe)
 
@@ -44,6 +45,9 @@ func TestResolveRoutingGroupsPatterns(t *testing.T) {
 		t.Fatalf("group with no members must not be published")
 	}
 	ruled := out["ruled"]
+	if out["weighted"].Weights["trae/glm-5"] != 3 {
+		t.Fatalf("weights = %v", out["weighted"].Weights)
+	}
 	if len(ruled.Rules) != 1 || ruled.Rules[0].Name != "big" ||
 		ruled.Rules[0].When.MinChars != 500 || !ruled.Rules[0].When.Image ||
 		len(ruled.Rules[0].Items) != 1 || ruled.Rules[0].Items[0].PluginID != "workbuddy" {

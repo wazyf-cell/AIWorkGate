@@ -796,3 +796,10 @@ func TestNormalizeRoutingRules(t *testing.T) {
 		t.Fatalf("rule = %+v", rule)
 	}
 }
+
+func TestNormalizeRoutingWeights(t *testing.T) {
+	got := normalizeRoutingWeights(map[string]int{" a ": 3, "": 2, "b": 0, "c": 5000})
+	if len(got) != 2 || got["a"] != 3 || got["c"] != 1000 {
+		t.Fatalf("weights = %v", got)
+	}
+}

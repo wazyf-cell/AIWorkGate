@@ -174,6 +174,8 @@ type Binding struct {
 	Items   []Source
 	// Rules override Items for the first request whose features match (P11).
 	Rules []BindingRule
+	// Weights ("plugin/model" → share) drives smooth weighted rotation (P11).
+	Weights map[string]int
 }
 
 // BindingRule is one feature-gated member set of a group.
@@ -227,6 +229,49 @@ func (w BindingWhen) matches(req Request, now time.Time) bool {
 		}
 	}
 	return true
+}
+
+// weightedSourcesLocked rotates group members with smooth weighted round
+// robin (the NGINX algorithm), returning the chosen source first and the rest
+// in their configured order for failover. Caller holds s.mu.
+func (s *Scheduler) weightedSourcesLocked(group string, sources []Source, weights map[string]int) []Source {
+	if len(sources) < 2 || len(weights) == 0 {
+		return sources
+	}
+	if s.groupWeightState == nil {
+		s.groupWeightState = make(map[string]map[string]int64)
+	}
+	cursors := s.groupWeightState[group]
+	if cursors == nil {
+		cursors = make(map[string]int64, len(sources))
+		s.groupWeightState[group] = cursors
+	}
+	current := make([]int64, len(sources))
+	best := 0
+	var total int64
+	for i, src := range sources {
+		key := src.PluginID + "/" + src.Model
+		weight := int64(weights[key])
+		if weight <= 0 {
+			weight = 1
+		}
+		total += weight
+		cursors[key] += weight
+		current[i] = cursors[key]
+		if current[i] > current[best] {
+			best = i
+		}
+	}
+	chosenKey := sources[best].PluginID + "/" + sources[best].Model
+	cursors[chosenKey] -= total
+	out := make([]Source, 0, len(sources))
+	out = append(out, sources[best])
+	for i, src := range sources {
+		if i != best {
+			out = append(out, src)
+		}
+	}
+	return out
 }
 
 func bindingSourcesForRequest(b Binding, req Request, now time.Time) ([]Source, string) {
@@ -392,6 +437,10 @@ type Scheduler struct {
 
 	stickyEntries map[stickyKey]stickyEntry
 	stickyLoaded  map[string]bool
+
+	// groupWeightState is the smooth weighted round-robin cursor per group and
+	// source (P11): plugin/model → current weight.
+	groupWeightState map[string]map[string]int64
 
 	// probeSeq rotates an unmeasured account into the free/pace strategies
 	// every probeEvery picks (D-44), so an account with no quota report is not
@@ -1251,12 +1300,21 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		evaluated  []*poolCandidate
 		traces     []*poolTrace
 		rejections []string
+		forcedKey  string
 	)
 	if logical != "" {
-		if binding, ok := snap.Bindings[logical]; ok && len(binding.Rules) > 0 {
-			if items, rule := bindingSourcesForRequest(binding, req, nowTime); rule != "" {
-				sources = items
-				rejections = append(rejections, "binding rule: "+rule)
+		if binding, ok := snap.Bindings[logical]; ok {
+			if len(binding.Rules) > 0 {
+				if items, rule := bindingSourcesForRequest(binding, req, nowTime); rule != "" {
+					sources = items
+					rejections = append(rejections, "binding rule: "+rule)
+				}
+			}
+			if len(binding.Weights) > 0 {
+				sources = s.weightedSourcesLocked(logical, sources, binding.Weights)
+				if len(sources) > 0 {
+					forcedKey = sources[0].PluginID + "/" + sources[0].Model
+				}
 			}
 		}
 	}
@@ -1318,6 +1376,20 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		sort.SliceStable(evaluated, func(i, j int) bool {
 			return s.poolLessLocked(evaluated[i], evaluated[j], now)
 		})
+	}
+	// Smart ordering would otherwise undo the weighted rotation: put the source
+	// the group chose this round back in front.
+	if forcedKey != "" {
+		for i := range evaluated {
+			key := evaluated[i].source.PluginID + "/" + evaluated[i].source.Model
+			if key != forcedKey || i == 0 {
+				continue
+			}
+			chosen := evaluated[i]
+			copy(evaluated[1:i+1], evaluated[:i])
+			evaluated[0] = chosen
+			break
+		}
 	}
 
 	// Sticky lookup: conversation first, then pool (model + client key).

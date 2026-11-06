@@ -127,6 +127,9 @@ type RoutingGroupConfig struct {
 	// Rules, when present, may replace Match for requests whose features hit
 	// the first matching rule (deterministic first-match order).
 	Rules []RoutingRuleConfig `json:"rules,omitempty"`
+	// Weights maps a member id ("plugin/model") to its share, 1..1000. The
+	// group rotates members with smooth weighted round-robin (P11).
+	Weights map[string]int `json:"weights,omitempty"`
 	// Disabled keeps the entry in config for later use without publishing it.
 	Disabled bool `json:"disabled"`
 }
@@ -710,8 +713,31 @@ func normalizeRoutingGroups(in []RoutingGroupConfig) []RoutingGroupConfig {
 		}
 		group.Match = match
 		group.Rules = normalizeRoutingRules(group.Rules)
+		group.Weights = normalizeRoutingWeights(group.Weights)
 		seen[group.ID] = true
 		out = append(out, group)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeRoutingWeights bounds weights and drops non-positive/blank ids.
+func normalizeRoutingWeights(in map[string]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for id, weight := range in {
+		id = strings.TrimSpace(id)
+		if id == "" || weight <= 0 {
+			continue
+		}
+		if weight > 1000 {
+			weight = 1000
+		}
+		out[id] = weight
 	}
 	if len(out) == 0 {
 		return nil

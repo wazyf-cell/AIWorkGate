@@ -36,6 +36,9 @@ func resolveRoutingGroups(groups []config.RoutingGroupConfig, universe []string)
 			display = group.ID
 		}
 		binding := scheduler.Binding{Logical: group.ID, Display: display, Items: items}
+		if len(group.Weights) > 0 {
+			binding.Weights = group.Weights
+		}
 		for _, rule := range group.Rules {
 			ruleItems := resolveGroupMatch(rule.Match, sorted)
 			if len(ruleItems) == 0 {
