@@ -162,3 +162,22 @@ func TestMeDisabledAndRevokedInvalidateSession(t *testing.T) {
 		t.Fatalf("revoked key = %d, want 401", rec.Code)
 	}
 }
+
+func TestRouteHTTPMeBypassesAdminGate(t *testing.T) {
+	app, _, _, _ := newMeTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/me/", nil)
+	req.Host = "localhost"
+	rec := httptest.NewRecorder()
+	app.routeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "AIWorkGate") {
+		t.Fatalf("/me/ = %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/me/api/me", nil)
+	req.Host = "localhost"
+	rec = httptest.NewRecorder()
+	app.routeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated /me/api/me = %d, want 401 (not the admin gate)", rec.Code)
+	}
+}
