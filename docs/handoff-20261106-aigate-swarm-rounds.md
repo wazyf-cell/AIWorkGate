@@ -317,7 +317,8 @@ e1b77c8  退役内置 A 网关（D-60）
 - `go build ./...` exit 0。
 - `go test ./internal/...`：23 包通过；app/logging 偶发 Windows `TempDir RemoveAll: directory is not empty`（隔离重跑通过，非断言失败）。
 - `npm run build`：typecheck + 样式债 0 + 视觉 **63/63**（新增 `groups` / `groups-intent`；导航加「路由组」后全量重录）。
-- Linux 交叉编译：amd64/arm64 通过（ELF），部署脚本 dry-run 通过。
+- Linux 交叉编译：amd64/arm64 通过（ELF，2026-11-06 退役 A 后重建）；部署/回滚脚本 dry-run 通过。
+- opchost 桥自检：`node opchost/bridge/src/admin/testdata/selftest.mjs --exit` → 74/74。
 
 ### 12.4 接手首要事项
 
