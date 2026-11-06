@@ -330,7 +330,8 @@ d2b8e4c  P3: archive the eleven demo plugins
 - `go build ./...` exit 0。
 - `go test ./internal/...`：23 包通过；app/logging 偶发 Windows `TempDir RemoveAll: directory is not empty`（隔离重跑通过，非断言失败）。
 - `npm run build`：typecheck + 样式债 0 + 视觉 **65/65**（新增 `groups` / `groups-intent` / `usage-expiry`）。
-- 全量后端：`go test -ldflags=-buildid= ./internal/...` 24 包全 ok（2026-11-06 22:07 复核）。
+- 全量后端：`go test -ldflags=-buildid= ./internal/...` 24 包，各包单独/重复运行均通过（2026-11-06 22:46 复核）。
+  - 整包连跑仍偶发环境抖动：Windows `TempDir` 清理 “directory is not empty” 与个别 timing 用例（app/presets）在并发负载下失败，隔离重跑（`-run` 或 `-count=3`）均绿；不是断言缺陷。
 - Linux 交叉编译：amd64/arm64 通过（ELF，2026-11-06 退役 A 后重建）；部署/回滚脚本 dry-run 通过。
 - opchost 桥自检：`node opchost/bridge/src/admin/testdata/selftest.mjs --exit` → **78/78**（新增 magpie 登录态导入 4 例）。
 - P1/P2 真包探针（2026-11-06 22:09，临时数据目录、无 chat）：
