@@ -835,9 +835,9 @@ func (a *App) resumeAll() {
 	a.pluginMgr.ResumeAll()
 }
 
-// routeHTTP sends /v1 (and sub-paths) to the API gateway and everything else
-// to the admin UI. Non-loopback admin requests need the LAN password; /v1 is
-// authenticated with client bearer keys instead.
+// routeHTTP sends /v1 and /v1beta (and sub-paths) to the API gateway and
+// everything else to the admin UI. Non-loopback admin requests need the LAN
+// password; gateway paths are authenticated with client bearer keys instead.
 func (a *App) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A-compatible liveness probe (A's /health shape). It stays outside the
 	// admin auth gate because it reveals nothing but "the host is up"; local
@@ -875,7 +875,7 @@ func (a *App) routeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.me.ServeHTTP(w, r)
 		return
 	}
-	if adminAuthRequired(cfg.ListenLAN, isLoopbackRemote(r.RemoteAddr), isV1Path(r.URL.Path)) {
+	if adminAuthRequired(cfg.ListenLAN, isLoopbackRemote(r.RemoteAddr), isGatewayPath(r.URL.Path)) {
 		_, password, ok := r.BasicAuth()
 		if !ok || a.secrets == nil || !a.secrets.VerifyLANPassword(password) {
 			w.Header().Set("WWW-Authenticate", `Basic realm="AIWorkGate", charset="UTF-8"`)
@@ -884,7 +884,7 @@ func (a *App) routeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if isV1Path(r.URL.Path) {
+	if isGatewayPath(r.URL.Path) {
 		a.gatewayHandler.ServeHTTP(w, r)
 		return
 	}

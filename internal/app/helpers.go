@@ -186,6 +186,14 @@ func isV1Path(path string) bool {
 	return path == "/v1" || strings.HasPrefix(path, "/v1/")
 }
 
+// isGatewayPath reports whether path belongs to the client-facing gateway
+// surface: the OpenAI-compatible /v1 mount plus the Gemini-compatible
+// /v1beta mount (P6). The prefix list mirrors the gateway's own path
+// whitelist, so routed requests never 405 against the SPA handler.
+func isGatewayPath(path string) bool {
+	return isV1Path(path) || strings.HasPrefix(path, "/v1beta/")
+}
+
 // isMePath reports whether path belongs to the key self-service page (P14).
 func isMePath(path string) bool {
 	return path == "/me" || strings.HasPrefix(path, "/me/")
