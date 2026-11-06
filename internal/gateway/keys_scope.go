@@ -38,14 +38,15 @@ import (
 
 // KeyRecord is the scope view of one verified client key.
 type KeyRecord struct {
-	ID         string
-	Name       string
-	Enabled    bool
-	ModelScope []string
-	BindPool   string
-	DailyQuota int
-	AllowedIPs []string
-	Owner      bool
+	ID               string
+	Name             string
+	Enabled          bool
+	ModelScope       []string
+	BindPool         string
+	DailyQuota       int
+	AllowedIPs       []string
+	Owner            bool
+	MaxRequestsTotal int
 }
 
 // keyRecordContextKey is the request-context slot holding the snapshot.

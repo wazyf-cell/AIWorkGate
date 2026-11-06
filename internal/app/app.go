@@ -514,6 +514,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		Prefs:         a.store.GetModelPrefs,
 		KeyRecord:     a.keyRecord,
 		KeyUsageToday: a.keyUsageToday,
+		KeyUsageTotal: a.totalKeyUsage,
 		KeyUsage:      a.recordKeyUsage,
 		// User-defined custom models route straight to their own upstream
 		// (Settings → 自定义模型); the key is read from the DPAPI store.
@@ -1194,14 +1195,15 @@ func (a *App) keyRecord(id string) (gateway.KeyRecord, bool, error) {
 		return gateway.KeyRecord{}, false, err
 	}
 	return gateway.KeyRecord{
-		ID:         key.ID,
-		Name:       key.Name,
-		Enabled:    key.Enabled,
-		ModelScope: key.ModelScope,
-		BindPool:   key.BindPool,
-		DailyQuota: key.DailyQuota,
-		AllowedIPs: key.AllowedIPs,
-		Owner:      key.Owner,
+		ID:               key.ID,
+		Name:             key.Name,
+		Enabled:          key.Enabled,
+		ModelScope:       key.ModelScope,
+		BindPool:         key.BindPool,
+		DailyQuota:       key.DailyQuota,
+		AllowedIPs:       key.AllowedIPs,
+		Owner:            key.Owner,
+		MaxRequestsTotal: key.MaxRequestsTotal,
 	}, true, nil
 }
 
@@ -1211,6 +1213,14 @@ func (a *App) keyUsageToday(keyID, day string) (int, error) {
 		return 0, nil
 	}
 	return a.store.KeyUsageRequests(keyID, day)
+}
+
+// totalKeyUsage reads a key's lifetime request count (P5-1 cap).
+func (a *App) totalKeyUsage(keyID string) (int, error) {
+	if a == nil || a.store == nil {
+		return 0, nil
+	}
+	return a.store.TotalKeyUsageRequests(keyID)
 }
 
 // recordKeyUsage accumulates one finished gateway request. Errors are logged and

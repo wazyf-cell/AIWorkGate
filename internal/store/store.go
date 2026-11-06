@@ -608,6 +608,11 @@ var migrations = []migrationStep{
 			{"client_keys", "owner", "INTEGER NOT NULL DEFAULT 0"},
 		},
 	},
+	{ // version 16: lifetime request cap per key (P5-1)
+		columns: []columnMigration{
+			{"client_keys", "max_requests_total", "INTEGER NOT NULL DEFAULT 0"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

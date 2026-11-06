@@ -45,3 +45,17 @@ func TestKeyAllowedIPsParsing(t *testing.T) {
 		t.Fatalf("a bare string must be rejected")
 	}
 }
+
+func TestKeyMaxRequestsTotalParsing(t *testing.T) {
+	for _, raw := range []string{`null`, `0`} {
+		if got, err := keyMaxRequestsTotal(json.RawMessage(raw)); err != nil || got != 0 {
+			t.Fatalf("%s = %d, %v", raw, got, err)
+		}
+	}
+	if got, err := keyMaxRequestsTotal(json.RawMessage(`1000`)); err != nil || got != 1000 {
+		t.Fatalf("1000 = %d, %v", got, err)
+	}
+	if _, err := keyMaxRequestsTotal(json.RawMessage(`-1`)); err == nil {
+		t.Fatalf("negative must be rejected")
+	}
+}

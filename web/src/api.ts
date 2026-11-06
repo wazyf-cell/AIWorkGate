@@ -1602,6 +1602,8 @@ export interface ClientKey {
   allowed_ips?: string[]
   /** D-11: this key belongs to the host owner (whitelist mode admits it). */
   owner?: boolean
+  /** Lifetime request cap; 0 = unlimited (P5-1). */
+  max_requests_total?: number
 }
 
 /** Body of POST /keys (name required) and PUT /keys/{id} (any subset). */
@@ -1614,6 +1616,7 @@ export interface KeyScopeInput {
   expires_at?: number
   allowed_ips?: string[]
   owner?: boolean
+  max_requests_total?: number
 }
 
 export interface CreateKeyResponse {

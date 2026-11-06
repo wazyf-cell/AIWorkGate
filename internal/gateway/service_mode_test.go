@@ -57,3 +57,30 @@ func TestSetServiceModeLive(t *testing.T) {
 		t.Fatalf("unknown mode should fold to open, got %d", got)
 	}
 }
+
+func TestKeyTotalRequestCap(t *testing.T) {
+	atCap := newTestGateway(t, Options{
+		KeyRecord:     staticKeyRecord(KeyRecord{Enabled: true, MaxRequestsTotal: 5}),
+		KeyUsageTotal: func(string) (int, error) { return 5, nil },
+	})
+	rr := serve(atCap, newGetRequest(t, "/v1/models", clientKey))
+	if rr.Code != http.StatusTooManyRequests || !strings.Contains(rr.Body.String(), "key_quota_exceeded") {
+		t.Fatalf("at cap = %d (%s), want 429", rr.Code, rr.Body.String())
+	}
+
+	under := newTestGateway(t, Options{
+		KeyRecord:     staticKeyRecord(KeyRecord{Enabled: true, MaxRequestsTotal: 5}),
+		KeyUsageTotal: func(string) (int, error) { return 4, nil },
+	})
+	if rr = serve(under, newGetRequest(t, "/v1/models", clientKey)); rr.Code != http.StatusOK {
+		t.Fatalf("under cap = %d (%s), want 200", rr.Code, rr.Body.String())
+	}
+
+	unlimited := newTestGateway(t, Options{
+		KeyRecord:     staticKeyRecord(KeyRecord{Enabled: true}),
+		KeyUsageTotal: func(string) (int, error) { return 1 << 30, nil },
+	})
+	if rr = serve(unlimited, newGetRequest(t, "/v1/models", clientKey)); rr.Code != http.StatusOK {
+		t.Fatalf("unlimited = %d (%s), want 200", rr.Code, rr.Body.String())
+	}
+}

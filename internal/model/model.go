@@ -368,6 +368,8 @@ type ClientKey struct {
 	// Owner marks the key as the host owner's own: whitelist service mode
 	// admits only these keys (D-11).
 	Owner bool `json:"owner,omitempty"`
+	// MaxRequestsTotal caps the key's lifetime requests; 0 = unlimited (P5-1).
+	MaxRequestsTotal int `json:"max_requests_total,omitempty"`
 	// Scope and quota (plan 2026-10-21 §1, mirroring A's ApiKeyEntry in
 	// api_keys.rs:254-293). An empty ModelScope means every model, an empty
 	// BindPool means every pool and DailyQuota 0 means unlimited.

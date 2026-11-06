@@ -57,6 +57,8 @@ type KeySpec struct {
 	AllowedIPs []string
 	// Owner marks the host owner's key (D-11 whitelist mode).
 	Owner bool
+	// MaxRequestsTotal caps lifetime requests; 0 = unlimited (P5-1).
+	MaxRequestsTotal int
 }
 
 // scope returns the stored triple of a spec.
@@ -64,6 +66,7 @@ func (s KeySpec) scope() store.ClientKeyScope {
 	return store.ClientKeyScope{
 		ModelScope: s.ModelScope, BindPool: s.BindPool, DailyQuota: s.DailyQuota,
 		ExpiresAt: s.ExpiresAt, AllowedIPs: s.AllowedIPs, Owner: s.Owner,
+		MaxRequestsTotal: s.MaxRequestsTotal,
 	}
 }
 
@@ -176,14 +179,15 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	spec := KeySpec{
-		Name:       current.Name,
-		Enabled:    current.Enabled,
-		ModelScope: current.ModelScope,
-		BindPool:   current.BindPool,
-		DailyQuota: current.DailyQuota,
-		ExpiresAt:  current.ExpiresAt,
-		AllowedIPs: current.AllowedIPs,
-		Owner:      current.Owner,
+		Name:             current.Name,
+		Enabled:          current.Enabled,
+		ModelScope:       current.ModelScope,
+		BindPool:         current.BindPool,
+		DailyQuota:       current.DailyQuota,
+		ExpiresAt:        current.ExpiresAt,
+		AllowedIPs:       current.AllowedIPs,
+		Owner:            current.Owner,
+		MaxRequestsTotal: current.MaxRequestsTotal,
 	}
 	if err := applyKeyPatch(&spec, body); err != nil {
 		writeKeySpecError(w, err)
@@ -211,7 +215,7 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 			CreatedAt: current.CreatedAt, LastUsedAt: current.LastUsedAt,
 			ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota,
 			ExpiresAt: spec.ExpiresAt, AllowedIPs: spec.AllowedIPs, Owner: spec.Owner,
-			UsedToday: current.UsedToday,
+			MaxRequestsTotal: spec.MaxRequestsTotal, UsedToday: current.UsedToday,
 		}
 	}
 	updated.QuotaLeft = store.ClientKeyQuotaLeft(updated.DailyQuota, updated.UsedToday)
@@ -292,6 +296,12 @@ func applyKeyPatch(spec *KeySpec, body map[string]json.RawMessage) error {
 				return fmt.Errorf("%w: owner must be true or false", ErrInvalidRequest)
 			}
 			spec.Owner = owner
+		case "max_requests_total":
+			maxTotal, err := keyMaxRequestsTotal(raw)
+			if err != nil {
+				return err
+			}
+			spec.MaxRequestsTotal = maxTotal
 		case "name":
 			var name string
 			if err := json.Unmarshal(raw, &name); err != nil {
@@ -440,6 +450,21 @@ func keyExpiresAt(raw json.RawMessage) (int64, error) {
 		return 0, fmt.Errorf("%w: expires_at must not be negative", ErrInvalidRequest)
 	}
 	return at, nil
+}
+
+// keyMaxRequestsTotal parses the lifetime cap; null or 0 means unlimited.
+func keyMaxRequestsTotal(raw json.RawMessage) (int, error) {
+	if jsonIsNull(raw) {
+		return 0, nil
+	}
+	var total int
+	if err := json.Unmarshal(raw, &total); err != nil {
+		return 0, fmt.Errorf("%w: max_requests_total must be an integer", ErrInvalidRequest)
+	}
+	if total < 0 {
+		return 0, fmt.Errorf("%w: max_requests_total must not be negative", ErrInvalidRequest)
+	}
+	return total, nil
 }
 
 // keyAllowedIPs parses the optional source-address list; entries are validated

@@ -75,3 +75,27 @@ func TestClientKeyOwnerRoundtrip(t *testing.T) {
 		t.Fatalf("owner should be cleared")
 	}
 }
+
+func TestClientKeyMaxRequestsTotalRoundtrip(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.UpsertClientKeyScoped("k1", "laptop", "agk_a", "hash-1", true, 100, ClientKeyScope{MaxRequestsTotal: 1000}); err != nil {
+		t.Fatalf("UpsertClientKeyScoped: %v", err)
+	}
+	key, ok, err := s.GetClientKey("k1")
+	if err != nil || !ok || key.MaxRequestsTotal != 1000 {
+		t.Fatalf("max_requests_total = %d ok=%v err=%v", key.MaxRequestsTotal, ok, err)
+	}
+	if err := s.IncrementKeyUsage("k1", "2026-10-20", 3, 0, 0, 0, nil); err != nil {
+		t.Fatalf("IncrementKeyUsage day 1: %v", err)
+	}
+	if err := s.IncrementKeyUsage("k1", "2026-10-21", 2, 0, 0, 0, nil); err != nil {
+		t.Fatalf("IncrementKeyUsage day 2: %v", err)
+	}
+	total, err := s.TotalKeyUsageRequests("k1")
+	if err != nil || total != 5 {
+		t.Fatalf("total = %d err=%v, want 5 across days", total, err)
+	}
+	if err := s.SetClientKeyScope("k1", ClientKeyScope{MaxRequestsTotal: -1}); err == nil {
+		t.Fatalf("negative max_requests_total must be rejected")
+	}
+}

@@ -308,6 +308,7 @@ const keyDraft = reactive({
   expires_at: '',
   allowed_ips: '',
   owner: false,
+  max_requests_total: 0,
 })
 
 /** Epoch seconds → the date input's YYYY-MM-DD (local day). */
@@ -381,6 +382,7 @@ function openKeyEditor(item: ClientKey) {
   keyDraft.expires_at = epochToDateInput(item.expires_at)
   keyDraft.allowed_ips = (item.allowed_ips ?? []).join('\n')
   keyDraft.owner = Boolean(item.owner)
+  keyDraft.max_requests_total = item.max_requests_total ?? 0
 }
 
 function closeKeyEditor() {
@@ -406,6 +408,7 @@ async function saveKeyEdit() {
       expires_at: dateInputToEpoch(keyDraft.expires_at),
       allowed_ips: parseCorsOrigins(keyDraft.allowed_ips),
       owner: keyDraft.owner,
+      max_requests_total: Math.max(0, Math.floor(Number(keyDraft.max_requests_total) || 0)),
     })
     editingKey.value = null
     message.value = '客户端 Key 已更新。'
@@ -1757,8 +1760,7 @@ async function saveLanPassword() {
             </span>
           </div>
           <div class="field">
-            <label for="key-edit-expiry">到期时间（可选）</label>
-            <input
+            <label for="key-edit-expiry">到期时间（可选）</label>            <input
               id="key-edit-expiry"
               v-model="keyDraft.expires_at"
               class="input"
@@ -1767,6 +1769,21 @@ async function saveLanPassword() {
             />
             <span class="help">
               留空 = 永不过期。到期后该 Key 的请求返回 401，并提示具体到期时间；分享给他人的 Key 建议必填。
+            </span>
+          </div>
+          <div class="field">
+            <label for="key-edit-total">总请求上限</label>
+            <input
+              id="key-edit-total"
+              v-model.number="keyDraft.max_requests_total"
+              class="input"
+              type="number"
+              min="0"
+              step="1"
+              :disabled="keyEditBusy"
+            />
+            <span class="help">
+              0 = 不限。按所有日期的累计请求数计算，达到上限后返回 429 <code>key_quota_exceeded</code>（不会按天重置）。
             </span>
           </div>
           <div class="field">

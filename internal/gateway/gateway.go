@@ -103,6 +103,8 @@ type Options struct {
 	TrustedProxies []string
 	// ServiceMode is open (default), paused or whitelist (D-11).
 	ServiceMode string
+	// KeyUsageTotal returns a key's lifetime request count (P5-1 cap).
+	KeyUsageTotal func(keyID string) (int, error)
 
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
@@ -193,6 +195,7 @@ type Gateway struct {
 	customModelKey func(id string) (string, bool)
 	keyRecord      func(keyID string) (KeyRecord, bool, error)
 	keyUsageToday  func(keyID, day string) (int, error)
+	keyUsageTotal  func(keyID string) (int, error)
 	keyUsage       func(keyID, day string, requests, promptTokens, completionTokens, cachedTokens int, credits *float64)
 	debugBody      atomic.Bool
 	bodyCap        int
@@ -300,6 +303,7 @@ func newGateway(opts Options) *Gateway {
 		customModelKey: opts.CustomModelKey,
 		keyRecord:      opts.KeyRecord,
 		keyUsageToday:  opts.KeyUsageToday,
+		keyUsageTotal:  opts.KeyUsageTotal,
 		keyUsage:       opts.KeyUsage,
 		bodyCap:        bodyCap,
 		queueTimeout:   queueTimeout,
@@ -607,6 +611,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			g.fail(w, rec, http.StatusForbidden, "permission_error", "service_whitelist",
 				"服务处于白名单模式：只有标记为「属主」的客户端 Key 可以使用")
 			return
+		}
+		// P5-1 lifetime cap. Accounting errors fail open like the daily quota.
+		if kr.MaxRequestsTotal > 0 && g.keyUsageTotal != nil {
+			if total, err := g.keyUsageTotal(keyID); err == nil && total >= kr.MaxRequestsTotal {
+				rec.errText = "key total request cap reached"
+				g.fail(w, rec, http.StatusTooManyRequests, "key_quota_exceeded", "key_quota_exceeded",
+					fmt.Sprintf("该客户端 Key 已达总请求上限（已用 %d 次 / 上限 %d 次）", total, kr.MaxRequestsTotal))
+				return
+			}
 		}
 		r = r.WithContext(withKeyRecord(r.Context(), kr))
 	}

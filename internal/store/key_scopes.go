@@ -54,6 +54,8 @@ type ClientKeyScope struct {
 	AllowedIPs []string
 	// Owner marks the host owner's own key for D-11 whitelist mode.
 	Owner bool
+	// MaxRequestsTotal caps the key's lifetime requests; 0 = unlimited (P5-1).
+	MaxRequestsTotal int
 }
 
 // Empty reports whether the scope restricts nothing.
@@ -87,6 +89,10 @@ func (s ClientKeyScope) Validate() error {
 	}
 	if s.ExpiresAt < 0 {
 		return fmt.Errorf("store: client key scope: %w: expires_at must not be negative",
+			ErrInvalidArgument)
+	}
+	if s.MaxRequestsTotal < 0 {
+		return fmt.Errorf("store: client key scope: %w: max_requests_total must not be negative",
 			ErrInvalidArgument)
 	}
 	allowed := normalizeClientKeyAllowedIPs(s.AllowedIPs)
@@ -150,7 +156,8 @@ func (s *Store) GetClientKey(id string) (model.ClientKey, bool, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT k.id, COALESCE(k.name, ''), COALESCE(k.prefix, ''),
 		COALESCE(k.enabled, 0), COALESCE(k.created_at, 0), COALESCE(k.last_used_at, 0),
 		COALESCE(k.model_scope, ''), COALESCE(k.bind_pool, ''), COALESCE(k.daily_quota, 0),
-		COALESCE(k.expires_at, 0), COALESCE(k.allowed_ips, ''), COALESCE(k.owner, 0), COALESCE(u.requests, 0)
+		COALESCE(k.expires_at, 0), COALESCE(k.allowed_ips, ''), COALESCE(k.owner, 0),
+		COALESCE(k.max_requests_total, 0), COALESCE(u.requests, 0)
 		FROM client_keys k
 		LEFT JOIN client_key_usage u ON u.key_id = k.id AND u.day = ?
 		WHERE k.id = ?`, ClientKeyUsageDay(time.Now()), id)
@@ -174,10 +181,11 @@ func scanClientKeyWithUsage(row interface{ Scan(...any) error }) (model.ClientKe
 		dailyQ    int64
 		ipsRaw    string
 		owner     int64
+		maxTotal  int64
 		usedToday int64
 	)
 	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &enabled, &key.CreatedAt, &key.LastUsedAt,
-		&scopeRaw, &key.BindPool, &dailyQ, &key.ExpiresAt, &ipsRaw, &owner, &usedToday); err != nil {
+		&scopeRaw, &key.BindPool, &dailyQ, &key.ExpiresAt, &ipsRaw, &owner, &maxTotal, &usedToday); err != nil {
 		return model.ClientKey{}, err
 	}
 	key.Enabled = enabled != 0
@@ -185,6 +193,7 @@ func scanClientKeyWithUsage(row interface{ Scan(...any) error }) (model.ClientKe
 	key.DailyQuota = int(dailyQ)
 	key.AllowedIPs = decodeClientKeyAllowedIPs(ipsRaw)
 	key.Owner = owner != 0
+	key.MaxRequestsTotal = int(maxTotal)
 	key.UsedToday = int(usedToday)
 	key.QuotaLeft = ClientKeyQuotaLeft(key.DailyQuota, key.UsedToday)
 	return key, nil
@@ -213,8 +222,8 @@ func (s *Store) UpsertClientKeyScoped(id, name, prefix, hash string, enabled boo
 	ctx, cancel := s.ctx()
 	defer cancel()
 	_, err = s.db.ExecContext(ctx, `INSERT INTO client_keys
-		(id, name, prefix, hash, enabled, created_at, last_used_at, model_scope, bind_pool, daily_quota, expires_at, allowed_ips, owner)
-		VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, 0), CAST(strftime('%s','now') AS INTEGER)), 0, ?, ?, ?, ?, ?, ?)
+		(id, name, prefix, hash, enabled, created_at, last_used_at, model_scope, bind_pool, daily_quota, expires_at, allowed_ips, owner, max_requests_total)
+		VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, 0), CAST(strftime('%s','now') AS INTEGER)), 0, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			prefix = excluded.prefix,
@@ -226,10 +235,11 @@ func (s *Store) UpsertClientKeyScoped(id, name, prefix, hash string, enabled boo
 			expires_at = excluded.expires_at,
 			allowed_ips = excluded.allowed_ips,
 			owner = excluded.owner,
+			max_requests_total = excluded.max_requests_total,
 			created_at = CASE WHEN ? <> 0 THEN ? ELSE client_keys.created_at END`,
 		id, name, prefix, hash, boolInt(enabled), createdAt, scopeJSON,
 		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, ipsJSON,
-		boolInt(scope.Owner), createdAt, createdAt)
+		boolInt(scope.Owner), scope.MaxRequestsTotal, createdAt, createdAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert client key: %w", err)
 	}
@@ -255,8 +265,9 @@ func (s *Store) SetClientKeyScope(id string, scope ClientKeyScope) error {
 	ctx, cancel := s.ctx()
 	defer cancel()
 	res, err := s.db.ExecContext(ctx, `UPDATE client_keys
-		SET model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ?, allowed_ips = ?, owner = ? WHERE id = ?`,
-		scopeJSON, strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, ipsJSON, boolInt(scope.Owner), id)
+		SET model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ?, allowed_ips = ?, owner = ?, max_requests_total = ? WHERE id = ?`,
+		scopeJSON, strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, ipsJSON,
+		boolInt(scope.Owner), scope.MaxRequestsTotal, id)
 	if err != nil {
 		return fmt.Errorf("store: set client key scope: %w", err)
 	}
@@ -288,10 +299,11 @@ func (s *Store) UpdateClientKey(id, name string, enabled bool, scope ClientKeySc
 	ctx, cancel := s.ctx()
 	defer cancel()
 	res, err := s.db.ExecContext(ctx, `UPDATE client_keys
-		SET name = ?, enabled = ?, model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ?, allowed_ips = ?, owner = ?
+		SET name = ?, enabled = ?, model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ?, allowed_ips = ?, owner = ?, max_requests_total = ?
 		WHERE id = ?`,
 		strings.TrimSpace(name), boolInt(enabled), scopeJSON,
-		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, ipsJSON, boolInt(scope.Owner), id)
+		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, ipsJSON,
+		boolInt(scope.Owner), scope.MaxRequestsTotal, id)
 	if err != nil {
 		return fmt.Errorf("store: update client key: %w", err)
 	}
@@ -299,6 +311,26 @@ func (s *Store) UpdateClientKey(id, name string, enabled bool, scope ClientKeySc
 		return fmt.Errorf("store: update client key: %w: %s", ErrNotFound, id)
 	}
 	return nil
+}
+
+// TotalKeyUsageRequests is the lifetime request count of one key across every
+// day bucket. It backs the P5-1 max_requests_total cap.
+func (s *Store) TotalKeyUsageRequests(id string) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store: total key usage: store is not open")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return 0, fmt.Errorf("store: total key usage: %w: id is required", ErrInvalidArgument)
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	var total int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(requests), 0) FROM client_key_usage WHERE key_id = ?`, id).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: total key usage: %w", err)
+	}
+	return int(total), nil
 }
 
 // IncrementKeyUsage adds one finished request to a key's day bucket. requests
