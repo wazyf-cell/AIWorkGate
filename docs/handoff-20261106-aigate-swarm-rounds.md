@@ -326,7 +326,10 @@ c2a9c98  P13: record usage clears instead of deleting history
 - 全量后端：`go test -ldflags=-buildid= ./internal/...` 24 包全 ok（2026-11-06 22:07 复核）。
 - Linux 交叉编译：amd64/arm64 通过（ELF，2026-11-06 退役 A 后重建）；部署/回滚脚本 dry-run 通过。
 - opchost 桥自检：`node opchost/bridge/src/admin/testdata/selftest.mjs --exit` → 74/74。
-- P1 真包探针（2026-11-06 22:09，临时数据目录、无 chat）：桥加载 `opencode-trae-auth` → `/meta` 报 `trae-cn`(6)+`trae-global`(5) 共 11 个模型；`/v1/models` 字段完整；无凭据 chat → **401 `needs_sign_in`**（非 500）。真实登录后的 chat 成功仍待用户登录。
+- P1/P2 真包探针（2026-11-06 22:09，临时数据目录、无 chat）：
+  - `opencode-trae-auth` → `/meta` 报 `trae-cn`(6)+`trae-global`(5) 共 11 个模型；`/v1/models` 字段完整；无凭据 chat → **401 `needs_sign_in`**（非 500）。
+  - `opencode-workbuddy-auth` → `/meta` 报 `workbuddy`(15)+`workbuddy-ai`(16) 两个独立 provider（符合 Q1 修订），模型字段完整。
+  - 真实登录后的 chat 成功与额度记录仍待用户登录。
 
 ### 12.4 接手首要事项
 
