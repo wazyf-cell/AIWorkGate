@@ -114,6 +114,18 @@ type Config struct {
 	Redact    RedactConfig    `json:"redact"`
 	Notify    NotifyConfig    `json:"notify"`
 	Decision  DecisionConfig  `json:"decision"`
+	// RoutingGroups are P11 pattern groups: each id is routable and resolves to
+	// the models matching Match at snapshot time (* glob or re:<regexp>).
+	RoutingGroups []RoutingGroupConfig `json:"routing_groups"`
+}
+
+// RoutingGroupConfig is one pattern-based routing group.
+type RoutingGroupConfig struct {
+	ID      string   `json:"id"`
+	Display string   `json:"display,omitempty"`
+	Match   []string `json:"match"`
+	// Disabled keeps the entry in config for later use without publishing it.
+	Disabled bool `json:"disabled"`
 }
 
 // DecisionConfig lists the generic structured-decision upstreams (D-18/P6).
@@ -520,6 +532,7 @@ func (c *Config) Normalize() {
 	c.Gateway.TrustedProxies = normalizeIPList(c.Gateway.TrustedProxies, nil)
 	c.Gateway.ServiceMode = normalizeServiceMode(c.Gateway.ServiceMode)
 	c.Decision.Upstreams = normalizeDecisionUpstreams(c.Decision.Upstreams)
+	c.RoutingGroups = normalizeRoutingGroups(c.RoutingGroups)
 	c.Gateway.RateLimitPerMinute = clampRateLimit(c.Gateway.RateLimitPerMinute)
 	c.Gateway.RateLimitPerIPPerMinute = clampRateLimit(c.Gateway.RateLimitPerIPPerMinute)
 	c.Gateway.PublicHosts = normalizePublicHosts(c.Gateway.PublicHosts)
@@ -638,6 +651,48 @@ func clampRateLimit(value int) int {
 		return 1_000_000
 	}
 	return value
+}
+
+// normalizeRoutingGroups trims ids/patterns, dedupes ids and drops a group
+// whose id is empty, whose match list is empty, or whose re: pattern is broken.
+func normalizeRoutingGroups(in []RoutingGroupConfig) []RoutingGroupConfig {
+	out := make([]RoutingGroupConfig, 0, len(in))
+	seen := map[string]bool{}
+	for _, raw := range in {
+		group := raw
+		group.ID = strings.TrimSpace(group.ID)
+		group.Display = strings.TrimSpace(group.Display)
+		if group.ID == "" || seen[group.ID] ||
+			strings.ContainsAny(group.ID, "/ \t") {
+			// A slash would make the id look like a "<plugin>/<model>" name.
+			continue
+		}
+		match := make([]string, 0, len(group.Match))
+		valid := true
+		for _, pattern := range group.Match {
+			pattern = strings.TrimSpace(pattern)
+			if pattern == "" {
+				continue
+			}
+			if strings.HasPrefix(pattern, "re:") {
+				if _, err := regexp.Compile(strings.TrimSpace(strings.TrimPrefix(pattern, "re:"))); err != nil {
+					valid = false
+					break
+				}
+			}
+			match = append(match, pattern)
+		}
+		if !valid || len(match) == 0 {
+			continue
+		}
+		group.Match = match
+		seen[group.ID] = true
+		out = append(out, group)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // normalizeDecisionUpstreams trims entries, defaults the protocol and drops

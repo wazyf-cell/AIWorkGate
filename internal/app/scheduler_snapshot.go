@@ -154,6 +154,14 @@ func (a *App) snapshotFrom(ctx context.Context, src schedulerSource) (*scheduler
 			Members:              a.poolMemberSet(id),
 		}
 	}
+	// P11: pattern groups resolve against the pools this round just built, so a
+	// vendor adding a model changes group membership at the next snapshot.
+	for id, binding := range a.routingGroupBindings(snap) {
+		if _, taken := snap.Bindings[id]; taken {
+			continue // an explicit logical binding owns the id
+		}
+		snap.Bindings[id] = binding
+	}
 	return snap, nil
 }
 

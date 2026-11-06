@@ -759,3 +759,22 @@ func TestNormalizePublicHosts(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeRoutingGroups(t *testing.T) {
+	got := normalizeRoutingGroups([]RoutingGroupConfig{
+		{ID: " fast ", Match: []string{" trae/* ", ""}},
+		{ID: "fast", Match: []string{"other/*"}},
+		{ID: "badre", Match: []string{"re:["}},
+		{ID: "nomatch", Match: []string{" "}},
+		{ID: "ok", Display: "默认组", Match: []string{"re:^work"}},
+	})
+	if len(got) != 2 {
+		t.Fatalf("groups = %+v, want 2", got)
+	}
+	if got[0].ID != "fast" || len(got[0].Match) != 1 || got[0].Match[0] != "trae/*" {
+		t.Fatalf("first group = %+v", got[0])
+	}
+	if got[1].Display != "默认组" {
+		t.Fatalf("display = %q", got[1].Display)
+	}
+}
