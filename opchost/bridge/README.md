@@ -84,6 +84,16 @@ node src/main.ts --plugin-dir "<插件目录>" --port 18086 --token "<bearer>" -
 宿主实际形态（与 host-opchost 对齐）：`entry.args` 只有 `--plugin-dir <目录>`，
 其余 port/token/data-dir/id 全由环境变量给。
 
+### 2.1.1 复用 magpie 已有登录态
+
+启动时若桥的凭据库缺少某个已加载 provider 的记录，会从 magpie 的 `~/.config/magpie/plugin-auth.json`
+导入该 provider 的登录条目（`access`/`refresh`/`expires` 等），并按桥的加密库落盘：
+
+- 桥自己的登录/续期记录**优先**，导入不覆盖已有记录；
+- 只打印导入的 provider id，不打印任何令牌；
+- `MAGPIE_AUTH_FILE` 可指定其它路径；`AIWORKGATE_MAGPIE_AUTH_IMPORT=0` 关闭导入；
+- 导入的是 magpie 当前登录态；若该凭据已被厂商判定失效，chat 仍会返回 `401 needs_sign_in`，需在桥管理面重新登录。
+
 ### 2.2 退出
 
 `SIGINT` / `SIGTERM` → 关闭监听，3s 后强制退出兜底。

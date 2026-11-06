@@ -32,6 +32,7 @@ import { createFileCredentialStore } from "./admin/index.ts";
 import { loadEgressFromEnv, reportDeclarationGaps } from "./egress/index.ts";
 import { loadPluginDir, ensurePluginDir } from "./loader.ts";
 import { bridgeCredentialStore, createBridgeServer } from "./server.ts";
+import { importMagpieAuth, magpieAuthFile } from "./magpie-auth.ts";
 import type { BridgeConfig, BridgeContext } from "./types.ts";
 import { BRIDGE_ID, BRIDGE_VERSION, ENV_KEYS, MAX_API_LEVEL, MIN_API_LEVEL } from "./types.ts";
 
@@ -207,6 +208,16 @@ async function main(): Promise<void> {
     egress: egress.guard,
     pluginId: config.pluginId,
   });
+  // P2：装了桥就能用 magpie 已有登录态；桥自己的登录/续期记录优先。
+  try {
+    const imported = await importMagpieAuth(credentials, Object.keys(registry.providers));
+    if (imported.length > 0) {
+      console.log(`[bridge] magpie login imported: ${imported.join(", ")}`);
+    }
+  } catch (err) {
+    console.warn(`[bridge] magpie login import skipped (${magpieAuthFile()}): ${String(err)}`);
+  }
+
   // 启动末：声明差距告警（egress/README 接线点 ③）。
   // 「声明」与「实际目标」同源于 SITES 采集，正常加载为空；strict 且零声明的外联会被点名。
   const unionDomains = [...new Set(Object.values(registry.domainsByProvider).flat())];

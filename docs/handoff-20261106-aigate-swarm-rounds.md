@@ -308,7 +308,7 @@ c2a9c98  P13: record usage clears instead of deleting history
 
 | 阶段 | 状态 |
 |---|---|
-| P1/P2/P8/P10/P12-1/2 | 代码/本地验证完成；P1 真包探针通过（2 provider / 11 模型 / 无凭据 401）；内置 A 网关已退役（D-60），裸模型名改由 `default_plugin`；真实登录后的 chat 与 Linux 实跑仍缺 |
+| P1/P2/P8/P10/P12-1/2 | 代码/本地验证完成；P1 真包探针 + 真实 trae chat（复用 magpie 登录态，非流式/流式均 200）通过；P2 workbuddy 目录/双 provider 通过、chat 需重登；内置 A 网关已退役（D-60）；Linux 实跑仍缺 |
 | P5 | D-40/41(部分)/P5-1 全项/P5-4/P5-5/P5-6 完成；Key 分享标记强制到期完成 |
 | P6 | Gemini 入站（含工具调用双向翻译）+ SystemOne 路由完成；真实 JEV key 未验 |
 | P9 | 策略/告警/面板/告警订阅 + `cheap`（配置价）完成 |
@@ -331,7 +331,7 @@ c2a9c98  P13: record usage clears instead of deleting history
   - `opencode-workbuddy-auth` → `/meta` 报 `workbuddy`(15)+`workbuddy-ai`(16) 两个独立 provider（符合 Q1 修订），模型字段完整。
   - **WorkBuddy 宿主监管**（2026-11-06 22:12）：桥以 `bridge-wb` 装入宿主 → 插件启动（pid 9780 / 端口 12498），网关发布 **31 个模型**（`bridge-wb/workbuddy/*` + `bridge-wb/workbuddy-ai/*`）；`/api/accounts` 显示 `workbuddy`、`workbuddy-ai` 两个独立账号（符合 Q1 修订）；签到开关同样正确（workbuddy-ai 409 pluginCheckins）。
   - **宿主监管联调**（2026-11-06 22:11）：把桥编译成 exe 装进隔离预览实例 → 宿主启动插件、网关 `/v1/models` 发布 `bridge-trae/trae-cn/*` 等 11 个模型；签到调度正确区分 trae-cn（尝试）与 trae-global（409 pluginCheckins 关闭）；杀掉桥进程后 1s 内以新端口重启（pid 15488 / 4346），状态仍 1/1；无凭据 chat 在调度层返回 503「no eligible account (no credential)」。
-  - 真实登录后的 chat 成功与额度记录仍待用户登录。
+  - **真实 chat**（2026-11-06）：桥新增 magpie 登录态导入 → trae-cn 非流式 200（31.27s）、流式 200（34.01s）；workbuddy 导入后 chat 仍 401 `needs_sign_in`，需重新登录。验收记录见 `docs/验收/2026-11-06-真实登录验收.md`。
 
 ### 12.4 接手首要事项
 

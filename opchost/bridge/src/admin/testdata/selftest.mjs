@@ -13,7 +13,9 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync } from
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { createAdminRouter } from '../index.ts'
+import { createAdminRouter, createFileCredentialStore } from '../index.ts'
+import { importMagpieAuth } from '../../magpie-auth.ts'
+import { bridgeCredentialStore } from '../../server.ts'
 import { registryFromLoad } from '../wiring.ts'
 import { buildIndex, DEFAULT_QUOTA_GROUPS, mergeQuotaRecords, quotaRecordFor } from '../quotagroups.ts'
 import { isLoopback } from '../util.ts'
@@ -470,6 +472,28 @@ let pluginModeSid = ''
   check('wiring_checkin_already', again.result === 'already' && again.credits_after === 10, `result=${again.result}`)
   srv.close()
   api3.close()
+}
+
+// P2: importing magpie's existing login state (never overwriting a bridge record)
+{
+  const authPath = join(dataDir, 'magpie-plugin-auth.json')
+  writeFileSync(authPath, JSON.stringify({ mock: { access: 'a', refresh: 'r' }, off: {} }))
+  process.env.MAGPIE_AUTH_FILE = authPath
+  const store = createFileCredentialStore(join(dataDir, 'import-store'))
+  const creds = bridgeCredentialStore(store, 'magpie-bridge')
+  const imported = await importMagpieAuth(creds, ['mock', 'off', 'missing'])
+  check('magpie_import_selected', imported.length === 1 && imported[0] === 'mock', JSON.stringify(imported))
+  check('magpie_import_secret', store.get('magpie-bridge', 'mock')?.secret?.access === 'a')
+  const again = await importMagpieAuth(creds, ['mock'])
+  check('magpie_import_idempotent', again.length === 0, JSON.stringify(again))
+  process.env.AIWORKGATE_MAGPIE_AUTH_IMPORT = '0'
+  const disabled = await importMagpieAuth(
+    bridgeCredentialStore(createFileCredentialStore(join(dataDir, 'import-store-2')), 'magpie-bridge'),
+    ['mock'],
+  )
+  check('magpie_import_optout', disabled.length === 0, JSON.stringify(disabled))
+  delete process.env.AIWORKGATE_MAGPIE_AUTH_IMPORT
+  delete process.env.MAGPIE_AUTH_FILE
 }
 
 const failed = results.filter((r) => !r.ok)
