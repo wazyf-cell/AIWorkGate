@@ -895,6 +895,7 @@ func (s *Store) QueryAPILogsSince(id int64, fromDay, toDay string, limit int) ([
 			credits sql.NullFloat64
 		)
 		if err := rows.Scan(&rowID, &rec.TS, &rec.ReqID, &rec.Source, &rec.Model,
+			&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed,
 			&rec.LogicalModel, &rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID,
 			&stream, &rec.Status, &rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &rec.Error); err != nil {

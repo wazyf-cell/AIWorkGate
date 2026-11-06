@@ -249,3 +249,71 @@ bc7c3a1  P5-1：客户端 Key 到期（schema v13）+ 过期 401 明确文案 + 
 - **P5-1**：客户端 Key 可设到期日（schema v13），过期 401 带具体时间；`expires_at=0` 不受影响。
 - 全量验证：`go build ./...` + `go test ./internal/...` **23 包全绿**；`npm run build` + 视觉 **56/56**。
 - P5 本轮已完成：Key 到期/总请求上限/Key 级 `allowed_ips`、全局 IP 白名单、`trusted_proxies`、服务模式三态 + 属主 Key、双维限流、Linux 交叉编译 + Caddy/systemd 样例（`docs/p5/`）。仍未做：Linux 实机启动与长期验证（无服务器）、分享 Key 的“到期必填”缺分享标记。
+
+---
+
+## 12 · 进度快照（2026-11-06 16:34，单代理）
+
+> 本节覆盖 §1~§11 的旧状态；§6 蜂群编成对本 agent 仍无效（无蜂群）。
+
+### 12.1 提交链（2ecddd0 之后，截至本次快照）
+
+```
+aa32665  task-29 收尾：/api/usage/conversations 全链 + Usage 默认会话聚合
+18537f9  task-30：A 兜底规格测试改为真实快照竞态 + 红/绿反证
+a3e0213  task-27：quota windows[] 桥→宿主 + Q1-A 配额组
+06c85fd  P12-3：/v1/models D-35 八字段 + prefs + structured
+478311f  P9-3：free/pace 策略 + expiring_first 修复 + 告警订阅
+62ea967  P9：账号面板多窗口额度 + 视觉基线
+94a49c3  P12-3：serves() 重命名校验
+8e06171  P5/D-40：/v1 IP 白名单（默认本机）
+bc7c3a1  P5-1：Key 到期
+c155a89  P5-4：trusted_proxies
+e6c69e8  P5-1：Key 级 allowed_ips
+4fe1d5e  P5/D-11：服务模式三态 + 属主 Key
+a82f325  P5-1：Key 总请求上限
+72f949b  P5-5：双维滚动分钟限流
+67eba0a  P5-6：Linux 构建 + Caddy/systemd + 无头管理员令牌
+5eb25fd  P7：部署/回滚脚本 + 演练文档
+923fca3  P6-1：Gemini 入站
+f7defe0  P6：SystemOne/decision 路由
+e29f084  P4/P5：public_hosts 反代 Host 白名单
+72fae04  P14：/me 自助页
+9f85a12  P14：/me 路由分流测试
+aa2452b  P11：模式路由组
+e9caf3e  P11：组规则表
+a546bef  P11：组权重
+6941076  P13/D-31：requested/upstream/served 三栏
+0dd4fe0  P13：按 served 统计
+9ae8453  P5-1：分享 Key 强制到期
+```
+
+远端：`wazyf-cell/AIWorkGate` 的 `main` 同步到 `9ae8453`；旧库备份标签 `backup/github-main-20261106` 保留。
+
+### 12.2 阶段状态
+
+| 阶段 | 状态 |
+|---|---|
+| P1/P2/P8/P10/P12-1/2 | 代码/本地验证完成；真实登录与 Linux 实跑仍缺 |
+| P5 | D-40/41(部分)/P5-1 全项/P5-4/P5-5/P5-6 完成；Key 分享标记强制到期完成 |
+| P6 | Gemini 入站 + SystemOne 路由完成；真实 JEV key 未验；Gemini 工具调用未回译 |
+| P9 | 策略/告警/面板/告警订阅完成；`cheap` 待 D-31③ 价格引擎 |
+| P11 | 模式组 + 规则表 + 权重完成；意图规则/管理页编辑器未做 |
+| P13 | D-31 三栏 + 按 served 统计完成；其余 7 列、47 列导出、粒度、Prompt 分析未做 |
+| P14 | `/me` 完成（限制卡/用量/按模型/最近记录，无正文） |
+| P7 | 构建/部署/回滚脚本与演练手册完成；**服务器实跑未做** |
+| P3/P4 | 未开工（P3 破坏性；P4 依赖服务器） |
+
+### 12.3 当前验证基线
+
+- `go build ./...` exit 0。
+- `go test ./internal/...`：23 包通过；app/logging 偶发 Windows `TempDir RemoveAll: directory is not empty`（隔离重跑通过，非断言失败）。
+- `npm run build`：typecheck + 样式债 0 + 视觉 **56/56**。
+- Linux 交叉编译：amd64/arm64 通过（ELF），部署脚本 dry-run 通过。
+
+### 12.4 接手首要事项
+
+1. 服务器到位后按 `docs/p7/00-部署演练.md` 实跑，重点验收 `public_hosts` / `trusted_proxies` / 回滚。
+2. 真实 trae/workbuddy 登录后补 P1/P2 验收；真实 JEV key 补 P6 三例。
+3. P11 意图规则依赖 JEV；P13 其余列依赖价格引擎（D-31③）。
+4. 不要启用蜂群：本 agent 无多子代理能力。
