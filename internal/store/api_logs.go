@@ -72,6 +72,7 @@ type Filter struct {
 }
 
 const apiLogColumns = `ts, COALESCE(req_id, ''), COALESCE(source, ''), COALESCE(model, ''),
+	COALESCE(model_requested, ''), COALESCE(model_upstream, ''), COALESCE(model_served, ''),
 	COALESCE(logical_model, ''), COALESCE(key_id, ''), COALESCE(key_name, ''),
 	COALESCE(account, ''), COALESCE(conversation_id, ''), COALESCE(stream, 0), COALESCE(status, 0),
 	COALESCE(latency_ms, 0), COALESCE(ttfb_ms, 0), COALESCE(first_token_at, ''),
@@ -81,6 +82,7 @@ const apiLogColumns = `ts, COALESCE(req_id, ''), COALESCE(source, ''), COALESCE(
 // apiLogColumnsNoBodies mirrors apiLogColumns without the two body columns so
 // list/timeline queries never load large previews.
 const apiLogColumnsNoBodies = `COALESCE(ts, ''), COALESCE(req_id, ''), COALESCE(source, ''), COALESCE(model, ''),
+	COALESCE(model_requested, ''), COALESCE(model_upstream, ''), COALESCE(model_served, ''),
 	COALESCE(logical_model, ''), COALESCE(key_id, ''), COALESCE(key_name, ''),
 	COALESCE(account, ''), COALESCE(conversation_id, ''), COALESCE(stream, 0), COALESCE(status, 0),
 	COALESCE(latency_ms, 0), COALESCE(ttfb_ms, 0), COALESCE(first_token_at, ''),
@@ -98,12 +100,15 @@ func (s *Store) InsertAPIRequestLog(rec model.APIRequestLog) error {
 	ctx, cancel := s.ctx()
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO api_logs
-		(ts, req_id, source, model, logical_model, key_id, key_name, account,
+		(ts, req_id, source, model, model_requested, model_upstream, model_served,
+		 logical_model, key_id, key_name, account,
 		 conversation_id, stream, status, latency_ms, ttfb_ms, first_token_at,
 		 prompt_tokens, completion_tokens, cached_tokens, credits, error, body_req, body_resp)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ts,
-		nullStr(rec.ReqID), nullStr(rec.Source), nullStr(rec.Model), nullStr(rec.LogicalModel),
+		nullStr(rec.ReqID), nullStr(rec.Source), nullStr(rec.Model),
+		nullStr(rec.ModelRequested), nullStr(rec.ModelUpstream), nullStr(rec.ModelServed),
+		nullStr(rec.LogicalModel),
 		nullStr(rec.KeyID), nullStr(rec.KeyName), nullStr(rec.Account), nullStr(rec.ConversationID),
 		boolInt(rec.Stream), rec.Status,
 		rec.LatencyMS, rec.TTFBMS, nullStr(rec.FirstTokenAt), rec.PromptTokens, rec.CompletionTokens,
@@ -185,6 +190,7 @@ func (s *Store) QueryAPILogsTimelinePage(f Filter, beforeAt, beforeID int64, lim
 		)
 		if err := rows.Scan(
 			&row.ID, &row.Log.TS, &row.Log.ReqID, &row.Log.Source, &row.Log.Model,
+			&row.Log.ModelRequested, &row.Log.ModelUpstream, &row.Log.ModelServed,
 			&row.Log.LogicalModel, &row.Log.KeyID, &row.Log.KeyName, &row.Log.Account,
 			&row.Log.ConversationID, &stream, &row.Log.Status,
 			&row.Log.LatencyMS, &row.Log.TTFBMS, &row.Log.FirstTokenAt,

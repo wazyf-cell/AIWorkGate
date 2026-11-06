@@ -158,3 +158,22 @@ func TestUsageConversationsModelFilter(t *testing.T) {
 		t.Fatalf("model filter rows = %+v, want only c1 with 1 request", rows)
 	}
 }
+
+func TestAPILogThreeModelColumnsRoundtrip(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.InsertAPIRequestLog(model.APIRequestLog{
+		TS: "2026-01-15T10:00:00Z", ReqID: "r1", Model: "p1/m1",
+		ModelRequested: "p1/m1", ModelUpstream: "m1-cheap", ModelServed: "m1-cheapest",
+		Status: 200,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := s.QueryAPILogsTimelinePage(Filter{Limit: 10}, 0, 0, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %d err=%v", len(rows), err)
+	}
+	log := rows[0].Log
+	if log.ModelRequested != "p1/m1" || log.ModelUpstream != "m1-cheap" || log.ModelServed != "m1-cheapest" {
+		t.Fatalf("row = %+v", log)
+	}
+}

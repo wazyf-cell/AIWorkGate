@@ -27,6 +27,8 @@ type bodyTap struct {
 
 	prompt     int64
 	completion int64
+	// served is the model the upstream reported in the response, if any.
+	served string
 	// cached is the cached prompt prefix reported by the upstream. Ported from
 	// A (TraeWorkAssistant, MIT, 朱天伟) usage.rs:121-124,227-228 (wide alias
 	// extraction, never fabricated when the upstream omits usage).
@@ -107,6 +109,14 @@ func (t *bodyTap) handleLine() {
 	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 		return
 	}
+	if t.served == "" && bytes.Contains(data, []byte(`"model"`)) {
+		var probe struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(data, &probe) == nil && probe.Model != "" {
+			t.served = probe.Model
+		}
+	}
 	if !bytes.Contains(data, []byte(`"usage"`)) &&
 		!bytes.Contains(data, []byte(`"input_tokens"`)) &&
 		!bytes.Contains(data, []byte(`"output_tokens"`)) {
@@ -121,6 +131,14 @@ func (t *bodyTap) finish() {
 			t.handleLine()
 		}
 		return
+	}
+	if t.served == "" {
+		var probe struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(t.preview, &probe) == nil && probe.Model != "" {
+			t.served = probe.Model
+		}
 	}
 	if t.usageOver {
 		t.parseUsageTail(t.usage)

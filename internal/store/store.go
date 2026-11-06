@@ -613,6 +613,13 @@ var migrations = []migrationStep{
 			{"client_keys", "max_requests_total", "INTEGER NOT NULL DEFAULT 0"},
 		},
 	},
+	{ // version 17: D-31 three model columns (requested / upstream / served)
+		columns: []columnMigration{
+			{"api_logs", "model_requested", "TEXT"},
+			{"api_logs", "model_upstream", "TEXT"},
+			{"api_logs", "model_served", "TEXT"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

@@ -425,10 +425,15 @@ type AccountEgress struct {
 
 // APIRequestLog is one row of the request log.
 type APIRequestLog struct {
-	TS               string `json:"ts"`
-	ReqID            string `json:"req_id"`
-	Source           string `json:"source"`
-	Model            string `json:"model"`
+	TS     string `json:"ts"`
+	ReqID  string `json:"req_id"`
+	Source string `json:"source"`
+	Model  string `json:"model"`
+	// D-31: the client's requested name, the physical upstream model, and the
+	// model the upstream said it served (empty = not reported).
+	ModelRequested   string `json:"model_requested,omitempty"`
+	ModelUpstream    string `json:"model_upstream,omitempty"`
+	ModelServed      string `json:"model_served,omitempty"`
 	LogicalModel     string `json:"logical_model,omitempty"`
 	KeyID            string `json:"key_id"`
 	KeyName          string `json:"key_name"`

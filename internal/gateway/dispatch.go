@@ -513,6 +513,7 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 			g.failSchedule(w, rec, fmt.Errorf("%w: empty decision", scheduler.ErrNoCandidate))
 			return
 		}
+		rec.modelUpstream = strings.TrimSpace(decision.Model)
 		pool := snap.Pools[id]
 		pinned := decision.AccountID
 		if pool != nil && pool.APIVersion < 2 {
@@ -1281,6 +1282,9 @@ func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Resp
 	}
 	tap.finish()
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
+	if tap.served != "" {
+		rec.modelServed = tap.served
+	}
 
 	if g.debugBody.Load() {
 		rec.bodyResp = string(tap.preview)

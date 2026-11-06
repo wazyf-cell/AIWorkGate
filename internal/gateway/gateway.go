@@ -377,6 +377,9 @@ type reqRecord struct {
 	start          time.Time
 	source         string
 	model          string
+	modelRequested string
+	modelUpstream  string
+	modelServed    string
 	logicalModel   string
 	account        string
 	conversationID string
@@ -1263,6 +1266,7 @@ func (g *Gateway) handleEnvelope(w http.ResponseWriter, r *http.Request, rec *re
 // prepareRecord fills the request-log fields derived from a buffered body.
 func (g *Gateway) prepareRecord(rec *reqRecord, r *http.Request, body []byte, meta requestMeta) {
 	rec.model = meta.model
+	rec.modelRequested = meta.model
 	rec.stream = meta.stream
 	rec.promptChars = meta.promptChars
 	rec.hasImage = meta.hasImage
@@ -1279,6 +1283,9 @@ func (g *Gateway) prepareRecord(rec *reqRecord, r *http.Request, body []byte, me
 func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *reqRecord, tgt pluginTarget, body []byte, path string) {
 	id := tgt.status.Manifest.ID
 	rec.source = "plugin:" + id
+	if strings.TrimSpace(tgt.inner) != "" {
+		rec.modelUpstream = strings.TrimSpace(tgt.inner)
+	}
 
 	// A long stream (or a slow cold start) must not be reaped by the plugin
 	// manager's idle timer; the release runs after the body has been copied.
@@ -1364,6 +1371,9 @@ func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *req
 // forwardA proxies to A with its key and the original path/query.
 func (g *Gateway) forwardA(w http.ResponseWriter, r *http.Request, rec *reqRecord, body []byte) {
 	rec.source = "a"
+	if rec.modelUpstream == "" {
+		rec.modelUpstream = rec.modelRequested
+	}
 	if g.a == nil || strings.TrimSpace(g.a.BaseURL()) == "" {
 		g.failAUnavailable(w, rec)
 		return
@@ -1523,6 +1533,9 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, rec *reqRecord
 	}
 	tap.finish()
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
+	if tap.served != "" {
+		rec.modelServed = tap.served
+	}
 
 	if g.debugBody.Load() {
 		rec.bodyResp = string(tap.preview)
@@ -1620,6 +1633,9 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 		ReqID:            rec.reqID,
 		Source:           rec.source,
 		Model:            rec.model,
+		ModelRequested:   rec.modelRequested,
+		ModelUpstream:    rec.modelUpstream,
+		ModelServed:      rec.modelServed,
 		LogicalModel:     rec.logicalModel,
 		Account:          rec.account,
 		ConversationID:   rec.conversationID,
