@@ -257,6 +257,98 @@ const mockCases: Case[] = [
       checkEq(d.status, 405, "GET 方法");
     },
   },
+  {
+    name: "workbuddy 形状：空 baseURL + 模型 api.url → 上游地址取 api.url（非流式）",
+    run: async () => {
+      const r = await post({
+        model: "mock-wb/wb-chat",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      checkEq(r.status, 200, "HTTP 状态");
+      const body = JSON.parse(r.text) as Record<string, unknown>;
+      const choice = (body.choices as Record<string, unknown>[])[0] as Record<string, unknown>;
+      const message = choice.message as Record<string, unknown>;
+      // mock 的 fetch 把实际收到的 URL 回显进正文
+      check(
+        String(message.content).includes("wb url=https://wb-mock.invalid/v2/chat/completions"),
+        `上游应请求模型 api.url 拼的地址，实际：${String(message.content)}`,
+      );
+      check(String(message.content).includes("model=wb-chat"), "model 应去前缀");
+    },
+  },
+  {
+    name: "workbuddy 形状：流式同样按模型 api.url 调上游",
+    run: async () => {
+      const r = await post({
+        model: "mock-wb/wb-chat",
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+      });
+      checkEq(r.status, 200, "HTTP 状态");
+      const frames = splitFrames(r.text);
+      assertFrameShape(frames, "wb-stream");
+      const objs = payloads(frames);
+      const text = objs
+        .map((o) => {
+          const ch = (o.choices as Record<string, unknown>[] | undefined)?.[0];
+          const delta = ch?.delta as Record<string, unknown> | undefined;
+          return typeof delta?.content === "string" ? (delta.content as string) : "";
+        })
+        .join("");
+      check(text.includes("wb url=https://wb-mock.invalid/v2/chat/completions"), `流式上游地址应取 api.url，实际：${text}`);
+    },
+  },
+  {
+    name: "workbuddy 形状：客户端非流式但上游只收流式 → 桥强制流式并聚合回 JSON",
+    run: async () => {
+      const r = await post({
+        model: "mock-wb/wb-chat",
+        messages: [{ role: "user", content: "hi" }],
+        stream: false,
+      });
+      checkEq(r.status, 200, "HTTP 状态");
+      check(r.ct.includes("application/json"), `应回聚合 JSON，实际 ${r.ct}`);
+      const body = JSON.parse(r.text) as Record<string, unknown>;
+      checkEq(body.object, "chat.completion", "object");
+      const choice = (body.choices as Record<string, unknown>[])[0] as Record<string, unknown>;
+      const message = choice.message as Record<string, unknown>;
+      check(
+        String(message.content).includes("wb url=https://wb-mock.invalid/v2/chat/completions"),
+        `聚合正文应含上游回显地址，实际：${String(message.content)}`,
+      );
+      checkEq(choice.finish_reason, "stop", "finish_reason");
+    },
+  },
+  {
+    name: "workbuddy 形状：模型无 api.url → provider 级 api 兜底",
+    run: async () => {
+      const r = await post({
+        model: "mock-wb/wb-noapi",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      checkEq(r.status, 200, "HTTP 状态");
+      const body = JSON.parse(r.text) as Record<string, unknown>;
+      const choice = (body.choices as Record<string, unknown>[])[0] as Record<string, unknown>;
+      const message = choice.message as Record<string, unknown>;
+      check(
+        String(message.content).includes("wb url=https://wb-mock.invalid/v2/chat/completions"),
+        `应落到 provider 级 api 拼的地址，实际：${String(message.content)}`,
+      );
+    },
+  },
+  {
+    name: "workbuddy 形状：provider 级也没有 api → 501 no_upstream_url（不猜地址）",
+    run: async () => {
+      const r = await post({
+        model: "mock-wb2/wb-noapi",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      checkEq(r.status, 501, "HTTP 状态");
+      const body = JSON.parse(r.text) as { error: Record<string, unknown> };
+      checkEq(body.error.code, "no_upstream_url", "error.code");
+      check((body.error.message as string).includes("api.url"), "文案应指出模型缺 api.url");
+    },
+  },
 ];
 
 // ---- trae suite（真实包、无凭据） ------------------------------------------

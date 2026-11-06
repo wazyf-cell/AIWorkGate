@@ -123,6 +123,12 @@ export interface ChatDeps {
   ): ProviderBinding | undefined | Promise<ProviderBinding | undefined>;
   getAuth(providerId: string): AuthValue | null | Promise<AuthValue | null>;
   saveAuth?(providerId: string, auth: AuthValue): void | Promise<void>;
+  /**
+   * 模型自带的 api.url（如 workbuddy：chat 走 <endpoint>/v2，loader 刻意不给
+   * baseURL）。loader 返回空 baseURL 且带自定义 fetch 时，上游地址取这里。
+   * 可选：不实现时这类插件的 chat 会得到 501 no_upstream_url。
+   */
+  getModelApiUrl?(providerId: string, modelId: string): string | undefined;
   log?(level: LogLevel, message: string, meta?: Record<string, unknown>): void;
   config?: ChatConfig;
 }

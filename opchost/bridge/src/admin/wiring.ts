@@ -156,14 +156,22 @@ export interface ChatAuthStore {
   path(): string
 }
 
-export function chatAuthStore(store: AdminCredentialStore, fileHint = 'admin-credentials'): ChatAuthStore {
+/**
+ * 管理面凭据库 → chat 泳道的 AuthStore（chat/credentials.ts 的 AuthStore 形状）。
+ * 让 chat 与管理面共用同一份（加密落盘的）凭据，而不是各写一份 auth.json。
+ *
+ * pluginId 缺省 'magpie-bridge' 是 standalone 模式的标识；网关托管时传入
+ * BridgeConfig.pluginId（如 bridge-wb），读写都落在宿主看到的那个插件名下，
+ * 否则 /accounts 的 provider 行会一直查不到凭据。
+ */
+export function chatAuthStore(store: AdminCredentialStore, pluginId = 'magpie-bridge', fileHint = 'admin-credentials'): ChatAuthStore {
   return {
     get(providerId: string): Record<string, unknown> | null {
-      const rec = store.get('magpie-bridge', providerId) ?? store.list().find((r) => r.accountId === providerId)
+      const rec = store.get(pluginId, providerId) ?? store.list().find((r) => r.accountId === providerId)
       return rec ? { ...rec.secret } : null
     },
     set(providerId: string, auth: Record<string, unknown>): void {
-      store.put({ pluginId: 'magpie-bridge', accountId: providerId, secret: auth as JsonValue as Record<string, unknown> })
+      store.put({ pluginId, accountId: providerId, secret: auth as JsonValue as Record<string, unknown> })
     },
     path(): string {
       return fileHint

@@ -183,8 +183,8 @@ async function pickEntryFiles(target: string): Promise<string[]> {
 // 实例化与模型表
 // ---------------------------------------------------------------------------
 
-/** 从 config 钩子 + provider.models 提取 provider 名与静态模型表。 */
-async function describePlugin(inst: OpenCodePlugin): Promise<{ name: string; models: PluginModelMap }> {
+/** 从 config 钩子 + provider.models 提取 provider 名、provider 级 chat 基址与静态模型表。 */
+async function describePlugin(inst: OpenCodePlugin): Promise<{ name: string; models: PluginModelMap; api?: string }> {
   const id = inst.provider.id;
   const cfg: MutableProviderConfig = {};
   if (typeof inst.config === "function") {
@@ -195,6 +195,9 @@ async function describePlugin(inst: OpenCodePlugin): Promise<{ name: string; mod
     }
   }
   const entry: ProviderConfigEntry | undefined = cfg.provider?.[id];
+  // provider 级 chat 基址（workbuddy 的 config 钩子写 api = <endpoint>/v2）：
+  // 模型条目没有自带 api.url 时（无凭据的静态表就是如此），chat 用它兜底。
+  const providerApi = typeof entry?.api === "string" ? entry.api.trim() : "";
   const models: PluginModelMap = {};
 
   const pm = inst.provider.models;
@@ -216,7 +219,7 @@ async function describePlugin(inst: OpenCodePlugin): Promise<{ name: string; mod
   if (Object.keys(models).length === 0 && entry?.models) {
     Object.assign(models, entry.models ?? {});
   }
-  return { name: entry?.name ?? id, models };
+  return { name: entry?.name ?? id, models, ...(providerApi ? { api: providerApi } : {}) };
 }
 
 function isPluginInstance(value: unknown): value is OpenCodePlugin {
@@ -385,7 +388,7 @@ export async function loadPluginDir(opts: LoadOptions): Promise<LoadResultWithSi
         continue;
       }
 
-      const { name: providerName, models } = await describePlugin(inst);
+      const { name: providerName, models, api: providerApi } = await describePlugin(inst);
       const loaded: LoadedPlugin = {
         file,
         exportName: name,
@@ -393,7 +396,7 @@ export async function loadPluginDir(opts: LoadOptions): Promise<LoadResultWithSi
         providerName,
         plugin: inst,
       };
-      providers[id] = { id, name: providerName, models, plugin: loaded };
+      providers[id] = { id, name: providerName, models, ...(providerApi ? { api: providerApi } : {}), plugin: loaded };
       plugins.push(loaded);
 
       // P8：采集该 provider 的 SITES 域名（供声明 + /admin/manifest）

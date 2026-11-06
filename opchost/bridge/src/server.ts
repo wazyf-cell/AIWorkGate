@@ -35,7 +35,7 @@ import { buildHealth } from "./health.ts";
 import { bridgeCapabilities, buildMeta } from "./meta.ts";
 import { buildModels } from "./models.ts";
 import type { LoadResultWithSites } from "./loader.ts";
-import type { BridgeContext, CredentialRecord, CredentialStore, JsonValue, OpenCodePlugin } from "./types.ts";
+import type { BridgeContext, CredentialRecord, CredentialStore, JsonValue, OpenCodePlugin, PluginModelMap } from "./types.ts";
 import { BRIDGE_NAME, errorBody } from "./types.ts";
 
 const CHAT_PATH = "/v1/chat/completions";
@@ -75,7 +75,7 @@ export function bridgeCredentialStore(
   adminStore: AdminCredentialStore,
   pluginId: string,
 ): CredentialStore {
-  const auth = chatAuthStore(adminStore);
+  const auth = chatAuthStore(adminStore, pluginId);
   const find = (provider: string): AdminCredential | undefined =>
     adminStore.list().find((c) => c.accountId === provider);
 
@@ -144,12 +144,42 @@ function wrapLoaderFetch(
   } as unknown as PluginHooks;
 }
 
+/** 模型自带 api.url（workbuddy 形状）：loader 空 baseURL 时用它做上游地址。 */
+/**
+ * chat 泳道的上游基址解析（loader 返回空 baseURL 时用，workbuddy 形状）：
+ *   1. 模型条目自带 api.url（modelOf 形状，登录后的动态列表）；
+ *   2. provider 级 api（config 钩子写的 chat 基址，如 <endpoint>/v2——
+ *      无凭据的静态表没有 per-model URL，OpenCode 自己也这么取）；
+ *   3. 都没有 → undefined（上游报 501 no_upstream_url）。
+ * Messages(Anthropic) 形状的模型（provider.npm = @ai-sdk/anthropic）明确不兜底：
+ * OpenAI chat 泳道发过去对不上协议，宁可 501 也不打错地方。
+ */
+function modelApiUrlOf(
+  providers: Record<string, { models?: PluginModelMap; api?: string }>,
+  providerId: string,
+  modelId: string,
+): string | undefined {
+  const rec = providers[providerId];
+  const entry = rec?.models?.[modelId];
+  if (entry) {
+    if (typeof entry.api === "string" && entry.api.trim()) return entry.api.trim();
+    if (entry.api && typeof entry.api === "object") {
+      const url = (entry.api as { url?: unknown }).url;
+      if (typeof url === "string" && url.trim()) return url.trim();
+    }
+    const pnpm = (entry as { provider?: { npm?: unknown } }).provider?.npm;
+    if (typeof pnpm === "string" && /anthropic/i.test(pnpm)) return undefined;
+  }
+  const providerApi = typeof rec?.api === "string" ? rec.api.trim() : "";
+  return providerApi || undefined;
+}
+
 function buildChatDeps(
   ctx: BridgeContext,
   adminStore: AdminCredentialStore,
   egressGuard?: EgressGuard,
 ): ChatDeps {
-  const auth = chatAuthStore(adminStore);
+  const auth = chatAuthStore(adminStore, ctx.config.pluginId);
   return {
     listProviderIds: () => Object.keys(ctx.registry.providers),
     getProvider: (providerId: string): ProviderBinding | undefined => {
@@ -162,6 +192,8 @@ function buildChatDeps(
         hooks: wrapLoaderFetch(rec.plugin.plugin, ctx.config.pluginId, rec.id, egressGuard),
       };
     },
+    getModelApiUrl: (providerId: string, modelId: string) =>
+      modelApiUrlOf(ctx.registry.providers, providerId, modelId),
     getAuth: (providerId: string) => auth.get(providerId) as AuthValue | null,
     saveAuth: (providerId: string, value: AuthValue) => {
       auth.set(providerId, value as unknown as Record<string, unknown>);

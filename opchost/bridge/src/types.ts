@@ -477,6 +477,9 @@ export interface LoadedPlugin {
 export interface ProviderRecord {
   id: string;
   name: string;
+  /** provider 级 chat 基址（config 钩子写的 api，如 workbuddy 的 <endpoint>/v2）。
+   * 模型条目没有自带 api.url 时，chat 泳道用它兜底。 */
+  api?: string;
   /** 静态模型表：插件内模型 id → 条目（未加前缀）。 */
   models: PluginModelMap;
   plugin: LoadedPlugin;

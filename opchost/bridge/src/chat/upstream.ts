@@ -6,7 +6,9 @@
 // 所以桥必须：
 //   1. 调 loader(getAuth) 拿选项；
 //   2. loader 给出 fetch 就用它的 fetch（不用全局 fetch）；
-//   3. baseURL 缺失 → 判定「需登录」（loader 无凭据时返回 {}）。
+//   3. baseURL 缺失分两种：无自定义 fetch → 无凭据，判「需登录」（loader 无凭据
+//      时返回 {}）；有自定义 fetch → workbuddy 形状（真包 L3753-3762 刻意返回
+//      空 baseURL），上游地址改用模型自带的 api.url。
 //
 // 宿主契约：非 2xx 即失败；流式原样透传；90s 头超时。
 
@@ -53,9 +55,16 @@ export function joinURL(baseURL: string, path: string): string {
 }
 
 /**
- * 解析 loader 选项；无 baseURL 视为无凭据 → 401 需登录。
+ * 解析 loader 选项；无凭据 → 401 需登录。
  * loader 可能抛 Expired 类错误（trae 的 `Expired` 会从 fresh/getAuth 冒出来），
  * 一并归为需登录。
+ *
+ * 空 baseURL 有两种形状，不能一概判「需登录」：
+ *   - 无凭据（trae L3642 `if (!a0) return {}`）：没有自定义 fetch → 需登录；
+ *   - workbuddy（真包 L3753-3762）：有凭据时刻意返回 `baseURL: ""`，上游地址由
+ *     模型自带的 api.url 决定（注释原文 "no baseURL: a model's own api.url says
+ *     where it is served"），其自定义 fetch 会原样请求传入的 URL → 合法，
+ *     上游地址在 buildUpstreamRequest 用 deps.getModelApiUrl 解析。
  */
 export async function resolveLoaderOptions(
   binding: ProviderBinding,
@@ -83,12 +92,15 @@ export async function resolveLoaderOptions(
     });
   }
   const baseURL = typeof options.baseURL === "string" ? options.baseURL.trim() : "";
-  if (!baseURL) {
-    // loader 拿不到凭据时（如 trae L3642 `if (!a0) return {}`）返回空对象 → 需登录
-    throw needsLoginError(binding.providerId);
-  }
   const apiKey = typeof options.apiKey === "string" ? options.apiKey : "";
   const hasOwnFetch = typeof options.fetch === "function";
+  if (!baseURL) {
+    // 没有自定义 fetch 的空 baseURL 才是「无凭据」（loader 拿不到凭据时返回空对象）
+    if (!hasOwnFetch) {
+      throw needsLoginError(binding.providerId);
+    }
+    return options;
+  }
   // 有自定义 fetch（协议转换）时 apiKey 可能只是占位符；没有 fetch 且没有 key 视为凭据不全
   if (!hasOwnFetch && !apiKey) {
     throw needsLoginError(binding.providerId, "loader 返回了 baseURL 但没有凭据 key");
@@ -96,24 +108,47 @@ export async function resolveLoaderOptions(
   return options;
 }
 
-/** 构造上游请求：model 换成去前缀的真实名；其余字段走白名单。 */
+/** 构造上游请求：model 换成去前缀的真实名；其余字段走白名单。
+ *
+ * 上游地址：优先 loader 的 baseURL；为空时（workbuddy 形状）用模型自带
+ * 的 api.url（deps.getModelApiUrl 解析后传入）。两者都没有 → 501。
+ */
 export function buildUpstreamRequest(
   route: ResolvedRoute,
   options: LoaderOptions,
   req: ChatRequest,
   stream: boolean,
+  modelApiUrl?: string,
 ): { url: string; init: Record<string, unknown> } {
+  const baseURL = typeof options.baseURL === "string" ? options.baseURL.trim() : "";
+  const base = baseURL || (modelApiUrl ?? "").trim();
+  if (!base) {
+    throw new ChatError({
+      status: 501,
+      message:
+        `模型「${route.modelId}」没有可用的上游地址：loader 未返回 baseURL，` +
+        `模型配置里也没有可用的 api.url（若该模型走 Anthropic Messages 协议，` +
+        `桥的 chat 泳道暂不支持）。`,
+      code: "no_upstream_url",
+    });
+  }
+  // workbuddy 形状（空 baseURL、地址取模型/provider 配置）：上游实测只收流式
+  // 请求（11101 Non-stream chat request is currently not supported）。客户端要
+  // 非流式时向上游强制 stream:true，回流 SSE 由 serveNonStream 聚合回 JSON。
+  const usedModelUrl = !baseURL;
+  const upstreamStream = stream || usedModelUrl;
+
   const body: Record<string, unknown> = {};
   for (const key of Object.keys(req.raw)) {
     if (FORWARD_KEYS.has(key) && req.raw[key] !== undefined) body[key] = req.raw[key];
   }
   body.model = route.modelId;
-  body.stream = stream;
+  body.stream = upstreamStream;
   if (req.temperature !== undefined) body.temperature = req.temperature;
 
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    accept: stream ? "text/event-stream" : "application/json",
+    accept: upstreamStream ? "text/event-stream" : "application/json",
   };
   if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
   for (const [k, v] of Object.entries(options.headers ?? {})) {
@@ -121,7 +156,7 @@ export function buildUpstreamRequest(
   }
 
   return {
-    url: joinURL(options.baseURL as string, "/chat/completions"),
+    url: joinURL(base, "/chat/completions"),
     init: { method: "POST", headers, body: JSON.stringify(body) },
   };
 }
@@ -136,8 +171,9 @@ export async function callUpstream(
   req: ChatRequest,
   stream: boolean,
   config: { headerTimeoutMs: number; nonStreamTimeoutMs: number },
+  modelApiUrl?: string,
 ): Promise<Response> {
-  const { url, init } = buildUpstreamRequest(route, options, req, stream);
+  const { url, init } = buildUpstreamRequest(route, options, req, stream, modelApiUrl);
   const ac = new AbortController();
   const budget = stream ? config.headerTimeoutMs : config.nonStreamTimeoutMs;
   const timer = setTimeout(() => ac.abort(), budget);

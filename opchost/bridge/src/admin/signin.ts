@@ -79,18 +79,37 @@ export function createSigninManager(deps: AdminDeps) {
     }
   }
 
-  /** 完成一次登录：写凭据（脱敏回显），关闭会话。 */
+  /** 完成一次登录：写凭据（脱敏回显），关闭会话。
+   *
+   * 凭据落两份键位（同一 secret，密文各自落盘）：
+   *   - accountId = 插件返回的账号名：/accounts 的第二段枚举展示真实账号；
+   *   - accountId = providerId：chat 的 getAuth、/accounts 的 provider 行都按
+   *     providerId 读写（wiring.ts chatAuthStore / accounts.ts accountRefsFor）。
+   * 真包 workbuddy/trae 的 success() 返回的都是人类账号名，不落 provider 键位
+   * 的话登录成功后 chat 依旧读不到新凭据。
+   */
   async function settle(s: Session, result: PluginSigninResult, params?: Record<string, string>) {
     if (s.state !== 'pending') return
     if (result?.type === 'success') {
       const accountId = String(result.accountId ?? result.uid ?? `${s.providerId}-default`)
+      const expiresAt = typeof result.expires === 'number' && result.expires > 0 ? Math.floor(result.expires / 1000) : undefined
+      const refreshable = Boolean(result.refresh)
       deps.credentials.put({
         pluginId: s.pluginId,
         accountId,
         secret: { ...result },
-        expiresAt: typeof result.expires === 'number' && result.expires > 0 ? Math.floor(result.expires / 1000) : undefined,
-        refreshable: Boolean(result.refresh),
+        expiresAt,
+        refreshable,
       })
+      if (accountId !== s.providerId) {
+        deps.credentials.put({
+          pluginId: s.pluginId,
+          accountId: s.providerId,
+          secret: { ...result },
+          expiresAt,
+          refreshable,
+        })
+      }
       s.accountId = accountId
       s.expiresAt = typeof result.expires === 'number' ? Math.floor(result.expires / 1000) : undefined
       closeSession(s, 'success')

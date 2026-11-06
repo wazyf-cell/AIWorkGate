@@ -368,6 +368,14 @@ let pluginModeSid = ''
     logged.credential.present === true && logged.status === 'ok' && logged.credential.refreshable === true,
     `cred=${JSON.stringify(logged.credential)} status=${logged.status}`,
   )
+  // 2026-11-07 修复回归：signin settle 必须同时落 provider 键位（accountId=providerId），
+  // 否则 chat 的 getAuth 与 /accounts 的 provider 行永远读不到登录凭据。
+  const providerRow = list.find((a) => a.id === 'mock')
+  check(
+    'signin_writes_provider_level_credential',
+    !!providerRow && providerRow.credential.present === true && providerRow.status === 'ok',
+    `cred=${JSON.stringify(providerRow?.credential)} status=${providerRow?.status}`,
+  )
   // P9-1: windows[] are passed through verbatim (unknown fields included).
   const q = logged.quota ?? {}
   check(

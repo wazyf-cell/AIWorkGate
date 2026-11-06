@@ -98,6 +98,9 @@ async function serve(
   // 凭据探测：loader 拿不到凭据 → 401 需登录（本卡验收 ⑤）
   const options = await resolveLoaderOptions(binding, deps);
 
+  // workbuddy 形状：loader 返回空 baseURL，上游地址取模型自带的 api.url
+  const modelApiUrl = deps.getModelApiUrl?.(route.providerId, route.modelId);
+
   const cfg = deps.config ?? {};
   const headerTimeoutMs = cfg.headerTimeoutMs ?? DEFAULT_HEADER_TIMEOUT_MS;
   const nonStreamTimeoutMs = cfg.nonStreamTimeoutMs ?? DEFAULT_NONSTREAM_TIMEOUT_MS;
@@ -105,7 +108,7 @@ async function serve(
   const upstream = await callUpstream(route, options, request, request.stream, {
     headerTimeoutMs,
     nonStreamTimeoutMs,
-  });
+  }, modelApiUrl);
 
   if (request.stream) {
     const writer = new SSEWriter(res);

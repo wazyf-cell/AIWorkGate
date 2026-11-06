@@ -102,6 +102,7 @@ async function loadPluginFile(
   };
 
   const bindings: ProviderBinding[] = [];
+  const providerCfgById = new Map<string, Record<string, unknown>>();
   for (const [name, value] of Object.entries(mod)) {
     if (typeof value !== "function") continue;
     let hooks: Record<string, unknown>;
@@ -127,20 +128,39 @@ async function loadPluginFile(
         label: config.provider[providerId]?.name ?? providerId,
         hooks: hooks as unknown as ProviderBinding["hooks"],
       });
+      providerCfgById.set(providerId, (config.provider[providerId] ?? {}) as Record<string, unknown>);
       console.log(`[dev-server] 已加载 provider「${providerId}」（来自 ${name}）`);
     }
   }
-  return bindings;
+  return { bindings, providerCfgById };
+}
+
+/** 与 server.ts modelApiUrlOf 同口径：模型 api.url → provider 级 api。 */
+function modelApiUrlOf(providerCfg: Record<string, unknown> | undefined, modelId: string): string | undefined {
+  const models = providerCfg?.models as Record<string, { api?: unknown; provider?: { npm?: unknown } }> | undefined;
+  const entry = models?.[modelId];
+  if (entry) {
+    if (typeof entry.api === "string" && entry.api.trim()) return entry.api.trim();
+    if (entry.api && typeof entry.api === "object") {
+      const url = (entry.api as { url?: unknown }).url;
+      if (typeof url === "string" && url.trim()) return url.trim();
+    }
+    if (typeof entry.provider?.npm === "string" && /anthropic/i.test(entry.provider.npm)) return undefined;
+  }
+  const providerApi = typeof providerCfg?.api === "string" ? providerCfg.api.trim() : "";
+  return providerApi || undefined;
 }
 
 function buildDeps(
   bindings: ProviderBinding[],
+  providerCfgById: Map<string, Record<string, unknown>>,
   store: ReturnType<typeof fileAuthStore>,
 ): ChatDeps {
   const byId = new Map(bindings.map((b) => [b.providerId, b]));
   return {
     listProviderIds: () => bindings.map((b) => b.providerId),
     getProvider: (id) => byId.get(id),
+    getModelApiUrl: (providerId, modelId) => modelApiUrlOf(providerCfgById.get(providerId), modelId),
     getAuth: (id) => store.get(id),
     saveAuth: (id, auth) => store.set(id, auth),
     log: (level, message, meta) => {
@@ -163,12 +183,14 @@ async function main(): Promise<void> {
   console.log(`[dev-server] DATA_DIR=${dataDir} authFile=${store.path()}`);
 
   const bindings: ProviderBinding[] = [];
+  const providerCfgById = new Map<string, Record<string, unknown>>();
   for (const file of args.plugins) {
     const loaded = await loadPluginFile(file, (id, auth) => {
       console.log(`[dev-server] 插件回写凭据 provider=${id}（内容不打印）`);
       store.set(id, auth);
     });
-    bindings.push(...loaded);
+    bindings.push(...loaded.bindings);
+    for (const [k, v] of loaded.providerCfgById) providerCfgById.set(k, v);
   }
   if (bindings.length === 0) {
     console.error("[dev-server] 没有任何插件 provider 被加载");
@@ -187,7 +209,7 @@ async function main(): Promise<void> {
     console.log(`[dev-server] 已为 provider「${id}」注入开发用假凭据（非真实 token）`);
   }
 
-  const deps = buildDeps(bindings, store);
+  const deps = buildDeps(bindings, providerCfgById, store);
   const chat = createChatHandler({ deps });
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {

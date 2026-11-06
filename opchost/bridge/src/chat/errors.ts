@@ -61,8 +61,9 @@ export function needsLoginError(providerId: string, detail?: string): ChatError 
       `请先在管理面板完成「登录」：POST /admin/signin/start 拿到登录 URL，` +
       `在本机浏览器完成授权后凭据会写入桥的 DATA_DIR，随后重试本请求。`,
     hint:
-      `登录入口：GET /accounts（确认账号状态）→ POST /accounts/login（{"method":"oauth"}）` +
-      `→ 浏览器完成回调。凭据缺失时 /v1/models 仍可列出模型，只有 chat 需要登录态。`,
+      `登录入口：GET /accounts（确认账号状态）→ POST /admin/signin/start` +
+      `（{"plugin_id":"…","provider":"…"}）→ 在本机浏览器打开返回的 url 完成授权。` +
+      `凭据缺失时 /v1/models 仍可列出模型，只有 chat 需要登录态。`,
   });
 }
 
@@ -115,7 +116,7 @@ export function upstreamError(
       code: "needs_sign_in",
       needsLogin: true,
       message: text || `插件「${providerId}」的上游判定登录态已失效（HTTP ${status}），请重新登录。`,
-      hint: "登录入口：POST /accounts/login 或 POST /admin/signin/start。",
+      hint: "登录入口：POST /admin/signin/start（管理面，本机回环可用）。",
     });
   }
   const mapped = status >= 500 ? 502 : status;
