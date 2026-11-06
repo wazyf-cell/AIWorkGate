@@ -89,6 +89,9 @@ func isInferencePath(path string) bool {
 	case "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages":
 		return true
 	}
+	if isGeminiPath(path) {
+		return true
+	}
 	return isPassThroughPath(path)
 }
 

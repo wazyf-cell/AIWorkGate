@@ -543,7 +543,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	path := r.URL.Path
-	if path != "/v1" && !strings.HasPrefix(path, "/v1/") {
+	if path != "/v1" && !strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/v1beta/") {
 		g.fail(w, rec, http.StatusNotFound, "not_found_error", "not_found",
 			"unknown path "+path)
 		return
@@ -662,6 +662,7 @@ var (
 	corsAllowHeaders = []string{
 		"Authorization", "Content-Type", "Accept", "X-API-Key", "api-key",
 		"X-Client-Key", "X-Conversation-Id", "X-Aiworkgate-Account", "X-Aiworkgate-Request-Id",
+		"X-Goog-Api-Key",
 	}
 	corsExposeHeaders = []string{
 		sourceHeader, staleHeader, "X-Aiworkgate-Account", "X-Aiworkgate-Credits",
@@ -721,6 +722,9 @@ func clientToken(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get("x-api-key")); v != "" {
 		return v
 	}
+	if v := strings.TrimSpace(r.Header.Get("x-goog-api-key")); v != "" {
+		return v
+	}
 	if v := strings.TrimSpace(r.Header.Get("api-key")); v != "" {
 		return v
 	}
@@ -759,6 +763,14 @@ func (g *Gateway) route(w http.ResponseWriter, r *http.Request, rec *reqRecord) 
 		g.handleMessages(w, r, rec)
 	case r.Method == http.MethodPost && isPassThroughPath(path):
 		g.handlePassThrough(w, r, rec)
+	case r.Method == http.MethodPost && isGeminiPath(path):
+		model, stream, _ := geminiAction(path)
+		if strings.TrimSpace(model) == "" {
+			g.fail(w, rec, http.StatusBadRequest, "invalid_request_error", "invalid_model",
+				"Gemini 路径缺少模型名")
+			return
+		}
+		g.handleGeminiGenerate(w, r, rec, model, stream)
 	default:
 		g.fail(w, rec, http.StatusNotFound, "not_found_error", "not_found",
 			"unknown endpoint "+path)
