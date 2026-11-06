@@ -813,3 +813,48 @@ export const promptComposition = {
     { key: 'other', tokens: 40, share: 0.0009 },
   ],
 }
+
+// P11 routing groups: one plain pattern group with weights and feature rules,
+// one intent group that hands routing to the other, so both editor halves and
+// the member preview render.
+export const routingGroups = {
+  universe: [
+    'officeace/vendor/model-one',
+    'trae/trae-cn/gpt-4o',
+    'trae/trae-global/gpt-4o',
+  ],
+  decision_upstreams: [{ id: 'jev', protocol: 'systemone', model_id: 'NeoHorse-Jev-4B' }],
+  groups: [
+    {
+      id: 'smart',
+      display: '智能池',
+      match: ['trae/*', 'officeace/*'],
+      disabled: false,
+      weights: { 'trae/trae-cn/gpt-4o': 3, 'officeace/vendor/model-one': 1 },
+      rules: [
+        {
+          name: 'large-context',
+          match: ['officeace/vendor/model-one'],
+          when: { min_tokens: 100000 },
+        },
+      ],
+      members: ['officeace/vendor/model-one', 'trae/trae-cn/gpt-4o', 'trae/trae-global/gpt-4o'],
+      rule_members: [{ name: 'large-context', members: ['officeace/vendor/model-one'] }],
+    },
+    {
+      id: 'router',
+      display: '意图分流',
+      match: ['*'],
+      disabled: false,
+      intent: {
+        enabled: true,
+        upstream: 'jev',
+        labels: ['simple', 'hard'],
+        route: { simple: 'smart', hard: 'smart' },
+        default: 'smart',
+        probe_chars: 2000,
+      },
+      members: ['officeace/vendor/model-one', 'trae/trae-cn/gpt-4o', 'trae/trae-global/gpt-4o'],
+    },
+  ],
+}

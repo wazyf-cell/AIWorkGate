@@ -178,6 +178,18 @@ type Binding struct {
 	Rules []BindingRule
 	// Weights ("plugin/model" → share) drives smooth weighted rotation (P11).
 	Weights map[string]int
+	// Intent, when set, lets a decision upstream pick another group for this
+	// request before account selection (P11).
+	Intent *IntentBinding
+}
+
+// IntentBinding is the scheduler-side form of a config routing intent.
+type IntentBinding struct {
+	Upstream   string
+	Labels     []string
+	Route      map[string]string
+	Default    string
+	ProbeChars int
 }
 
 // BindingRule is one feature-gated member set of a group.
@@ -189,8 +201,11 @@ type BindingRule struct {
 
 // BindingWhen is a conjunction of request features; zero values are ignored.
 type BindingWhen struct {
-	MinChars  int
-	MaxChars  int
+	MinChars int
+	MaxChars int
+	// MinTokens/MaxTokens bound the estimated prompt tokens; zero ignores.
+	MinTokens int
+	MaxTokens int
 	Image     bool
 	Thinking  bool
 	Agent     string
@@ -203,6 +218,12 @@ func (w BindingWhen) matches(req Request, now time.Time) bool {
 		return false
 	}
 	if w.MaxChars > 0 && req.PromptChars > w.MaxChars {
+		return false
+	}
+	if w.MinTokens > 0 && req.EstimatedTokens < w.MinTokens {
+		return false
+	}
+	if w.MaxTokens > 0 && req.EstimatedTokens > w.MaxTokens {
 		return false
 	}
 	if w.Image && !req.HasImage {
@@ -371,10 +392,11 @@ type Request struct {
 	Exclude        map[AccountKey]bool
 	Hedge          bool
 	// P11 group-rule features, computed by the gateway from the request body.
-	PromptChars int
-	HasImage    bool
-	Thinking    bool
-	Agent       string
+	PromptChars     int
+	EstimatedTokens int
+	HasImage        bool
+	Thinking        bool
+	Agent           string
 }
 
 // Decision is the answer of Pick.

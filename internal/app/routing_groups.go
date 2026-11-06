@@ -49,10 +49,20 @@ func resolveRoutingGroups(groups []config.RoutingGroupConfig, universe []string)
 				Items: ruleItems,
 				When: scheduler.BindingWhen{
 					MinChars: rule.When.MinChars, MaxChars: rule.When.MaxChars,
+					MinTokens: rule.When.MinTokens, MaxTokens: rule.When.MaxTokens,
 					Image: rule.When.Image, Thinking: rule.When.Thinking, Agent: rule.When.Agent,
 					StartHour: rule.When.StartHour, EndHour: rule.When.EndHour,
 				},
 			})
+		}
+		if intent := group.Intent; intent != nil {
+			binding.Intent = &scheduler.IntentBinding{
+				Upstream:   intent.Upstream,
+				Labels:     append([]string(nil), intent.Labels...),
+				Route:      intent.Route,
+				Default:    intent.Default,
+				ProbeChars: intent.ProbeChars,
+			}
 		}
 		out[group.ID] = binding
 	}

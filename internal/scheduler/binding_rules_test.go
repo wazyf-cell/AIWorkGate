@@ -60,3 +60,35 @@ func TestBindingRulesImageAndAgent(t *testing.T) {
 		t.Fatalf("no image = %s, want pa", d.PluginID)
 	}
 }
+
+func TestBindingRulesTokenBounds(t *testing.T) {
+	snap := snapOf(pool("pa", account("a")), pool("pb", account("b")))
+	snap.Bindings["grp"] = Binding{
+		Logical: "grp",
+		Items:   []Source{{PluginID: "pa", Model: "m1"}},
+		Rules: []BindingRule{{
+			Name:  "large-context",
+			When:  BindingWhen{MinTokens: 1000, MaxTokens: 5000},
+			Items: []Source{{PluginID: "pb", Model: "m1"}},
+		}},
+	}
+	s := New(Options{Now: func() time.Time { return time.Unix(testBase, 0) }})
+
+	for _, tc := range []struct {
+		tokens int
+		want   string
+	}{
+		{999, "pa"},
+		{1000, "pb"},
+		{5000, "pb"},
+		{5001, "pa"},
+	} {
+		decision, err := s.Pick(context.Background(), snap, Request{Model: "grp", EstimatedTokens: tc.tokens})
+		if err != nil {
+			t.Fatalf("tokens=%d: %v", tc.tokens, err)
+		}
+		if decision.PluginID != tc.want {
+			t.Fatalf("tokens=%d chose %s, want %s", tc.tokens, decision.PluginID, tc.want)
+		}
+	}
+}

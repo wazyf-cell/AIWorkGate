@@ -302,6 +302,12 @@ type Options struct {
 	// body. model is optional and only resolves the context window.
 	PromptAnalyze func(model string, body json.RawMessage) (any, error)
 
+	// RoutingGroups reads the config-declared P11 groups with resolved members;
+	// SaveRoutingGroups replaces them after validation. The payload of the
+	// latter is the JSON array (not the enclosing object).
+	RoutingGroups     func() (any, error)
+	SaveRoutingGroups func(groups json.RawMessage) (any, error)
+
 	// S3 resource scheduling per plugin (§5.5).
 	PoolDetail          func(pluginID string) (any, error)
 	SavePoolSettings    func(pluginID string, update PoolSettingsUpdate) (any, error)
@@ -441,6 +447,7 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/scheduler/explain", s.handleSchedulerExplain)
 	mux.HandleFunc("/api/scheduler/sticky", s.handleSchedulerSticky)
 	mux.HandleFunc("/api/prompt/analyze", s.handlePromptAnalyze)
+	mux.HandleFunc("/api/routing-groups", s.handleRoutingGroups)
 	mux.HandleFunc("/api/pools/{plugin}", s.handlePool)
 	mux.HandleFunc("/api/pools/{plugin}/members", s.handlePoolMembers)
 	mux.HandleFunc("/api/pools/{plugin}/sync", s.handlePoolSync)

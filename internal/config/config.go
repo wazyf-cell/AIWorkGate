@@ -151,6 +151,27 @@ type RoutingGroupConfig struct {
 	Weights map[string]int `json:"weights,omitempty"`
 	// Disabled keeps the entry in config for later use without publishing it.
 	Disabled bool `json:"disabled"`
+	// Intent optionally asks a structured-decision upstream to classify the
+	// current turn and routes to another group (P11; JEV when configured).
+	Intent *RoutingIntentConfig `json:"intent,omitempty"`
+}
+
+// RoutingIntentConfig is the P11 intent rule: one choice question to a
+// decision upstream, whose label selects another routing group. A timeout
+// (3s), an upstream error or an unparsable answer falls back to Default.
+type RoutingIntentConfig struct {
+	Enabled bool `json:"enabled"`
+	// Upstream names a decision.upstreams entry; empty uses the first one.
+	Upstream string `json:"upstream,omitempty"`
+	// Labels are the choice options in question order.
+	Labels []string `json:"labels"`
+	// Route maps a label to a routing group id.
+	Route map[string]string `json:"route"`
+	// Default is the group used when classification fails; empty stays on this
+	// group.
+	Default string `json:"default,omitempty"`
+	// ProbeChars truncates the user turn sent to the classifier (default 2000).
+	ProbeChars int `json:"probe_chars,omitempty"`
 }
 
 // RoutingRuleConfig selects a different member set for one request shape.
@@ -162,11 +183,15 @@ type RoutingRuleConfig struct {
 
 // RoutingWhen is a conjunction of request features; zero values are ignored.
 type RoutingWhen struct {
-	MinChars int    `json:"min_chars,omitempty"`
-	MaxChars int    `json:"max_chars,omitempty"`
-	Image    bool   `json:"image,omitempty"`
-	Thinking bool   `json:"thinking,omitempty"`
-	Agent    string `json:"agent,omitempty"`
+	MinChars int `json:"min_chars,omitempty"`
+	MaxChars int `json:"max_chars,omitempty"`
+	// MinTokens/MaxTokens bound the estimated prompt tokens (same estimator as
+	// the prompt-composition view); zero ignores the bound.
+	MinTokens int    `json:"min_tokens,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+	Image     bool   `json:"image,omitempty"`
+	Thinking  bool   `json:"thinking,omitempty"`
+	Agent     string `json:"agent,omitempty"`
 	// StartHour/EndHour bound the local hour, [start, end); a window that wraps
 	// midnight is allowed (e.g. 22..6).
 	StartHour *int `json:"start_hour,omitempty"`
@@ -767,6 +792,7 @@ func normalizeRoutingGroups(in []RoutingGroupConfig) []RoutingGroupConfig {
 		group.Match = match
 		group.Rules = normalizeRoutingRules(group.Rules)
 		group.Weights = normalizeRoutingWeights(group.Weights)
+		group.Intent = normalizeRoutingIntent(group.Intent)
 		seen[group.ID] = true
 		out = append(out, group)
 	}
@@ -834,6 +860,12 @@ func normalizeRoutingRules(in []RoutingRuleConfig) []RoutingRuleConfig {
 		if rule.When.MaxChars < 0 {
 			rule.When.MaxChars = 0
 		}
+		if rule.When.MinTokens < 0 {
+			rule.When.MinTokens = 0
+		}
+		if rule.When.MaxTokens < 0 {
+			rule.When.MaxTokens = 0
+		}
 		if rule.When.StartHour != nil && (*rule.When.StartHour < 0 || *rule.When.StartHour > 23) {
 			rule.When.StartHour = nil
 		}
@@ -846,6 +878,51 @@ func normalizeRoutingRules(in []RoutingRuleConfig) []RoutingRuleConfig {
 		return nil
 	}
 	return out
+}
+
+// normalizeRoutingIntent trims labels/routes and drops an intent that cannot
+// classify anything: disabled, no labels, or no route whose label is offered.
+func normalizeRoutingIntent(in *RoutingIntentConfig) *RoutingIntentConfig {
+	if in == nil || !in.Enabled {
+		return nil
+	}
+	intent := *in
+	intent.Upstream = strings.TrimSpace(intent.Upstream)
+	intent.Default = strings.TrimSpace(intent.Default)
+	labels := make([]string, 0, len(intent.Labels))
+	seen := map[string]bool{}
+	for _, label := range intent.Labels {
+		label = strings.TrimSpace(label)
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
+	route := make(map[string]string, len(intent.Route))
+	for label, target := range intent.Route {
+		label = strings.TrimSpace(label)
+		target = strings.TrimSpace(target)
+		if label == "" || target == "" || !seen[label] {
+			continue
+		}
+		route[label] = target
+	}
+	if len(labels) == 0 || len(route) == 0 {
+		return nil
+	}
+	intent.Labels = labels
+	intent.Route = route
+	if intent.ProbeChars <= 0 {
+		intent.ProbeChars = 2000
+	}
+	if intent.ProbeChars < 100 {
+		intent.ProbeChars = 100
+	}
+	if intent.ProbeChars > 20000 {
+		intent.ProbeChars = 20000
+	}
+	return &intent
 }
 
 // normalizeDecisionUpstreams trims entries, defaults the protocol and drops

@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -239,6 +240,12 @@ type Gateway struct {
 
 	pMu    sync.Mutex
 	pCache map[string]pluginModels
+
+	// P11 intent classification: one bounded call per probe fingerprint.
+	intentTimeout time.Duration
+	intentTTL     time.Duration
+	intentMu      sync.Mutex
+	intentCache   map[string]intentCacheEntry
 }
 
 type pluginModels struct {
@@ -335,6 +342,9 @@ func newGateway(opts Options) *Gateway {
 		decisionUpstreams: opts.DecisionUpstreams,
 		priceFor:          opts.PriceFor,
 		pCache:            make(map[string]pluginModels),
+		intentTimeout:     defaultIntentTimeout,
+		intentTTL:         defaultIntentTTL,
+		intentCache:       make(map[string]intentCacheEntry),
 	}
 	g.debugBody.Store(opts.DebugBody)
 	g.SetCorsOrigins(opts.CorsAllowOrigins)
@@ -382,6 +392,7 @@ type reqRecord struct {
 	start          time.Time
 	source         string
 	model          string
+	routeModel     string
 	modelRequested string
 	modelUpstream  string
 	modelServed    string
@@ -392,6 +403,7 @@ type reqRecord struct {
 	keyName        string
 	stream         bool
 	promptChars    int
+	estTokens      int
 	hasImage       bool
 	thinking       bool
 	agent          string
@@ -899,11 +911,26 @@ func readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, int) {
 	return body, 0
 }
 
+// estimatePromptTokens is the P11 rule input: the same char-weighted estimate
+// (ASCII 0.3, non-ASCII 1) applied to the message/system/tool JSON that
+// dominates the prompt. It is deliberately cheaper than a full parse.
+func estimatePromptTokens(parts ...json.RawMessage) int {
+	total := 0.0
+	for _, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+		total += estimateTextTokens(string(part))
+	}
+	return int(math.Ceil(total))
+}
+
 type requestMeta struct {
 	model       string
 	stream      bool
 	valid       bool
 	promptChars int
+	estTokens   int
 	hasImage    bool
 	thinking    bool
 }
@@ -918,6 +945,8 @@ func parseRequestMeta(body []byte) requestMeta {
 		Model    json.RawMessage `json:"model"`
 		Stream   json.RawMessage `json:"stream"`
 		Messages json.RawMessage `json:"messages"`
+		System   json.RawMessage `json:"system"`
+		Tools    json.RawMessage `json:"tools"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
 		return requestMeta{}
@@ -925,6 +954,7 @@ func parseRequestMeta(body []byte) requestMeta {
 	meta := requestMeta{
 		valid:       true,
 		promptChars: len(probe.Messages),
+		estTokens:   estimatePromptTokens(probe.Messages, probe.System, probe.Tools),
 		hasImage:    bytes.Contains(body, []byte(`"image_url"`)) || bytes.Contains(body, []byte(`"inline_data"`)) || bytes.Contains(body, []byte(`"type":"image"`)),
 		thinking:    bytes.Contains(body, []byte(`"thinking"`)) || bytes.Contains(body, []byte(`"reasoning_effort"`)) || bytes.Contains(body, []byte(`"reasoning":`)),
 	}
@@ -1313,6 +1343,7 @@ func (g *Gateway) prepareRecord(rec *reqRecord, r *http.Request, body []byte, me
 	rec.modelRequested = meta.model
 	rec.stream = meta.stream
 	rec.promptChars = meta.promptChars
+	rec.estTokens = meta.estTokens
 	rec.hasImage = meta.hasImage
 	rec.thinking = meta.thinking
 	rec.agent = strings.TrimSpace(r.UserAgent() + " " + r.Header.Get("X-Agent"))

@@ -257,6 +257,22 @@ export const PAGES = [
     ],
   },
   { slug: 'scheduler', path: '/scheduler', title: '调度', ready: () => document.querySelectorAll('.main *').length > 40 },
+  { slug: 'groups', path: '/groups', title: '路由组', ready: () => document.querySelectorAll('.main *').length > 40 },
+  {
+    slug: 'groups-intent',
+    path: '/groups',
+    title: '路由组 · 意图规则',
+    ready: () => document.querySelectorAll('.rule-item').length > 1,
+    prepare: [
+      `(() => {
+        const target = [...document.querySelectorAll('.rule-item')].find((el) => el.textContent.includes('意图分流'));
+        if (!target) throw new Error('intent group missing');
+        target.click();
+      })()`,
+    ],
+    settled: () => !!document.querySelector('.group-route-row'),
+    variants: ['light', 'dark'],
+  },
   { slug: 'pools', path: '/pools', title: '资源', ready: () => document.querySelectorAll('.main *').length > 40 },
   // Pool detail carries the per-pool settings form, including model_sync_time.
   { slug: 'pool-detail', path: '/pools/officeace', title: '资源 · 详情设置', ready: () => document.querySelectorAll('.main *').length > 40, variants: ['light', 'dark'] },

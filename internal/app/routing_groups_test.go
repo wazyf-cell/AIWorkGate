@@ -128,3 +128,28 @@ func TestSnapshotExposesPricingForCheapMode(t *testing.T) {
 		t.Fatalf("price = %v, want (1+2)*0.5", got)
 	}
 }
+
+func TestResolveRoutingGroupsIntentAndTokens(t *testing.T) {
+	universe := []string{"pa/flash", "pb/pro"}
+	groups := []config.RoutingGroupConfig{
+		{ID: "router", Match: []string{"*"}, Intent: &config.RoutingIntentConfig{
+			Enabled: true, Upstream: "jev", Labels: []string{"simple", "hard"},
+			Route: map[string]string{"simple": "cheap", "hard": "router"}, Default: "cheap", ProbeChars: 1500,
+		}},
+		{ID: "cheap", Match: []string{"pa/*"}},
+		{ID: "rules", Match: []string{"*"}, Rules: []config.RoutingRuleConfig{{
+			Name: "large", Match: []string{"pb/*"},
+			When: config.RoutingWhen{MinTokens: 2000, MaxTokens: 9000},
+		}}},
+	}
+	out := resolveRoutingGroups(groups, universe)
+	intent := out["router"].Intent
+	if intent == nil || intent.Upstream != "jev" || intent.Route["hard"] != "router" ||
+		intent.Default != "cheap" || intent.ProbeChars != 1500 || len(intent.Labels) != 2 {
+		t.Fatalf("intent binding = %+v", intent)
+	}
+	when := out["rules"].Rules[0].When
+	if when.MinTokens != 2000 || when.MaxTokens != 9000 {
+		t.Fatalf("rule when = %+v", when)
+	}
+}

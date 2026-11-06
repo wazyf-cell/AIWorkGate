@@ -56,6 +56,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '资源调度', subtitle: '单插件的调度参数与资源视图' },
   },
   {
+    path: '/groups',
+    name: 'groups',
+    component: () => import('./views/Groups.vue'),
+    meta: { title: '路由组', subtitle: '模式分组、组规则、权重与意图规则' },
+  },
+  {
     path: '/rules',
     name: 'rules',
     component: () => import('./views/Rules.vue'),

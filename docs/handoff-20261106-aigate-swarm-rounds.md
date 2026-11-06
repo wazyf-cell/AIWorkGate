@@ -292,9 +292,10 @@ d81b7f3  D-31：sync the remaining api_logs scans and refresh the handoff snapsh
 efd1707  P9：cheap 池间按配置价排序
 ab189af  D-31：缓存写侧/reasoning/purpose 五列
 dd7a976  P13：导出粒度/拆段 + Prompt 组成分析
+（下一个提交） P11：组编辑器 + 意图规则框架
 ```
 
-远端：`wazyf-cell/AIWorkGate` 的 `main` 同步到 `dd7a976`；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。
+远端：`wazyf-cell/AIWorkGate` 的 `main` 在每批提交后按需推送；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。
 
 ### 12.2 阶段状态
 
@@ -304,7 +305,7 @@ dd7a976  P13：导出粒度/拆段 + Prompt 组成分析
 | P5 | D-40/41(部分)/P5-1 全项/P5-4/P5-5/P5-6 完成；Key 分享标记强制到期完成 |
 | P6 | Gemini 入站 + SystemOne 路由完成；真实 JEV key 未验；Gemini 工具调用未回译 |
 | P9 | 策略/告警/面板/告警订阅 + `cheap`（配置价）完成 |
-| P11 | 模式组 + 规则表 + 权重完成；意图规则/管理页编辑器未做 |
+| P11 | 模式组 + 规则表（含 Token 条件）+ 权重 + 意图规则框架 + `/groups` 编辑器完成；真实 JEV 判定未验收 |
 | P13 | D-31 十列 + 按 served 统计 + 导出粒度/拆段 + Prompt 六段分析完成；47 列清单文档待冻结 |
 | P14 | `/me` 完成（限制卡/用量/按模型/最近记录，无正文） |
 | P7 | 构建/部署/回滚脚本与演练手册完成；**服务器实跑未做** |
@@ -314,12 +315,12 @@ dd7a976  P13：导出粒度/拆段 + Prompt 组成分析
 
 - `go build ./...` exit 0。
 - `go test ./internal/...`：23 包通过；app/logging 偶发 Windows `TempDir RemoveAll: directory is not empty`（隔离重跑通过，非断言失败）。
-- `npm run build`：typecheck + 样式债 0 + 视觉 **58/58**（新增 `scheduler-prompt` 交互基线）。
+- `npm run build`：typecheck + 样式债 0 + 视觉 **63/63**（新增 `groups` / `groups-intent`；导航加「路由组」后全量重录）。
 - Linux 交叉编译：amd64/arm64 通过（ELF），部署脚本 dry-run 通过。
 
 ### 12.4 接手首要事项
 
 1. 服务器到位后按 `docs/p7/00-部署演练.md` 实跑，重点验收 `public_hosts` / `trusted_proxies` / 回滚。
-2. 真实 trae/workbuddy 登录后补 P1/P2 验收；真实 JEV key 补 P6 三例。
-3. 下一步：P11 组编辑器（config.json 读写 + 管理 API/UI）与意图规则框架（JEV 假上游、3s 超时、失败回退默认组、指纹缓存 10 分钟）；P13 仅剩 47 列清单文档。
+2. 真实 trae/workbuddy 登录后补 P1/P2 验收；真实 JEV key 补 P6 三例与 P11 意图规则一例。
+3. 下一步：真实登录验收（临时 Key + trae 首个模型，非流式 1 次 + 流式 1 次）→ P3 退役；P13 仅剩 47 列清单文档。
 4. 不要启用蜂群：本 agent 无多子代理能力。

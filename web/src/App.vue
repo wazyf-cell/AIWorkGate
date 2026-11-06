@@ -36,6 +36,7 @@ const nav = [
   { to: '/checkin', label: '签到', icon: 'checkin' },
   { to: '/usage', label: '用量', icon: 'usage' },
   { to: '/scheduler', label: '调度', icon: 'scheduler' },
+  { to: '/groups', label: '路由组', icon: 'scheduler' },
   { to: '/pools', label: '资源', icon: 'pools' },
   { to: '/rules', label: '规则', icon: 'rules' },
   { to: '/proxies', label: '代理', icon: 'proxies' },

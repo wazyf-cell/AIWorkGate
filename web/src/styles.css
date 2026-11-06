@@ -4433,3 +4433,33 @@ html[data-motion='reduced'] .page > * {
   display: block;
   height: 100%;
 }
+
+/* Routing-group editor (P11): compact multi-line patterns and rule blocks. */
+.group-textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.group-textarea-sm {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.group-rule {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.group-when-row {
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.group-route-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}

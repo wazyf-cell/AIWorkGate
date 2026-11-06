@@ -820,3 +820,47 @@ func TestNormalizePricing(t *testing.T) {
 		t.Fatalf("negative = %+v", p)
 	}
 }
+
+func TestNormalizeRoutingTokensAndIntent(t *testing.T) {
+	got := normalizeRoutingGroups([]RoutingGroupConfig{
+		{
+			ID: "g", Match: []string{"*"},
+			Rules: []RoutingRuleConfig{{Match: []string{"*"}, When: RoutingWhen{MinTokens: -5, MaxTokens: 4000}}},
+			Intent: &RoutingIntentConfig{
+				Enabled: true,
+				Labels:  []string{" hard ", "simple", "hard", ""},
+				Route:   map[string]string{"hard": " strong ", "simple": "cheap", "missing": "x"},
+			},
+		},
+		{
+			ID: "no-route", Match: []string{"*"},
+			Intent: &RoutingIntentConfig{Enabled: true, Labels: []string{"a"}},
+		},
+		{
+			ID: "off", Match: []string{"*"},
+			Intent: &RoutingIntentConfig{Enabled: false, Labels: []string{"a"}, Route: map[string]string{"a": "b"}},
+		},
+	})
+	if len(got) != 3 {
+		t.Fatalf("groups = %+v, want 3 (only the intent is dropped)", got)
+	}
+	if rule := got[0].Rules[0]; rule.When.MinTokens != 0 || rule.When.MaxTokens != 4000 {
+		t.Fatalf("rule when = %+v", rule.When)
+	}
+	intent := got[0].Intent
+	if intent == nil {
+		t.Fatal("intent dropped")
+	}
+	if len(intent.Labels) != 2 || intent.Labels[0] != "hard" || intent.Labels[1] != "simple" {
+		t.Fatalf("labels = %v", intent.Labels)
+	}
+	if intent.Route["hard"] != "strong" || intent.Route["simple"] != "cheap" || len(intent.Route) != 2 {
+		t.Fatalf("route = %v", intent.Route)
+	}
+	if intent.ProbeChars != 2000 {
+		t.Fatalf("probe_chars = %d, want the 2000 default", intent.ProbeChars)
+	}
+	if got[1].Intent != nil {
+		t.Fatalf("intent with no route survived: %+v", got[1].Intent)
+	}
+}

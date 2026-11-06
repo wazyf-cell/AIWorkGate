@@ -835,6 +835,61 @@ export type UsageFilterParams = {
 /** Export time-series bucket; the rest of the CSV is unaffected. */
 export type UsageGranularity = 'hour' | 'day' | 'week'
 
+/** P11 group rule features; zero/absent values are ignored. */
+export interface RoutingWhen {
+  min_chars?: number
+  max_chars?: number
+  min_tokens?: number
+  max_tokens?: number
+  image?: boolean
+  thinking?: boolean
+  agent?: string
+  /** Local hour window [start, end); 22→6 wraps midnight. */
+  start_hour?: number
+  end_hour?: number
+}
+
+export interface RoutingRule {
+  name?: string
+  match: string[]
+  when: RoutingWhen
+}
+
+export interface RoutingIntent {
+  enabled: boolean
+  /** Decision upstream id; empty means the first configured one. */
+  upstream?: string
+  /** Choice options in question order. */
+  labels: string[]
+  /** label → routing group id. */
+  route: Record<string, string>
+  /** Group used when classification fails. */
+  default?: string
+  probe_chars?: number
+}
+
+export interface RoutingGroup {
+  id: string
+  display?: string
+  match: string[]
+  rules?: RoutingRule[]
+  weights?: Record<string, number>
+  disabled?: boolean
+  intent?: RoutingIntent
+}
+
+/** A saved group with its patterns resolved against the current catalog. */
+export interface RoutingGroupView extends RoutingGroup {
+  members: string[]
+  rule_members?: { name: string; members: string[] }[]
+}
+
+export interface RoutingGroupsResponse {
+  groups: RoutingGroupView[]
+  universe: string[]
+  decision_upstreams: { id: string; protocol: string; model_id: string }[]
+}
+
 /** One slice of a pasted request's estimated input tokens (D-55). */
 export interface PromptSection {
   key: 'system' | 'tools' | 'memory' | 'history' | 'user_input' | 'other'
@@ -2455,6 +2510,19 @@ export const api = {
     /** Absolute CSV URL, for an `<a download>` click. */
     exportUrl(filters: UsageFilterParams, granularity: UsageGranularity = 'day'): string {
       return `/api/usage/export${qs({ ...filters, granularity })}`
+    },
+  },
+
+  routingGroups: {
+    get(): Promise<RoutingGroupsResponse> {
+      return request<RoutingGroupsResponse>('/routing-groups')
+    },
+    /** Replaces the whole list; the host validates before writing config.json. */
+    save(groups: RoutingGroup[]): Promise<RoutingGroupsResponse> {
+      return request<RoutingGroupsResponse>('/routing-groups', {
+        method: 'PUT',
+        body: JSON.stringify({ groups }),
+      })
     },
   },
 

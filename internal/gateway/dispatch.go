@@ -331,13 +331,14 @@ func (g *Gateway) hasBinding(ctx context.Context, modelID string) bool {
 // for an account. It returns errNotScheduled for models that belong to A.
 // requestFeatures carries the P11 group-rule inputs for one request.
 type requestFeatures struct {
-	PromptChars int
-	HasImage    bool
-	Thinking    bool
-	Agent       string
+	PromptChars     int
+	EstimatedTokens int
+	HasImage        bool
+	Thinking        bool
+	Agent           string
 }
 
-func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, clientKey string, features requestFeatures, exclude map[scheduler.AccountKey]bool) (*scheduler.Snapshot, scheduler.Decision, error) {
+func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, clientKey string, features requestFeatures, exclude map[scheduler.AccountKey]bool, probe []byte) (*scheduler.Snapshot, scheduler.Decision, error) {
 	if g == nil || strings.TrimSpace(modelID) == "" {
 		return nil, scheduler.Decision{}, errNotScheduled
 	}
@@ -406,18 +407,35 @@ func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, cl
 		}
 	}
 
+	// P11 intent rules: a group may hand routing to another group based on a
+	// structured-decision classification of the current user turn. A failed
+	// classification keeps the request on its own (or configured default) group.
+	routeModel := modelID
+	intentNote := ""
+	if binding, ok := snap.Bindings[modelID]; ok && binding.Intent != nil {
+		target, note := g.resolveIntentTarget(ctx, snap, binding, promptProbe(probe, binding.Intent.ProbeChars))
+		intentNote = note
+		if target != "" {
+			routeModel = target
+		}
+	}
+
 	decision, err := g.sched.Pick(ctx, snap, scheduler.Request{
-		Model:          modelID,
-		ConversationID: conversationID,
-		ClientKey:      clientKey,
-		Exclude:        exclude,
-		PromptChars:    features.PromptChars,
-		HasImage:       features.HasImage,
-		Thinking:       features.Thinking,
-		Agent:          features.Agent,
+		Model:           routeModel,
+		ConversationID:  conversationID,
+		ClientKey:       clientKey,
+		Exclude:         exclude,
+		PromptChars:     features.PromptChars,
+		EstimatedTokens: features.EstimatedTokens,
+		HasImage:        features.HasImage,
+		Thinking:        features.Thinking,
+		Agent:           features.Agent,
 	})
 	if err != nil {
 		return snap, scheduler.Decision{}, err
+	}
+	if intentNote != "" {
+		decision.Reasons = append([]string{intentNote}, decision.Reasons...)
 	}
 	return snap, decision, nil
 }
@@ -469,8 +487,9 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 
 	for attempt := 0; attempt < maxScheduleAttempts; attempt++ {
 		snap, decision, err := g.scheduleModel(r.Context(), rec.model, rec.conversationID, requestClientKey(r, rec.keyID), requestFeatures{
-			PromptChars: rec.promptChars, HasImage: rec.hasImage, Thinking: rec.thinking, Agent: rec.agent,
-		}, exclude)
+			PromptChars: rec.promptChars, EstimatedTokens: rec.estTokens,
+			HasImage: rec.hasImage, Thinking: rec.thinking, Agent: rec.agent,
+		}, exclude, body)
 		if err != nil {
 			if errors.Is(err, errNotScheduled) {
 				// The scheduler does not own this name. A bare model name may
@@ -504,6 +523,12 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 		}
 
 		g.logDecision(rec, decision, attempt)
+		rec.routeModel = rec.model
+		if logical := strings.TrimSpace(decision.LogicalModel); logical != "" {
+			// An intent rule may have routed this request to another group; the
+			// hedge must explain the group that actually served it.
+			rec.routeModel = logical
+		}
 
 		id := strings.TrimSpace(decision.PluginID)
 		if id == "" || strings.TrimSpace(decision.Model) == "" {
@@ -943,15 +968,20 @@ func (g *Gateway) finishHedge(w http.ResponseWriter, r *http.Request, rec *reqRe
 // prepareHedge builds the second candidate with Explain so the sticky binding
 // of the first attempt is never overwritten by a hedge that may lose.
 func (g *Gateway) prepareHedge(r *http.Request, rec *reqRecord, rawBody []byte, snap *scheduler.Snapshot, exclude map[scheduler.AccountKey]bool) (*preparedAttempt, *scheduler.AccountKey, error) {
+	model := rec.routeModel
+	if strings.TrimSpace(model) == "" {
+		model = rec.model
+	}
 	explanation, err := g.sched.Explain(r.Context(), snap, scheduler.Request{
-		Model:          rec.model,
-		ConversationID: rec.conversationID,
-		ClientKey:      requestClientKey(r, rec.keyID),
-		Exclude:        exclude,
-		PromptChars:    rec.promptChars,
-		HasImage:       rec.hasImage,
-		Thinking:       rec.thinking,
-		Agent:          rec.agent,
+		Model:           model,
+		ConversationID:  rec.conversationID,
+		ClientKey:       requestClientKey(r, rec.keyID),
+		Exclude:         exclude,
+		PromptChars:     rec.promptChars,
+		EstimatedTokens: rec.estTokens,
+		HasImage:        rec.hasImage,
+		Thinking:        rec.thinking,
+		Agent:           rec.agent,
 	})
 	if err != nil {
 		return nil, nil, err

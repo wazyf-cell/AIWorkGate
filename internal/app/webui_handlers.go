@@ -172,6 +172,8 @@ func (a *App) webOptions() webui.Options {
 		SchedulerSticky:       a.schedulerSticky,
 		DeleteSchedulerSticky: a.deleteSchedulerSticky,
 		PromptAnalyze:         a.promptAnalyze,
+		RoutingGroups:         a.routingGroupsView,
+		SaveRoutingGroups:     a.saveRoutingGroups,
 
 		PoolDetail:          a.poolDetail,
 		SavePoolSettings:    a.savePoolSettings,
