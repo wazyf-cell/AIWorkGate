@@ -128,3 +128,130 @@ func TestGeminiErrorMapping(t *testing.T) {
 		t.Fatalf("error body = %s", rr.Body.String())
 	}
 }
+
+func TestGeminiRequestTranslatesToolsAndCalls(t *testing.T) {
+	srv, rec := newUpstreamServer(t, jsonResponder(http.StatusOK,
+		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg})
+
+	rr := serve(g, geminiRequest(t, "/v1beta/models/p/chat:generateContent", `{
+		"tools":[{"functionDeclarations":[{"name":"get_weather","description":"lookup",
+			"parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]}],
+		"contents":[
+			{"role":"user","parts":[{"text":"weather?"}]},
+			{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]},
+			{"role":"user","parts":[{"functionResponse":{"name":"get_weather","response":{"temp":18}}}]}
+		]
+	}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
+	}
+
+	var body struct {
+		Tools []struct {
+			Type     string `json:"type"`
+			Function struct {
+				Name       string `json:"name"`
+				Parameters struct {
+					Properties map[string]any `json:"properties"`
+				} `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+		Messages []struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"tool_call_id"`
+			Content    string `json:"content"`
+			ToolCalls  []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.last(t).Body, &body); err != nil {
+		t.Fatalf("upstream body: %v", err)
+	}
+	if len(body.Tools) != 1 || body.Tools[0].Function.Name != "get_weather" || body.Tools[0].Function.Parameters.Properties["city"] == nil {
+		t.Fatalf("tools = %+v", body.Tools)
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages = %+v", body.Messages)
+	}
+	call := body.Messages[1]
+	if call.Role != "assistant" || len(call.ToolCalls) != 1 || call.ToolCalls[0].Function.Name != "get_weather" ||
+		call.ToolCalls[0].Function.Arguments != `{"city":"Paris"}` || call.ToolCalls[0].ID == "" {
+		t.Fatalf("assistant tool call = %+v", call)
+	}
+	result := body.Messages[2]
+	if result.Role != "tool" || result.ToolCallID != call.ToolCalls[0].ID || result.Content != `{"temp":18}` {
+		t.Fatalf("tool result = %+v", result)
+	}
+}
+
+func TestGeminiNonStreamToolCallBackTranslated(t *testing.T) {
+	srv, _ := newUpstreamServer(t, jsonResponder(http.StatusOK,
+		`{"model":"m","choices":[{"message":{"content":"","tool_calls":[{"id":"call_1","type":"function",`+
+			`"function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg})
+
+	rr := serve(g, geminiRequest(t, "/v1beta/models/p/chat:generateContent",
+		`{"contents":[{"role":"user","parts":[{"text":"weather?"}]}]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text         string `json:"text"`
+					FunctionCall *struct {
+						Name string         `json:"name"`
+						Args map[string]any `json:"args"`
+					} `json:"functionCall"`
+				} `json:"parts"`
+			} `json:"content"`
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rr.Body.String())
+	}
+	candidate := payload.Candidates[0]
+	if candidate.FinishReason != "STOP" || len(candidate.Content.Parts) != 1 {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+	call := candidate.Content.Parts[0].FunctionCall
+	if call == nil || call.Name != "get_weather" || call.Args["city"] != "Paris" {
+		t.Fatalf("functionCall = %+v", candidate.Content.Parts[0])
+	}
+}
+
+func TestGeminiStreamToolCallBackTranslated(t *testing.T) {
+	srv, _ := newUpstreamServer(t, sseResponder([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":"{\"city\":"}}]}}]}` + "\n\n",
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Paris\"}"}}]},"finish_reason":"tool_calls"}]}` + "\n\n",
+		`data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n",
+		"data: [DONE]\n\n",
+	}))
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	g := newTestGateway(t, Options{Plugins: reg})
+
+	rr := serve(g, geminiRequest(t, "/v1beta/models/p/chat:streamGenerateContent?alt=sse",
+		`{"contents":[{"role":"user","parts":[{"text":"weather?"}]}]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
+	}
+	text := rr.Body.String()
+	if !strings.Contains(text, `"functionCall"`) || !strings.Contains(text, `"name":"get_weather"`) ||
+		!strings.Contains(text, `"city":"Paris"`) {
+		t.Fatalf("tool call missing from stream: %s", text)
+	}
+	if !strings.Contains(text, `"finishReason":"STOP"`) || !strings.Contains(text, `"totalTokenCount":2`) {
+		t.Fatalf("stream tail lost: %s", text)
+	}
+}

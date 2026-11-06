@@ -1,9 +1,9 @@
 package gateway
 
 // P6-1: Gemini generateContent inbound. The request is translated into the
-// internal OpenAI chat shape, routed through the existing scheduler/plugin/A
-// pipeline, and the answer is translated back (JSON or SSE). Only text and
-// inline images are mapped today; tool calls are not translated.
+// internal OpenAI chat shape, routed through the existing scheduler/plugin
+// pipeline, and the answer is translated back (JSON or SSE). Text, inline
+// images and function calls are mapped in both directions.
 
 import (
 	"bytes"
@@ -19,9 +19,31 @@ type geminiInlineData struct {
 	Data     string `json:"data"`
 }
 
+type geminiInboundFunctionCall struct {
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+type geminiInboundFunctionResponse struct {
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response,omitempty"`
+}
+
 type geminiInboundPart struct {
-	Text       string            `json:"text"`
-	InlineData *geminiInlineData `json:"inlineData,omitempty"`
+	Text             string                         `json:"text"`
+	InlineData       *geminiInlineData              `json:"inlineData,omitempty"`
+	FunctionCall     *geminiInboundFunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *geminiInboundFunctionResponse `json:"functionResponse,omitempty"`
+}
+
+type geminiFunctionDeclaration struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+type geminiTool struct {
+	FunctionDeclarations []geminiFunctionDeclaration `json:"functionDeclarations,omitempty"`
 }
 
 type geminiInboundContent struct {
@@ -39,6 +61,7 @@ type geminiInboundRequest struct {
 		TopP            *float64 `json:"topP"`
 		MaxOutputTokens *int     `json:"maxOutputTokens"`
 	} `json:"generationConfig"`
+	Tools []geminiTool `json:"tools"`
 }
 
 // geminiAction splits /v1beta/models/<model>:generateContent style paths.
@@ -79,13 +102,36 @@ func geminiToChatBody(req geminiInboundRequest, model string, stream bool) ([]by
 			messages = append(messages, map[string]any{"role": "system", "content": text})
 		}
 	}
+	// Gemini has no call ids; pair each functionResponse with the oldest call of
+	// the same name so the OpenAI tool message carries a matching id.
+	callIDs := map[string][]string{}
+	callSeq := 0
+	nextCallID := func(name string) string {
+		callSeq++
+		id := fmt.Sprintf("call_%s_%d", sanitizeCallName(name), callSeq)
+		callIDs[name] = append(callIDs[name], id)
+		return id
+	}
+	takeCallID := func(name string) string {
+		if ids := callIDs[name]; len(ids) > 0 {
+			callIDs[name] = ids[1:]
+			return ids[0]
+		}
+		callSeq++
+		return fmt.Sprintf("call_%s_%d", sanitizeCallName(name), callSeq)
+	}
+
 	for _, content := range req.Contents {
 		role := "user"
 		if strings.EqualFold(strings.TrimSpace(content.Role), "model") {
 			role = "assistant"
 		}
-		var textParts []string
-		var images []map[string]any
+		var (
+			textParts []string
+			images    []map[string]any
+			toolCalls []map[string]any
+			toolMsgs  []map[string]any
+		)
 		for _, part := range content.Parts {
 			if part.Text != "" {
 				textParts = append(textParts, part.Text)
@@ -98,8 +144,46 @@ func geminiToChatBody(req geminiInboundRequest, model string, stream bool) ([]by
 					},
 				})
 			}
+			if part.FunctionCall != nil {
+				name := strings.TrimSpace(part.FunctionCall.Name)
+				if name == "" {
+					continue
+				}
+				toolCalls = append(toolCalls, map[string]any{
+					"id":   nextCallID(name),
+					"type": "function",
+					"function": map[string]any{
+						"name":      name,
+						"arguments": geminiArguments(part.FunctionCall.Args),
+					},
+				})
+			}
+			if part.FunctionResponse != nil {
+				name := strings.TrimSpace(part.FunctionResponse.Name)
+				if name == "" {
+					continue
+				}
+				toolMsgs = append(toolMsgs, map[string]any{
+					"role":         "tool",
+					"tool_call_id": takeCallID(name),
+					"content":      geminiArguments(part.FunctionResponse.Response),
+				})
+			}
 		}
 		text := strings.Join(textParts, "")
+		if role == "assistant" {
+			message := map[string]any{"role": role, "content": text}
+			if len(toolCalls) > 0 {
+				message["tool_calls"] = toolCalls
+			}
+			messages = append(messages, message)
+			continue
+		}
+		// Tool results must precede any text/image part of the same user turn.
+		messages = append(messages, toolMsgs...)
+		if text == "" && len(images) == 0 {
+			continue
+		}
 		if len(images) == 0 {
 			messages = append(messages, map[string]any{"role": role, "content": text})
 			continue
@@ -115,6 +199,9 @@ func geminiToChatBody(req geminiInboundRequest, model string, stream bool) ([]by
 		return nil, fmt.Errorf("contents contain no user or model turns")
 	}
 	body := map[string]any{"model": model, "messages": messages}
+	if tools := geminiToolsToChat(req.Tools); len(tools) > 0 {
+		body["tools"] = tools
+	}
 	if stream {
 		body["stream"] = true
 		body["stream_options"] = map[string]any{"include_usage": true}
@@ -133,6 +220,53 @@ func geminiToChatBody(req geminiInboundRequest, model string, stream bool) ([]by
 	return json.Marshal(body)
 }
 
+// geminiArguments turns a Gemini args/response object into the JSON string
+// OpenAI expects, defaulting to an empty object.
+func geminiArguments(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "{}"
+	}
+	return trimmed
+}
+
+func sanitizeCallName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "fn"
+	}
+	return b.String()
+}
+
+// geminiToolsToChat maps functionDeclarations to OpenAI function tools.
+func geminiToolsToChat(tools []geminiTool) []map[string]any {
+	var out []map[string]any
+	for _, tool := range tools {
+		for _, decl := range tool.FunctionDeclarations {
+			name := strings.TrimSpace(decl.Name)
+			if name == "" {
+				continue
+			}
+			fn := map[string]any{"name": name}
+			if desc := strings.TrimSpace(decl.Description); desc != "" {
+				fn["description"] = desc
+			}
+			if len(decl.Parameters) > 0 {
+				var params any
+				if json.Unmarshal(decl.Parameters, &params) == nil && params != nil {
+					fn["parameters"] = params
+				}
+			}
+			out = append(out, map[string]any{"type": "function", "function": fn})
+		}
+	}
+	return out
+}
 func joinGeminiParts(parts []geminiInboundPart) string {
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -229,7 +363,8 @@ type openAIChatAnswer struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string         `json:"content"`
+			ToolCalls []wireToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -272,17 +407,33 @@ func writeGeminiJSON(w http.ResponseWriter, capture *captureWriter) {
 	}
 	text := ""
 	finish := "STOP"
+	var parts []any
 	if len(answer.Choices) > 0 {
 		text = answer.Choices[0].Message.Content
 		if answer.Choices[0].FinishReason == "length" {
 			finish = "MAX_TOKENS"
 		}
+		for _, call := range answer.Choices[0].Message.ToolCalls {
+			name := strings.TrimSpace(call.Function.Name)
+			if name == "" {
+				continue
+			}
+			parts = append(parts, map[string]any{
+				"functionCall": map[string]any{
+					"name": name,
+					"args": geminiArgsObject(call.Function.Arguments),
+				},
+			})
+		}
+	}
+	if text != "" || len(parts) == 0 {
+		parts = append([]any{map[string]any{"text": text}}, parts...)
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"candidates": []any{map[string]any{
-			"content":      map[string]any{"parts": []any{map[string]any{"text": text}}, "role": "model"},
+			"content":      map[string]any{"parts": parts, "role": "model"},
 			"finishReason": finish,
 			"index":        0,
 		}},
@@ -298,6 +449,12 @@ func writeGeminiJSON(w http.ResponseWriter, capture *captureWriter) {
 // geminiStreamWriter translates OpenAI SSE frames into Gemini SSE frames.
 // Content deltas are emitted as they arrive; a final frame carries the finish
 // reason and usage. Upstream error bodies are buffered and converted.
+type geminiStreamToolCall struct {
+	id   string
+	name string
+	args strings.Builder
+}
+
 type geminiStreamWriter struct {
 	dst          http.ResponseWriter
 	status       int
@@ -307,6 +464,8 @@ type geminiStreamWriter struct {
 	usage        map[string]any
 	model        string
 	errorBody    []byte
+	toolCalls    map[int]*geminiStreamToolCall
+	toolOrder    []int
 }
 
 func newGeminiStreamWriter(dst http.ResponseWriter) *geminiStreamWriter {
@@ -391,7 +550,15 @@ func (s *geminiStreamWriter) frame(frame []byte) {
 	var delta struct {
 		Choices []struct {
 			Delta struct {
-				Content string `json:"content"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -414,6 +581,24 @@ func (s *geminiStreamWriter) frame(frame []byte) {
 	for _, choice := range delta.Choices {
 		if choice.FinishReason != "" {
 			s.finishReason = choice.FinishReason
+		}
+		for _, call := range choice.Delta.ToolCalls {
+			if s.toolCalls == nil {
+				s.toolCalls = make(map[int]*geminiStreamToolCall)
+			}
+			acc, ok := s.toolCalls[call.Index]
+			if !ok {
+				acc = &geminiStreamToolCall{}
+				s.toolCalls[call.Index] = acc
+				s.toolOrder = append(s.toolOrder, call.Index)
+			}
+			if call.ID != "" {
+				acc.id = call.ID
+			}
+			if call.Function.Name != "" {
+				acc.name = call.Function.Name
+			}
+			acc.args.WriteString(call.Function.Arguments)
 		}
 		if choice.Delta.Content == "" {
 			continue
@@ -466,9 +651,25 @@ func (s *geminiStreamWriter) finish() {
 		}
 		s.start()
 	}
+	var parts []any
+	for _, index := range s.toolOrder {
+		acc := s.toolCalls[index]
+		if acc == nil || strings.TrimSpace(acc.name) == "" {
+			continue
+		}
+		parts = append(parts, map[string]any{
+			"functionCall": map[string]any{
+				"name": acc.name,
+				"args": geminiArgsObject(acc.args.String()),
+			},
+		})
+	}
+	if len(parts) == 0 {
+		parts = []any{map[string]any{"text": ""}}
+	}
 	final := map[string]any{
 		"candidates": []any{map[string]any{
-			"content":      map[string]any{"parts": []any{map[string]any{"text": ""}}, "role": "model"},
+			"content":      map[string]any{"parts": parts, "role": "model"},
 			"finishReason": geminiInboundFinishReason(s.finishReason),
 			"index":        0,
 		}},

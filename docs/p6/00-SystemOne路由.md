@@ -68,3 +68,12 @@ curl -sS http://127.0.0.1:7865/v1/systemone \
 
 - 本地可验证（已做，`internal/gateway/decision_test.go`）：原样透传、别名/协议选择、chat 互斥、`structured:true`、体积上限、错误透传且只调用一次。
 - **真实 JEV key 的最小请求未跑**：需要你提供 key；`noul` 应返回 0~1 概率，`choice`/`score` 各需一例。
+
+## 6. Gemini 入站（含工具调用）
+
+`POST /v1beta/models/{model}:generateContent` 与 `:streamGenerateContent?alt=sse` 会把 Gemini 请求翻译成 chat 请求，走与 OpenAI 入站相同的调度/插件路径，再把结果翻译回 Gemini 形状。
+
+- 文本、`inlineData` 图片、`systemInstruction`、`generationConfig`（temperature/topP/maxOutputTokens）双向映射。
+- **工具**：`tools[].functionDeclarations` → OpenAI `tools[].function`；模型轮的 `functionCall` → assistant `tool_calls`（自动生成稳定 `call_<name>_<n>` id）；用户轮的 `functionResponse` → OpenAI `role:"tool"` 消息，按函数名与最近的调用配对。
+- **回译**：非流式 `message.tool_calls` 与流式 `delta.tool_calls`（分片 arguments 会拼装）→ Gemini `parts[].functionCall`，`finishReason` 为 `STOP`；同时有文本时先输出 text part。
+- 验证：`TestGeminiRequestTranslatesToolsAndCalls`、`TestGeminiNonStreamToolCallBackTranslated`、`TestGeminiStreamToolCallBackTranslated`。
