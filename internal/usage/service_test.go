@@ -413,7 +413,7 @@ func TestExportCSVBlocks(t *testing.T) {
 		t.Fatalf("filename = %q", filename)
 	}
 	text := buf.String()
-	if !strings.HasPrefix(text, "section,day,plugin_id,account_id,display_name,requests,prompt_tokens,completion_tokens,credits,remaining,total,expires_at,plan,daily_credits,days_left,granularity,cache_write,cache_write_1h,cache_unknown,reasoning_tokens,cost_usd,pricing_model,purpose,model_requested,model_upstream,model_served,cleared_at,clear_note\n") {
+	if !strings.HasPrefix(text, "section,day,plugin_id,account_id,display_name,requests,prompt_tokens,completion_tokens,credits,remaining,total,expires_at,plan,daily_credits,days_left,granularity,cache_write,cache_write_1h,cache_unknown,reasoning_tokens,cost_usd,pricing_model,purpose,model_requested,model_upstream,model_served,cleared_at,clear_note,key_id,key_name\n") {
 		t.Fatalf("header missing: %q", text)
 	}
 	if !strings.Contains(text, "account,,mock,acc_1,主号") {
@@ -506,8 +506,8 @@ func TestExportClearSectionKeepsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse CSV: %v", err)
 	}
-	if got := len(records[0]); got != 28 {
-		t.Fatalf("columns = %d, want 28", got)
+	if got := len(records[0]); got != 30 {
+		t.Fatalf("columns = %d, want 30", got)
 	}
 	var clearRow []string
 	series := 0
@@ -586,5 +586,53 @@ func TestCreditsRunwayEstimate(t *testing.T) {
 	}
 	if refill := byAccount["refill"]; refill.RunwayHours != nil {
 		t.Fatalf("refill runway = %v, want unknown", *refill.RunwayHours)
+	}
+}
+
+func TestExportKeySection(t *testing.T) {
+	st := openConversationStore(t)
+	for _, rec := range []model.APIRequestLog{
+		{TS: "2026-10-20T10:00:00+08:00", ReqID: "r1", Source: "plugin:p", Model: "m",
+			KeyID: "ck_1", KeyName: "laptop", Status: 200, PromptTokens: 10, CompletionTokens: 5},
+		{TS: "2026-10-20T11:00:00+08:00", ReqID: "r2", Source: "plugin:p", Model: "m",
+			KeyID: "ck_1", KeyName: "laptop", Status: 200, PromptTokens: 20, CompletionTokens: 10},
+		{TS: "2026-10-20T12:00:00+08:00", ReqID: "r3", Source: "plugin:p", Model: "m",
+			KeyID: "ck_2", KeyName: "ci", Status: 200, PromptTokens: 1, CompletionTokens: 1},
+	} {
+		if err := st.InsertAPIRequestLog(rec); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	svc := NewService(st)
+	q, err := ParseQuery(url.Values{"from": {"2026-10-20"}, "to": {"2026-10-20"}}, fixedNow())
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := svc.Export(&buf, q); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	records, err := csv.NewReader(bytes.NewReader(buf.Bytes())).ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+	if got := len(records[0]); got != 30 {
+		t.Fatalf("columns = %d, want 30", got)
+	}
+	keys := map[string][]string{}
+	for _, row := range records[1:] {
+		if row[0] == "key" {
+			keys[row[28]] = row
+		}
+	}
+	laptop, ok := keys["ck_1"]
+	if !ok {
+		t.Fatalf("key section missing for ck_1: %v", keys)
+	}
+	if laptop[29] != "laptop" || laptop[5] != "2" || laptop[6] != "30" || laptop[7] != "15" {
+		t.Fatalf("ck_1 row = %v", laptop)
+	}
+	if ci := keys["ck_2"]; ci == nil || ci[5] != "1" {
+		t.Fatalf("ck_2 row = %v", keys["ck_2"])
 	}
 }

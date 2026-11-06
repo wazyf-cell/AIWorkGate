@@ -245,3 +245,59 @@ func (s *Store) ModelUsageRange(fromDay, toDay string, limit int) ([]ModelUsageR
 	}
 	return out, rows.Err()
 }
+
+// KeyUsageRange aggregates request/token/cache/cost totals by client key inside
+// [fromDay, toDay]. It backs the export's key dimension.
+type KeyUsageRange struct {
+	KeyID            string
+	KeyName          string
+	Requests         int64
+	PromptTokens     int64
+	CompletionTokens int64
+	CacheWrite       int64
+	CacheWrite1h     int64
+	ReasoningTokens  int64
+	Credits          float64
+	CostUSD          float64
+	CostSampled      bool
+}
+
+// KeyUsageRangeAggregates is KeyUsageRange grouping api_logs by key.
+func (s *Store) KeyUsageRangeAggregates(fromDay, toDay string, limit int) ([]KeyUsageRange, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store: key usage range: store is not open")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		COALESCE(key_id, ''), COALESCE(key_name, ''),
+		COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cache_write), 0), COALESCE(SUM(cache_write_1h), 0), COALESCE(SUM(reasoning_tokens), 0),
+		COALESCE(SUM(credits), 0), SUM(cost_usd)
+		FROM api_logs WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
+		GROUP BY key_id, key_name ORDER BY COUNT(*) DESC, key_id ASC LIMIT ?`, fromDay, toDay, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: key usage range: %w", err)
+	}
+	defer rows.Close()
+	var out []KeyUsageRange
+	for rows.Next() {
+		var (
+			row  KeyUsageRange
+			cost sql.NullFloat64
+		)
+		if err := rows.Scan(&row.KeyID, &row.KeyName, &row.Requests, &row.PromptTokens, &row.CompletionTokens,
+			&row.CacheWrite, &row.CacheWrite1h, &row.ReasoningTokens, &row.Credits, &cost); err != nil {
+			return nil, fmt.Errorf("store: key usage range: scan: %w", err)
+		}
+		if cost.Valid {
+			row.CostUSD = cost.Float64
+			row.CostSampled = true
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
