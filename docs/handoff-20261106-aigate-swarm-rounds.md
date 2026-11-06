@@ -211,6 +211,10 @@ aa32665  task-29 收尾：/api/usage/conversations 全链接线 + 测试 + Usage
 a3e0213  task-27：quotas.json windows[] 桥→宿主透传 + Q1-A 配额组修正
 06c85fd  P12-3：/v1/models 下发 D-35 八字段 + model_prefs 消费 + structured 标记
 478311f  P9-3：free/pace 策略 + expiring_first 管理端校验修复 + 告警前端订阅同步
+62ea967  P9：账号面板多窗口额度渲染 + 视觉基线（56/56）
+94a49c3  P12-3：serves() 重命名存在性校验（只查本次设置的非空名称）
+8e06171  P5/D-40：/v1 来源 IP 白名单（默认仅本机、鉴权前、不信任 XFF）
+bc7c3a1  P5-1：客户端 Key 到期（schema v13）+ 过期 401 明确文案 + 编辑框
 ```
 
 ### 11.2 正文勘误
@@ -236,3 +240,12 @@ a3e0213  task-27：quotas.json windows[] 桥→宿主透传 + Q1-A 配额组修�
 5. P12-3 的 `serves()` 存活性校验、决策模型 chat 400 互斥（依赖 P13 systemone）未做。
 6. P9 面板多窗口渲染、告警前端订阅之外的展示联动未做（数据通道已通）。
 7. `probeEvery=10` 为首版常量，未做分布调参。
+
+### 11.5 本轮追加进展（P9 面板 / P12 serves / P5）
+
+- **P9 多窗口渲染**：账号详情新增「额度窗口」，逐条显示 vendor `display` 与重置/失效时间；新增 `accounts-quota-windows` 视觉态（浅/深两基线）。
+- **P12-3 serves()**：重命名只校验“本次设置的非空名称”，目录/manifest 都无模型清单时 fail-open；清空名称与改其它字段不受影响。
+- **P5/D-40**：`gateway.allow_ips` 默认仅本机、鉴权前拦截、不信任 `X-Forwarded-For`、保存即时生效；设置页可编辑。
+- **P5-1**：客户端 Key 可设到期日（schema v13），过期 401 带具体时间；`expires_at=0` 不受影响。
+- 全量验证：`go build ./...` + `go test ./internal/...` **23 包全绿**；`npm run build` + 视觉 **56/56**。
+- P5 仍未做：`max_requests_total`、Key 级 `allowed_ips`、`service_mode`（paused/whitelist）、`trusted_proxies`、IP 限流；分享 Key 的“到期必填”缺分享标记。
