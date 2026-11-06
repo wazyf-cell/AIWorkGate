@@ -1,9 +1,9 @@
 # AIWorkGate
 
-AIWorkGate 是 Windows 上的一个本地 AI 网关：把 **AI Work 助手（A）** 的内置网关与**可独立安装的插件**聚合成一个 OpenAI 兼容入口。
+AIWorkGate 是 Windows 上的一个本地 AI 网关：把**可独立安装的插件**与**自定义 OpenAI 兼容上游**聚合成一个 OpenAI 兼容入口。
 
 - 客户端只填一个地址、一把 Key：`http://127.0.0.1:7865/v1`；
-- 裸模型名（如 `gpt-4o`）转发给 A；`插件id/模型名`（如 `hello/hello-chat`）转发给插件；
+- `插件id/模型名`（如 `hello/hello-chat`）转发给插件；裸模型名（如 `gpt-4o`）交给「默认插件」，未配置则 404；
 - 插件是独立进程，可单独安装 / 更新 / 停用 / 卸载，账号数据在更新时保留；
 - 自带托盘、嵌入式 Vue 管理页、请求日志、签到调度、代理池与账号级出网；
 - 账号健康与冷却：签到失败按原因记录（登录失效 / 已封禁永久，套餐限制 12 小时，设备已签到到次日 00:05，限流 / 额度不足到重置或按 30 分钟翻倍、封顶 6 小时），冷却中的账号不参与签到与网关调度，账号页显示徽标与倒计时；
@@ -13,7 +13,7 @@ AIWorkGate 是 Windows 上的一个本地 AI 网关：把 **AI Work 助手（A�
 - `GET /healthz` 返回可调度账号数（`selectable/total`），无号时 503 `no_account`；
 - 请求日志按时间/模型/来源/账号/Key/状态/流式筛选，可导出 CSV（UTF-8 BOM，单次 5 万行）；
 - 自定义模型支持 `chat/completions`、`messages`、`responses`、`completions` 四个对话端点（流式与非流式）；
-- 连通性检测：资源页模型目录、A 网关卡片、自定义模型行均可一键探测并显示毫秒延迟，历史记录保留 90 天。
+- 连通性检测：资源页模型目录、自定义模型行均可一键探测并显示毫秒延迟，历史记录保留 90 天。
 
 宿主是单个 `aiworkgate.exe`（Go 1.26.5，CGO 关闭，SQLite 为纯 Go 实现），SPA 通过 `go:embed` 打进 exe。
 
@@ -32,7 +32,7 @@ internal\
   egress\                代理池、本地 HTTP CONNECT 转发器、egress.json 生成
   rules\                 共享规则包与 runtime\<id>\rules.json
   schedule\              每日签到、补签、一键全签、额度轮询
-  hosts\                 A 的只读发现（数据目录/端口）与 CLI 任务
+  hosts\                 Windows 系统代理发现（出口代理由 egress 管理）
   tray\ webui\ winutil\  托盘、管理页与 Windows 工具
 web\                     Vue 3 + Vite SPA（构建输出到 internal\webui\dist）
 plugins\                 12 个渠道插件（每个自带 go.mod，可单独构建/安装）
@@ -71,7 +71,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1 -SkipWeb -Version 0
 
 ### 发布包与插件
 
-Release 里的 zip 只包含**宿主 exe + 产品文档**，不含任何插件。`plugins\` 下的 12 个渠道插件源码保留在仓库里供参考和自行构建，但它们仍在完善中，不作为本版的发布物；需要时按插件目录逐个 `go build`，再在「插件」页安装该目录或 zip。宿主本身不依赖任何插件即可启动、查看管理页和接入 A。
+Release 里的 zip 只包含**宿主 exe + 产品文档**，不含任何插件。`plugins\` 下的 12 个渠道插件源码保留在仓库里供参考和自行构建，但它们仍在完善中，不作为本版的发布物；需要时按插件目录逐个 `go build`，再在「插件」页安装该目录或 zip。宿主本身不依赖任何插件即可启动和查看管理页；接入任何平台都要装插件或添加自定义模型。
 
 ## 开发
 
@@ -96,7 +96,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-plugins.ps1   # 12 个�
 
 ## 文档
 
-- [用户手册](docs/用户手册.md)——安装、接入 A、客户端 Key、插件管理、代理、签到、日志、常见错误、卸载清理。
+- [用户手册](docs/用户手册.md)——安装、裸模型名与默认插件、客户端 Key、插件管理、代理、签到、日志、常见错误、卸载清理。
 - [插件开发指南](docs/插件开发指南.md)——清单字段、HTTP 契约、生命周期、`egress.json` / `rules.json`、身份、验收清单、调试。
 - [插件生成契约](docs/插件生成契约.md)——从源码到可安装 zip 的标准步骤、打包器、签名、安装门禁。
 - [外部 Agent 接入](docs/外部Agent接入.md)——把网关当本地 OpenAI 端点用：Key、模型命名三规则、`/v1/completions` 与 `/v1/responses` 转译、curl 示例、SSE 事件、错误码。
@@ -107,7 +107,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-plugins.ps1   # 12 个�
 ## 说明
 
 - 插件 `api_level` 接受 `1`–`2`：`1` 整池调度，`2` 允许宿主指定账号（`X-Aiworkgate-Account`）。
-- 宿主不会读取或导入 A 的 Key（A 存在 Stronghold 里），需在设置页粘贴一次，DPAPI 加密保存。
+- 内置 A 网关已退役（D-60）：A 与其他平台一样通过插件或自定义模型接入，不再有独立的 A 地址/Key/面板。
 - 账号级代理：代理账密不下发插件，插件只拿到 `http://<临时令牌>@127.0.0.1:<临时端口>`，监听器校验该令牌；失败不回退直连。
 
 ## 致谢与借鉴
