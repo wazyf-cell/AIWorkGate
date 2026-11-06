@@ -300,9 +300,15 @@ c2a9c98  P13: record usage clears instead of deleting history
 0fc29d3  P13: estimate how long the remaining credits last
 3637935  P13: segment the export by client key
 98c3f00  P13: export the read-cache token count
+b13cfb2  P1: record the real-plugin bridge probe
+cb59121  P2: record the workbuddy real-plugin probe
+4148353  P1: record the supervised real-bridge probe
+bb14166  P2: note the D-20 probe evidence
+9fd00b2  bridge: reuse magpie logins and record real chat acceptance
+d2b8e4c  P3: archive the eleven demo plugins
 ```
 
-远端：`wazyf-cell/AIWorkGate` 的 `main` 已同步到 `98c3f00`；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。
+远端：`wazyf-cell/AIWorkGate` 的 `main` 已同步到 `d2b8e4c`；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。
 
 ### 12.2 阶段状态
 
@@ -326,7 +332,7 @@ c2a9c98  P13: record usage clears instead of deleting history
 - `npm run build`：typecheck + 样式债 0 + 视觉 **65/65**（新增 `groups` / `groups-intent` / `usage-expiry`）。
 - 全量后端：`go test -ldflags=-buildid= ./internal/...` 24 包全 ok（2026-11-06 22:07 复核）。
 - Linux 交叉编译：amd64/arm64 通过（ELF，2026-11-06 退役 A 后重建）；部署/回滚脚本 dry-run 通过。
-- opchost 桥自检：`node opchost/bridge/src/admin/testdata/selftest.mjs --exit` → 74/74。
+- opchost 桥自检：`node opchost/bridge/src/admin/testdata/selftest.mjs --exit` → **78/78**（新增 magpie 登录态导入 4 例）。
 - P1/P2 真包探针（2026-11-06 22:09，临时数据目录、无 chat）：
   - `opencode-trae-auth` → `/meta` 报 `trae-cn`(6)+`trae-global`(5) 共 11 个模型；`/v1/models` 字段完整；无凭据 chat → **401 `needs_sign_in`**（非 500）。
   - `opencode-workbuddy-auth` → `/meta` 报 `workbuddy`(15)+`workbuddy-ai`(16) 两个独立 provider（符合 Q1 修订），模型字段完整。
