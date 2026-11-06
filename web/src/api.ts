@@ -1596,6 +1596,8 @@ export interface ClientKey {
   used_today?: number
   /** Remaining requests today; -1 when unlimited. */
   quota_left?: number
+  /** Unix second the key stops working; omit/0 = never (P5-1). */
+  expires_at?: number
 }
 
 /** Body of POST /keys (name required) and PUT /keys/{id} (any subset). */
@@ -1605,6 +1607,7 @@ export interface KeyScopeInput {
   model_scope?: string[]
   bind_pool?: string
   daily_quota?: number
+  expires_at?: number
 }
 
 export interface CreateKeyResponse {

@@ -359,6 +359,9 @@ type ClientKey struct {
 	Enabled    bool   `json:"enabled"`
 	CreatedAt  int64  `json:"created_at"`
 	LastUsedAt int64  `json:"last_used_at,omitempty"`
+	// ExpiresAt is the unix second after which the key is refused (P5-1);
+	// 0 means it never expires.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 	// Scope and quota (plan 2026-10-21 §1, mirroring A's ApiKeyEntry in
 	// api_keys.rs:254-293). An empty ModelScope means every model, an empty
 	// BindPool means every pool and DailyQuota 0 means unlimited.

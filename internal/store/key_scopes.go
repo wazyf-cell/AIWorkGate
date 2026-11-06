@@ -45,12 +45,15 @@ type ClientKeyScope struct {
 	ModelScope []string
 	BindPool   string
 	DailyQuota int
+	// ExpiresAt is the unix second after which the key is refused (P5-1).
+	// 0 means the key never expires.
+	ExpiresAt int64
 }
 
 // Empty reports whether the scope restricts nothing.
 func (s ClientKeyScope) Empty() bool {
 	return len(normalizeClientKeyScope(s.ModelScope)) == 0 &&
-		strings.TrimSpace(s.BindPool) == "" && s.DailyQuota == 0
+		strings.TrimSpace(s.BindPool) == "" && s.DailyQuota == 0 && s.ExpiresAt == 0
 }
 
 // Validate rejects a scope the schema/UI cannot represent. The webui validates
@@ -74,6 +77,10 @@ func (s ClientKeyScope) Validate() error {
 	if s.DailyQuota < 0 || s.DailyQuota > MaxClientKeyDailyQuota {
 		return fmt.Errorf("store: client key scope: %w: daily_quota must be between 0 and %d",
 			ErrInvalidArgument, MaxClientKeyDailyQuota)
+	}
+	if s.ExpiresAt < 0 {
+		return fmt.Errorf("store: client key scope: %w: expires_at must not be negative",
+			ErrInvalidArgument)
 	}
 	return nil
 }
@@ -123,7 +130,7 @@ func (s *Store) GetClientKey(id string) (model.ClientKey, bool, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT k.id, COALESCE(k.name, ''), COALESCE(k.prefix, ''),
 		COALESCE(k.enabled, 0), COALESCE(k.created_at, 0), COALESCE(k.last_used_at, 0),
 		COALESCE(k.model_scope, ''), COALESCE(k.bind_pool, ''), COALESCE(k.daily_quota, 0),
-		COALESCE(u.requests, 0)
+		COALESCE(k.expires_at, 0), COALESCE(u.requests, 0)
 		FROM client_keys k
 		LEFT JOIN client_key_usage u ON u.key_id = k.id AND u.day = ?
 		WHERE k.id = ?`, ClientKeyUsageDay(time.Now()), id)
@@ -148,7 +155,7 @@ func scanClientKeyWithUsage(row interface{ Scan(...any) error }) (model.ClientKe
 		usedToday int64
 	)
 	if err := row.Scan(&key.ID, &key.Name, &key.Prefix, &enabled, &key.CreatedAt, &key.LastUsedAt,
-		&scopeRaw, &key.BindPool, &dailyQ, &usedToday); err != nil {
+		&scopeRaw, &key.BindPool, &dailyQ, &key.ExpiresAt, &usedToday); err != nil {
 		return model.ClientKey{}, err
 	}
 	key.Enabled = enabled != 0
@@ -178,8 +185,8 @@ func (s *Store) UpsertClientKeyScoped(id, name, prefix, hash string, enabled boo
 	ctx, cancel := s.ctx()
 	defer cancel()
 	_, err = s.db.ExecContext(ctx, `INSERT INTO client_keys
-		(id, name, prefix, hash, enabled, created_at, last_used_at, model_scope, bind_pool, daily_quota)
-		VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, 0), CAST(strftime('%s','now') AS INTEGER)), 0, ?, ?, ?)
+		(id, name, prefix, hash, enabled, created_at, last_used_at, model_scope, bind_pool, daily_quota, expires_at)
+		VALUES (?, ?, ?, ?, ?, COALESCE(NULLIF(?, 0), CAST(strftime('%s','now') AS INTEGER)), 0, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			prefix = excluded.prefix,
@@ -188,9 +195,10 @@ func (s *Store) UpsertClientKeyScoped(id, name, prefix, hash string, enabled boo
 			model_scope = excluded.model_scope,
 			bind_pool = excluded.bind_pool,
 			daily_quota = excluded.daily_quota,
+			expires_at = excluded.expires_at,
 			created_at = CASE WHEN ? <> 0 THEN ? ELSE client_keys.created_at END`,
 		id, name, prefix, hash, boolInt(enabled), createdAt, scopeJSON,
-		strings.TrimSpace(scope.BindPool), scope.DailyQuota, createdAt, createdAt)
+		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, createdAt, createdAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert client key: %w", err)
 	}
@@ -212,8 +220,8 @@ func (s *Store) SetClientKeyScope(id string, scope ClientKeyScope) error {
 	ctx, cancel := s.ctx()
 	defer cancel()
 	res, err := s.db.ExecContext(ctx, `UPDATE client_keys
-		SET model_scope = ?, bind_pool = ?, daily_quota = ? WHERE id = ?`,
-		scopeJSON, strings.TrimSpace(scope.BindPool), scope.DailyQuota, id)
+		SET model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ? WHERE id = ?`,
+		scopeJSON, strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, id)
 	if err != nil {
 		return fmt.Errorf("store: set client key scope: %w", err)
 	}
@@ -241,10 +249,10 @@ func (s *Store) UpdateClientKey(id, name string, enabled bool, scope ClientKeySc
 	ctx, cancel := s.ctx()
 	defer cancel()
 	res, err := s.db.ExecContext(ctx, `UPDATE client_keys
-		SET name = ?, enabled = ?, model_scope = ?, bind_pool = ?, daily_quota = ?
+		SET name = ?, enabled = ?, model_scope = ?, bind_pool = ?, daily_quota = ?, expires_at = ?
 		WHERE id = ?`,
 		strings.TrimSpace(name), boolInt(enabled), scopeJSON,
-		strings.TrimSpace(scope.BindPool), scope.DailyQuota, id)
+		strings.TrimSpace(scope.BindPool), scope.DailyQuota, scope.ExpiresAt, id)
 	if err != nil {
 		return fmt.Errorf("store: update client key: %w", err)
 	}

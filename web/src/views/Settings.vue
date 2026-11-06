@@ -303,7 +303,23 @@ const keyDraft = reactive({
   model_scope: '',
   bind_pool: '',
   daily_quota: 0,
+  expires_at: '',
 })
+
+/** Epoch seconds → the date input's YYYY-MM-DD (local day). */
+function epochToDateInput(seconds?: number): string {
+  if (!seconds) return ''
+  const date = new Date(seconds * 1000)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/** Date input → the end of that local day; empty means "never". */
+function dateInputToEpoch(value: string): number {
+  if (!value) return 0
+  const ms = new Date(`${value}T23:59:59`).getTime()
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0
+}
 
 async function loadClientKeys() {
   try {
@@ -358,6 +374,7 @@ function openKeyEditor(item: ClientKey) {
   keyDraft.model_scope = (item.model_scope ?? []).join('\n')
   keyDraft.bind_pool = item.bind_pool ?? ''
   keyDraft.daily_quota = item.daily_quota ?? 0
+  keyDraft.expires_at = epochToDateInput(item.expires_at)
 }
 
 function closeKeyEditor() {
@@ -380,6 +397,7 @@ async function saveKeyEdit() {
       model_scope: parseModelScope(keyDraft.model_scope),
       bind_pool: keyDraft.bind_pool,
       daily_quota: normalizeQuota(keyDraft.daily_quota),
+      expires_at: dateInputToEpoch(keyDraft.expires_at),
     })
     editingKey.value = null
     message.value = '客户端 Key 已更新。'
@@ -1695,6 +1713,19 @@ async function saveLanPassword() {
               0 = 不限。今日已用 {{ editingKey.used_today ?? 0 }} 次，剩余
               {{ (editingKey.quota_left ?? -1) < 0 ? '不限' : editingKey.quota_left }}。配额用尽返回 429
               <code>key_quota_exceeded</code>，次日 00:00（宿主本地时间）重置。
+            </span>
+          </div>
+          <div class="field">
+            <label for="key-edit-expiry">到期时间（可选）</label>
+            <input
+              id="key-edit-expiry"
+              v-model="keyDraft.expires_at"
+              class="input"
+              type="date"
+              :disabled="keyEditBusy"
+            />
+            <span class="help">
+              留空 = 永不过期。到期后该 Key 的请求返回 401，并提示具体到期时间；分享给他人的 Key 建议必填。
             </span>
           </div>
           <div class="row">

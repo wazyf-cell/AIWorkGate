@@ -58,6 +58,13 @@ type KeyVerifier interface {
 	Touch(id string)
 }
 
+// KeyVerifierReason is the optional detailed variant: a verifier that can
+// explain a refusal (expired/disabled key) returns a user-safe sentence here.
+// An empty reason keeps the generic "missing or invalid API key" message.
+type KeyVerifierReason interface {
+	VerifyReason(plain string) (id, name, reason string, ok bool)
+}
+
 // APILogSink receives one row per proxied request.
 type APILogSink interface {
 	Write(model.APIRequestLog)
@@ -551,11 +558,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keyID, keyName, ok := g.authenticate(r)
+	keyID, keyName, keyReason, ok := g.authenticate(r)
 	if !ok {
-		rec.errText = "missing or invalid API key"
-		g.fail(w, rec, http.StatusUnauthorized, "authentication_error", "invalid_api_key",
-			"missing or invalid API key")
+		msg := "missing or invalid API key"
+		if keyReason != "" {
+			msg = keyReason
+		}
+		rec.errText = msg
+		g.fail(w, rec, http.StatusUnauthorized, "authentication_error", "invalid_api_key", msg)
 		return
 	}
 	rec.keyID, rec.keyName = keyID, keyName
@@ -613,17 +623,21 @@ func (g *Gateway) corsFor(origin string) (allowed bool, echo string) {
 	return false, ""
 }
 
-func (g *Gateway) authenticate(r *http.Request) (id, name string, ok bool) {
+func (g *Gateway) authenticate(r *http.Request) (id, name, reason string, ok bool) {
 	token := clientToken(r)
 	if token == "" || g.keys == nil {
-		return "", "", false
+		return "", "", "", false
 	}
-	id, name, ok = g.keys.Verify(token)
+	if detailed, can := g.keys.(KeyVerifierReason); can {
+		id, name, reason, ok = detailed.VerifyReason(token)
+	} else {
+		id, name, ok = g.keys.Verify(token)
+	}
 	if !ok {
-		return "", "", false
+		return "", "", reason, false
 	}
 	g.keys.Touch(id)
-	return id, name, true
+	return id, name, "", true
 }
 
 // clientToken accepts the OpenAI style bearer token plus the header spellings

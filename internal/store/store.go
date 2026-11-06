@@ -592,6 +592,12 @@ var migrations = []migrationStep{
 			)`,
 		},
 	},
+	{ // version 13: client-key expiry (P5-1)
+		columns: []columnMigration{
+			// 0 means the key never expires; a share key is expected to set it.
+			{"client_keys", "expires_at", "INTEGER NOT NULL DEFAULT 0"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

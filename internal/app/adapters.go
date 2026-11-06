@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -66,28 +67,42 @@ type keyAdapter struct {
 // row and a ListClientKeys error; the gateway would otherwise skip the
 // disabled/scope/quota gates entirely.
 func (k *keyAdapter) Verify(plain string) (id, name string, ok bool) {
+	id, name, _, ok = k.VerifyReason(plain)
+	return id, name, ok
+}
+
+// VerifyReason is the gateway's optional detailed verifier: the reason is a
+// user-safe sentence shown in the 401, empty keeps the generic message.
+func (k *keyAdapter) VerifyReason(plain string) (id, name, reason string, ok bool) {
 	if k == nil || k.app == nil || k.app.secrets == nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	id, ok = k.app.secrets.VerifyClientKey(plain)
 	if !ok {
-		return "", "", false
+		return "", "", "", false
 	}
 	if k.app.store == nil {
 		k.logOrphanedHash()
-		return "", "", false
+		return "", "", "", false
 	}
 	keys, err := k.app.store.ListClientKeys()
 	if err != nil {
 		k.logOrphanedHash()
-		return "", "", false
+		return "", "", "", false
 	}
 	key, found := findClientKey(keys, id)
-	if !found || !key.Enabled {
+	if !found {
 		k.logOrphanedHash()
-		return "", "", false
+		return "", "", "", false
 	}
-	return id, key.Name, true
+	if !key.Enabled {
+		return "", "", "该客户端 Key 已停用，请在宿主的「设置 → 客户端 Key」中重新启用", false
+	}
+	if key.ExpiresAt > 0 && key.ExpiresAt <= time.Now().Unix() {
+		return "", "", fmt.Sprintf("该客户端 Key 已于 %s 过期，请在宿主的「设置 → 客户端 Key」续期或更换",
+			time.Unix(key.ExpiresAt, 0).Format("2006-01-02 15:04")), false
+	}
+	return id, key.Name, "", true
 }
 
 // logOrphanedHash records a rejected orphaned hash once. Neither the key id nor

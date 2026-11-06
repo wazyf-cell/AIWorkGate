@@ -51,11 +51,13 @@ type KeySpec struct {
 	ModelScope []string
 	BindPool   string
 	DailyQuota int
+	// ExpiresAt is the unix second the key stops working; 0 = never (P5-1).
+	ExpiresAt int64
 }
 
 // scope returns the stored triple of a spec.
 func (s KeySpec) scope() store.ClientKeyScope {
-	return store.ClientKeyScope{ModelScope: s.ModelScope, BindPool: s.BindPool, DailyQuota: s.DailyQuota}
+	return store.ClientKeyScope{ModelScope: s.ModelScope, BindPool: s.BindPool, DailyQuota: s.DailyQuota, ExpiresAt: s.ExpiresAt}
 }
 
 // handleKeysAPI serves GET and POST /api/keys.
@@ -172,6 +174,7 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 		ModelScope: current.ModelScope,
 		BindPool:   current.BindPool,
 		DailyQuota: current.DailyQuota,
+		ExpiresAt:  current.ExpiresAt,
 	}
 	if err := applyKeyPatch(&spec, body); err != nil {
 		writeKeySpecError(w, err)
@@ -198,7 +201,7 @@ func (s *server) updateClientKey(w http.ResponseWriter, r *http.Request, id stri
 			ID: id, Name: spec.Name, Prefix: current.Prefix, Enabled: spec.Enabled,
 			CreatedAt: current.CreatedAt, LastUsedAt: current.LastUsedAt,
 			ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota,
-			UsedToday: current.UsedToday,
+			ExpiresAt: spec.ExpiresAt, UsedToday: current.UsedToday,
 		}
 	}
 	updated.QuotaLeft = store.ClientKeyQuotaLeft(updated.DailyQuota, updated.UsedToday)
@@ -261,6 +264,12 @@ func applyKeyPatch(spec *KeySpec, body map[string]json.RawMessage) error {
 				return err
 			}
 			spec.DailyQuota = quota
+		case "expires_at":
+			expires, err := keyExpiresAt(raw)
+			if err != nil {
+				return err
+			}
+			spec.ExpiresAt = expires
 		case "name":
 			var name string
 			if err := json.Unmarshal(raw, &name); err != nil {
@@ -394,4 +403,19 @@ func keyDailyQuota(raw json.RawMessage) (int, error) {
 			ErrInvalidRequest, store.MaxClientKeyDailyQuota)
 	}
 	return quota, nil
+}
+
+// keyExpiresAt parses the optional expiry: null or 0 means "never".
+func keyExpiresAt(raw json.RawMessage) (int64, error) {
+	if jsonIsNull(raw) {
+		return 0, nil
+	}
+	var at int64
+	if err := json.Unmarshal(raw, &at); err != nil {
+		return 0, fmt.Errorf("%w: expires_at must be a unix second", ErrInvalidRequest)
+	}
+	if at < 0 {
+		return 0, fmt.Errorf("%w: expires_at must not be negative", ErrInvalidRequest)
+	}
+	return at, nil
 }
