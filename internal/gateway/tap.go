@@ -25,8 +25,12 @@ type bodyTap struct {
 	usageCap  int
 	usageOver bool
 
-	prompt     int64
-	completion int64
+	prompt       int64
+	completion   int64
+	cacheWrite   int64
+	cacheWrite1h int64
+	cacheUnknown bool
+	reasoning    int64
 	// served is the model the upstream reported in the response, if any.
 	served string
 	// cached is the cached prompt prefix reported by the upstream. Ported from
@@ -201,6 +205,19 @@ type usageCounts struct {
 	} `json:"prompt_tokens_details"`
 	// Anthropic reports the same idea as cache_read_input_tokens.
 	CacheReadInputTokens int64 `json:"cache_read_input_tokens"`
+	// D-31 cache-write side (Anthropic): total writes, their 5m/1h split, and
+	// the vendor's explicit "no cache counts" flag.
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheCreation            *struct {
+		Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+	MagpieCacheUnknown bool `json:"magpie_cache_unknown"`
+	// OpenAI reports thinking tokens separately sometimes.
+	CompletionTokensDetails *struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+	ReasoningTokens int64 `json:"reasoning_tokens"`
 }
 
 func (u usageCounts) prompt() int64 {
@@ -259,6 +276,29 @@ func (t *bodyTap) apply(u usageCounts) {
 	}
 	if c := u.completion(); c > 0 {
 		t.completion = c
+	}
+	write := u.CacheCreationInputTokens
+	if u.CacheCreation != nil {
+		split := u.CacheCreation.Ephemeral5m + u.CacheCreation.Ephemeral1h
+		if split > write {
+			write = split
+		}
+		if u.CacheCreation.Ephemeral1h > t.cacheWrite1h {
+			t.cacheWrite1h = u.CacheCreation.Ephemeral1h
+		}
+	}
+	if write > t.cacheWrite {
+		t.cacheWrite = write
+	}
+	if u.MagpieCacheUnknown {
+		t.cacheUnknown = true
+	}
+	reasoning := u.ReasoningTokens
+	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ReasoningTokens > reasoning {
+		reasoning = u.CompletionTokensDetails.ReasoningTokens
+	}
+	if reasoning > 0 {
+		t.reasoning = reasoning
 	}
 	if c := u.cachedPrompt(); c > 0 {
 		t.cached = c

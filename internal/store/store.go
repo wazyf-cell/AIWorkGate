@@ -631,6 +631,15 @@ var migrations = []migrationStep{
 			{"api_logs", "pricing_model", "TEXT"},
 		},
 	},
+	{ // version 20: D-31 remaining cache/reasoning/purpose columns
+		columns: []columnMigration{
+			{"api_logs", "cache_write", "INTEGER"},
+			{"api_logs", "cache_write_1h", "INTEGER"},
+			{"api_logs", "cache_unknown", "INTEGER NOT NULL DEFAULT 0"},
+			{"api_logs", "reasoning_tokens", "INTEGER"},
+			{"api_logs", "purpose", "TEXT"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

@@ -22,18 +22,20 @@ func (s *Store) APILogByReqID(reqID string) (model.APIRequestLog, bool, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+apiLogColumnsNoBodies+` FROM api_logs WHERE req_id = ? LIMIT 1`, reqID)
 
 	var (
-		rec     model.APIRequestLog
-		stream  int64
-		credits sql.NullFloat64
-		cost    sql.NullFloat64
+		rec          model.APIRequestLog
+		stream       int64
+		credits      sql.NullFloat64
+		cost         sql.NullFloat64
+		cacheUnknown int64
 	)
 	err := row.Scan(
 		&rec.TS, &rec.ReqID, &rec.Source, &rec.Model,
 		&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed, &rec.LogicalModel,
 		&rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID, &stream, &rec.Status,
 		&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
-		&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &cost,
-		&rec.PricingModel, &rec.Error,
+		&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens,
+		&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &rec.Purpose,
+		&credits, &cost, &rec.PricingModel, &rec.Error,
 	)
 	if err == sql.ErrNoRows {
 		return model.APIRequestLog{}, false, nil
@@ -42,6 +44,7 @@ func (s *Store) APILogByReqID(reqID string) (model.APIRequestLog, bool, error) {
 		return model.APIRequestLog{}, false, fmt.Errorf("store: api log by req id: %w", err)
 	}
 	rec.Stream = stream != 0
+	rec.CacheUnknown = cacheUnknown != 0
 	if credits.Valid {
 		v := credits.Float64
 		rec.Credits = &v

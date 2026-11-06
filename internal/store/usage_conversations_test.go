@@ -219,3 +219,23 @@ func TestAPILogCostColumnsRoundtrip(t *testing.T) {
 		t.Fatalf("cost = %v pricing = %q", log.CostUSD, log.PricingModel)
 	}
 }
+
+func TestAPILogCacheAndPurposeRoundtrip(t *testing.T) {
+	s := openTestStore(t)
+	if err := s.InsertAPIRequestLog(model.APIRequestLog{
+		TS: "2026-01-15T10:00:00Z", ReqID: "r1", Model: "m1", Status: 200,
+		CacheWrite: 300, CacheWrite1h: 120, CacheUnknown: true,
+		ReasoningTokens: 9, Purpose: "batch",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := s.QueryAPILogsTimelinePage(Filter{Limit: 10}, 0, 0, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %d err=%v", len(rows), err)
+	}
+	log := rows[0].Log
+	if log.CacheWrite != 300 || log.CacheWrite1h != 120 || !log.CacheUnknown ||
+		log.ReasoningTokens != 9 || log.Purpose != "batch" {
+		t.Fatalf("row = %+v", log)
+	}
+}

@@ -451,8 +451,18 @@ type APIRequestLog struct {
 	// CachedTokens is the cached prompt prefix reported by the upstream
 	// (OpenAI prompt_tokens_details.cached_tokens / Anthropic
 	// cache_read_input_tokens). Zero means the upstream did not report it.
-	CachedTokens int64    `json:"cached_tokens,omitempty"`
-	Credits      *float64 `json:"credits,omitempty"`
+	CachedTokens int64 `json:"cached_tokens,omitempty"`
+	// D-31 cache-write side: total writes, the 1h-TTL share, and the vendor's
+	// "no cache counts" flag (never fabricated when absent).
+	CacheWrite   int64 `json:"cache_write,omitempty"`
+	CacheWrite1h int64 `json:"cache_write_1h,omitempty"`
+	CacheUnknown bool  `json:"cache_unknown,omitempty"`
+	// ReasoningTokens is the upstream's thinking-token count when it reports a
+	// separate number (OpenAI style); Anthropic folds it into completion.
+	ReasoningTokens int64 `json:"reasoning_tokens,omitempty"`
+	// Purpose is X-Aiworkgate-Purpose or the endpoint name (D-31).
+	Purpose string   `json:"purpose,omitempty"`
+	Credits *float64 `json:"credits,omitempty"`
 	// CostUSD is the configured price × tokens × multiplier (D-31③); nil means
 	// the model had no configured price, not "free".
 	CostUSD      *float64 `json:"cost_usd,omitempty"`

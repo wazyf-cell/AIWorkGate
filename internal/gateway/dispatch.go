@@ -1282,6 +1282,8 @@ func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Resp
 	}
 	tap.finish()
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
+	rec.cacheWrite, rec.cacheWrite1h = tap.cacheWrite, tap.cacheWrite1h
+	rec.cacheUnknown, rec.reasoning = tap.cacheUnknown, tap.reasoning
 	if tap.served != "" {
 		rec.modelServed = tap.served
 	}

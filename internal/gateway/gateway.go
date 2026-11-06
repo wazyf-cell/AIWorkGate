@@ -401,6 +401,11 @@ type reqRecord struct {
 	prompt         int64
 	completion     int64
 	cached         int64
+	cacheWrite     int64
+	cacheWrite1h   int64
+	cacheUnknown   bool
+	reasoning      int64
+	purpose        string
 	credits        *float64
 	downgraded     string
 	errText        string
@@ -560,6 +565,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	path := r.URL.Path
+	rec.purpose = requestPurpose(r)
 	if path != "/v1" && !strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/v1beta/") {
 		g.fail(w, rec, http.StatusNotFound, "not_found_error", "not_found",
 			"unknown path "+path)
@@ -725,6 +731,39 @@ func (g *Gateway) authenticate(r *http.Request) (id, name, reason string, ok boo
 	}
 	g.keys.Touch(id)
 	return id, name, "", true
+}
+
+// requestPurpose is the D-31 purpose column: an explicit header wins, else the
+// endpoint name.
+func requestPurpose(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("X-Aiworkgate-Purpose")); v != "" {
+		if len(v) > 64 {
+			v = v[:64]
+		}
+		return v
+	}
+	path := r.URL.Path
+	switch {
+	case path == "/v1/chat/completions":
+		return "chat"
+	case path == "/v1/completions":
+		return "completions"
+	case path == "/v1/responses":
+		return "responses"
+	case path == "/v1/messages":
+		return "messages"
+	case path == "/v1/systemone":
+		return "systemone"
+	case path == "/v1/decision":
+		return "decision"
+	case path == "/v1/embeddings":
+		return "embeddings"
+	case strings.HasPrefix(path, "/v1/images"):
+		return "images"
+	case isGeminiPath(path):
+		return "gemini"
+	}
+	return ""
 }
 
 // clientToken accepts the OpenAI style bearer token plus the header spellings
@@ -1538,6 +1577,8 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, rec *reqRecord
 	}
 	tap.finish()
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
+	rec.cacheWrite, rec.cacheWrite1h = tap.cacheWrite, tap.cacheWrite1h
+	rec.cacheUnknown, rec.reasoning = tap.cacheUnknown, tap.reasoning
 	if tap.served != "" {
 		rec.modelServed = tap.served
 	}
@@ -1653,6 +1694,11 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 		PromptTokens:     rec.prompt,
 		CompletionTokens: rec.completion,
 		CachedTokens:     rec.cached,
+		CacheWrite:       rec.cacheWrite,
+		CacheWrite1h:     rec.cacheWrite1h,
+		CacheUnknown:     rec.cacheUnknown,
+		ReasoningTokens:  rec.reasoning,
+		Purpose:          rec.purpose,
 		Credits:          rec.credits,
 		Error:            truncateUTF8(rec.errText, 512),
 		Redact:           rec.redactLine,
