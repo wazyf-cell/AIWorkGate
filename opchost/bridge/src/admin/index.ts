@@ -53,6 +53,13 @@ export {
 } from './quotagroups.ts'
 export { createCheckinLedger } from './ledger.ts'
 export type { CheckinLedger } from './ledger.ts'
+export {
+  defaultQuotaPath,
+  loadQuotaWindows,
+  quotaRecordForAccount,
+  quotaWindowsView,
+} from './quotas.ts'
+export type { QuotaRecord, QuotaWindow, QuotaWindowsView } from './quotas.ts'
 export { mapOutcome, normalizeCheckin, runCheckin } from './checkin.ts'
 export { createAccountLedger, listAccounts, buildAccount, statusOf, accountRefsFor } from './accounts.ts'
 export type { AccountPayload, AccountQuota, AccountCredential, AccountLedger, AccountRef } from './accounts.ts'

@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { createAdminRouter } from '../index.ts'
 import { registryFromLoad } from '../wiring.ts'
-import { buildIndex, DEFAULT_QUOTA_GROUPS, mergeQuotaRecords } from '../quotagroups.ts'
+import { buildIndex, DEFAULT_QUOTA_GROUPS, mergeQuotaRecords, quotaRecordFor } from '../quotagroups.ts'
 import { isLoopback } from '../util.ts'
 import { MockAuthPlugin, MockAIAuthPlugin, _internal, setMockState, resetMockState } from './mock-plugin.mjs'
 
@@ -23,6 +23,37 @@ const dataDir = mkdtempSync(join(tmpdir(), 'bridge-admin-'))
 const settingsPath = join(dataDir, 'settings.json')
 // D-19④: magpie's switch says this plugin is on; the second one stays off
 writeFileSync(settingsPath, JSON.stringify({ pluginCheckins: { mock: true } }))
+
+// P9-1: magpie's multi-window quota file (shape copied from a real quotas.json).
+const quotaPath = join(dataDir, 'quotas.json')
+writeFileSync(
+  quotaPath,
+  JSON.stringify({
+    'mock/mock-account': {
+      at: '2026-11-06T14:31:50+08:00',
+      quota: {
+        provider: 'mock',
+        plan: 'pro',
+        readAt: '2026-11-06T14:31:50+08:00',
+        windows: [
+          {
+            name: '总积分',
+            amount: 100,
+            limit: 500,
+            used: 400,
+            unit: 'credits',
+            resetsAt: '2026-12-01T00:00:00Z',
+            runsOutAt: '2026-11-20T00:00:00Z',
+            runsOut: 20,
+            display: '100 / 500 · 20 即将过期',
+          },
+          { name: '赠送积分包', amount: 20, limit: 100, used: 80, unit: 'credits', display: '20 / 100', 'x-extra': 'kept' },
+        ],
+      },
+    },
+  }),
+  'utf8',
+)
 
 const results = []
 function check(name, ok, detail = '') {
@@ -69,6 +100,7 @@ const api = createAdminRouter({
     resolve: (id) => (id === 'mock' ? handle : id === 'mock-off' ? handleOff : id === 'mock-wb' ? handleWB : undefined),
   },
   checkinSettingsPath: settingsPath,
+  quotaPath,
   now: Date.now,
   logger: { info() {} },
 })
@@ -103,43 +135,55 @@ check('guard_loopback_true', isLoopback({ socket: { remoteAddress: '127.0.0.1' }
   check('manifest_status', r.status === 200, `status=${r.status}`)
   check('manifest_domains', (m.network_domains ?? []).includes('copilot.tencent.com') && (m.network_domains ?? []).includes('www.workbuddy.ai'), JSON.stringify(m.network_domains))
   check('manifest_providers', Array.isArray(m.providers) && m.providers[0] === 'mock', JSON.stringify(m.providers))
-  check('manifest_quota_groups', (m.quota_groups ?? []).some((g) => g.id === 'workbuddy-credits'), JSON.stringify(m.quota_groups?.map((g) => g.id)))
+  check('manifest_quota_groups', (m.quota_groups ?? []).some((g) => g.id === 'codebuddy-workbuddy-credits'), JSON.stringify(m.quota_groups?.map((g) => g.id)))
   check('manifest_identity_hidden', m.identity?.exposed_in_admin === false && no(JSON.stringify(body), 'machine_id'))
   check('manifest_no_fingerprint', no(JSON.stringify(body), 'device_id') && no(JSON.stringify(body), 'machine_id'))
 }
 
-// ---- 3. D-20 quota groups ---------------------------------------------------------
+// ---- 3. Q1-A quota groups ---------------------------------------------------------
 {
   const body = await (await get('/admin/quotagroups')).json()
-  const g = (body.groups ?? []).find((x) => x.id === 'workbuddy-credits')
+  const g = (body.groups ?? []).find((x) => x.id === 'codebuddy-workbuddy-credits')
   check('quotagroups_status', body.ok === true && body.count >= 1, `count=${body.count}`)
-  check('quotagroups_prefixes', !!g && g.prefixes.includes('workbuddy') && g.prefixes.includes('workbuddy-ai'), JSON.stringify(g?.prefixes))
+  check(
+    'quotagroups_prefixes',
+    !!g && g.prefixes.includes('codebuddy') && g.prefixes.includes('workbuddy') && !g.prefixes.includes('workbuddy-ai'),
+    JSON.stringify(g?.prefixes),
+  )
 }
 
-// ---- 3b. D-20: two model prefixes → ONE quota record -----------------------------
+// ---- 3b. Q1-A: codebuddy + workbuddy share; workbuddy-ai stays separate -----------
 {
   const body = await (await get('/admin/manifest?plugin_id=mock-wb')).json()
   const recs = body.manifest?.quota_records ?? {}
+  const idx = buildIndex(DEFAULT_QUOTA_GROUPS, 'test')
+  // The manifest only lists prefixes the plugin actually exports; codebuddy is
+  // a future sibling prefix, so assert the shared record through the index.
   check(
     'd20_manifest_same_record',
-    recs['workbuddy/'] === 'group:workbuddy' && recs['workbuddy-ai/'] === 'group:workbuddy',
-    JSON.stringify(recs),
+    recs['workbuddy/'] === 'group:workbuddy' &&
+      recs['workbuddy-ai/'] !== 'group:workbuddy' &&
+      quotaRecordFor(idx, 'codebuddy') === quotaRecordFor(idx, 'workbuddy') &&
+      quotaRecordFor(idx, 'workbuddy-ai') !== quotaRecordFor(idx, 'workbuddy'),
+    JSON.stringify({ recs, wb: quotaRecordFor(idx, 'workbuddy'), ai: quotaRecordFor(idx, 'workbuddy-ai') }),
   )
-  const idx = buildIndex(DEFAULT_QUOTA_GROUPS, 'test')
   const merged = mergeQuotaRecords(idx, [
-    { prefix: 'workbuddy/', remaining: 100, total: 500, display: '100 / 500' },
-    { prefix: 'workbuddy-ai/', remaining: 120, total: 500 },
+    { prefix: 'codebuddy/', remaining: 100, total: 500, display: '100 / 500' },
+    { prefix: 'workbuddy/', remaining: 120, total: 500 },
   ])
   check(
     'd20_merge_one_row',
-    merged.length === 1 && merged[0].remaining === 120 && merged[0].group === 'workbuddy-credits' && (merged[0].prefixes ?? []).length === 2,
+    merged.length === 1 &&
+      merged[0].remaining === 120 &&
+      merged[0].group === 'codebuddy-workbuddy-credits' &&
+      (merged[0].prefixes ?? []).length === 2,
     JSON.stringify(merged),
   )
   const separate = mergeQuotaRecords(idx, [
     { prefix: 'workbuddy/', remaining: 100, total: 500 },
-    { prefix: 'some-other/', remaining: 7, total: 9 },
+    { prefix: 'workbuddy-ai/', remaining: 7, total: 9 },
   ])
-  check('d20_ungrouped_stays_separate', separate.length === 2, JSON.stringify(separate.map((r) => r.prefix)))
+  check('q1a_workbuddy_ai_separate', separate.length === 2, JSON.stringify(separate.map((r) => r.prefix)))
 }
 
 // ---- 4. D-19④ check-in switches inherited from magpie ----------------------------
@@ -321,6 +365,30 @@ let pluginModeSid = ''
     'accounts_with_credentials_ok',
     logged.credential.present === true && logged.status === 'ok' && logged.credential.refreshable === true,
     `cred=${JSON.stringify(logged.credential)} status=${logged.status}`,
+  )
+  // P9-1: windows[] are passed through verbatim (unknown fields included).
+  const q = logged.quota ?? {}
+  check(
+    'accounts_quota_windows_passthrough',
+    Array.isArray(q.windows) &&
+      q.windows.length === 2 &&
+      q.windows[0].display === '100 / 500 · 20 即将过期' &&
+      q.windows[1]['x-extra'] === 'kept',
+    JSON.stringify(q.windows),
+  )
+  check(
+    'accounts_quota_legacy_scalars',
+    q.remaining === 100 &&
+      q.total === 500 &&
+      q.plan === 'pro' &&
+      q.expires_at === Math.floor(Date.parse('2026-11-20T00:00:00Z') / 1000) &&
+      q.reset_at === Math.floor(Date.parse('2026-12-01T00:00:00Z') / 1000),
+    JSON.stringify({ remaining: q.remaining, total: q.total, expires_at: q.expires_at, reset_at: q.reset_at }),
+  )
+  check(
+    'accounts_quota_absent_omitted',
+    list.filter((a) => a.id !== 'mock-account').every((a) => a.quota?.windows === undefined && a.quota?.remaining === undefined),
+    JSON.stringify(list.filter((a) => a.id !== 'mock-account').map((a) => [a.id, a.quota])),
   )
   check(
     'accounts_no_identity_fingerprint',

@@ -331,3 +331,39 @@ func TestAccountsKeepsUnlimitedQuota(t *testing.T) {
 		t.Fatalf("accounts = %+v, want the unlimited flag", payload.Accounts)
 	}
 }
+
+// P9-1: the bridge passes windows[] through verbatim; the host must keep every
+// field (including ones it does not know) so the panel can render display text.
+func TestAccountsKeepsQuotaWindows(t *testing.T) {
+	var payload model.AccountsResponse
+	body := `{"accounts":[{"id":"a1","quota":{
+		"remaining":100,"total":500,"plan":"pro","expires_at":1763596800,"reset_at":1764547200,
+		"read_at":"2026-11-06T14:31:50+08:00",
+		"windows":[
+			{"name":"总积分","amount":100,"limit":500,"used":400,"unit":"credits",
+			 "resetsAt":"2026-12-01T00:00:00Z","runsOutAt":"2026-11-20T00:00:00Z",
+			 "runsOut":20,"display":"100 / 500 · 20 即将过期","x-extra":"kept"},
+			{"name":"赠送积分包","amount":20,"limit":100,"display":"20 / 100"}]}}]}`
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode accounts: %v", err)
+	}
+	if len(payload.Accounts) != 1 {
+		t.Fatalf("accounts = %+v", payload.Accounts)
+	}
+	q := payload.Accounts[0].Quota
+	if len(q.Windows) != 2 {
+		t.Fatalf("windows = %+v, want 2", q.Windows)
+	}
+	if q.Windows[0]["display"] != "100 / 500 · 20 即将过期" || q.Windows[0]["x-extra"] != "kept" {
+		t.Fatalf("window 0 lost fields: %+v", q.Windows[0])
+	}
+	if q.Windows[1]["display"] != "20 / 100" {
+		t.Fatalf("window 1 = %+v", q.Windows[1])
+	}
+	if q.Remaining != 100 || q.Total != 500 || q.Plan != "pro" || q.ExpiresAt != 1763596800 || q.ResetAt != 1764547200 {
+		t.Fatalf("legacy scalars = %+v", q)
+	}
+	if q.ReadAt != "2026-11-06T14:31:50+08:00" {
+		t.Fatalf("read_at = %q", q.ReadAt)
+	}
+}

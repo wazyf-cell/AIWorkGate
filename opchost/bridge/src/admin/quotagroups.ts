@@ -1,11 +1,9 @@
 // D-20 配额共享组：多个 model 前缀 → 同一条额度记录。
 //
-// 依据：计划 §1 台账 D-20 —— AIwork 分类下 codebuddy 与 workbuddy 积分通用，
-// 二者不得作为两个独立渠道接入（否则同一额度被算两次、调度重复投放）。
-// 具体到 magpie 的 workbuddy 包：一个插件导出两个前缀
-//   workbuddy/    （China build, copilot.tencent.com）
-//   workbuddy-ai/ （international build, www.workbuddy.ai）
-// 两前缀共用一份 credits，quota_snapshots 只应有一条。
+// 依据：计划 §1 台账 D-20 + 用户裁决 Q1-A（2026-11-06）——
+//   · CodeBuddy 与 WorkBuddy(国内) 积分通用，配共享组；
+//   · WorkBuddy(国内) 与 WorkBuddy AI(国际) 是**两个平台，额度各记各**，
+//     默认不得配组（否则同一额度被算两次/调度重复投放）。
 //
 // 组定义来源优先级：deps.quotaGroups > <data-dir>/quota-groups.json > 内置默认。
 
@@ -13,14 +11,14 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { QuotaGroup } from './types.ts'
 
-/** 内置默认（按 magpie 真包的 SITES 表实测得出，可被配置覆盖）。 */
+/** 内置默认（按 magpie 真包的 SITES 表 + Q1-A 裁决得出，可被配置覆盖）。 */
 export const DEFAULT_QUOTA_GROUPS: QuotaGroup[] = [
   {
-    id: 'workbuddy-credits',
-    prefixes: ['workbuddy', 'workbuddy-ai'],
+    id: 'codebuddy-workbuddy-credits',
+    prefixes: ['codebuddy', 'workbuddy'],
     account_ns: 'workbuddy',
-    label: 'WorkBuddy 积分（共享）',
-    reason: 'D-20：CodeBuddy/WorkBuddy 同一份积分，两个 model 前缀共用一条额度记录',
+    label: 'CodeBuddy / WorkBuddy（国内）积分（共享）',
+    reason: 'D-20 + Q1-A：codebuddy 与 workbuddy(国内) 同一份积分；workbuddy-ai 是独立平台，不并入',
   },
 ]
 

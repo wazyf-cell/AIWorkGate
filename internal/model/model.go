@@ -203,6 +203,13 @@ type Quota struct {
 	RateLimited    bool    `json:"rate_limited,omitempty"`
 	TodayCheckedIn bool    `json:"today_checked_in,omitempty"`
 	CheckedInAt    int64   `json:"checked_in_at,omitempty"`
+
+	// P9-1/F-14: multi-window quota passed through from the plugin verbatim
+	// (D-21: the host must not force-map per-platform fields). Scheduling keeps
+	// using the scalar fields above; the windows exist for display and alerts.
+	Windows []map[string]any `json:"windows,omitempty"`
+	Display string           `json:"display,omitempty"`
+	ReadAt  string           `json:"read_at,omitempty"`
 }
 
 // Credential is the optional credential health a plugin may report. The host

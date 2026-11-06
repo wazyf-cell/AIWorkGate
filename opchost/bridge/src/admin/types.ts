@@ -151,6 +151,8 @@ export interface AdminDeps {
   quotaGroups?: QuotaGroup[]
   /** magpie settings.json 路径（D-19④）；缺省 ~/.config/magpie/settings.json */
   checkinSettingsPath?: string
+  /** magpie quotas.json 路径（P9-1 多 window 额度）；缺省 ~/.config/magpie/quotas.json */
+  quotaPath?: string
   /** 桥侧开关覆盖；缺省 <data-dir>/checkins.json */
   checkinOverridePath?: string
   now?: () => number

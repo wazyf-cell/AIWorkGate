@@ -24,6 +24,14 @@ import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AdminDeps, AdminCredential, AdminCredentialStore } from './types.ts'
 import type { CheckinLedger } from './ledger.ts'
+import {
+  defaultQuotaPath,
+  loadQuotaWindows,
+  quotaRecordForAccount,
+  quotaWindowsView,
+  type QuotaRecord,
+  type QuotaWindow,
+} from './quotas.ts'
 import { http400, isLoopback, readJSON, rejectRemote, sendJSON } from './util.ts'
 
 /** Account.quota 的字段子集；未提供的省略（Go 侧全部 omitempty）。 */
@@ -37,6 +45,10 @@ export interface AccountQuota {
   rate_limited?: boolean
   today_checked_in?: boolean
   checked_in_at?: number
+  /** P9-1：插件产出的多 window 额度，原样透传（宿主不做字段映射）。 */
+  windows?: QuotaWindow[]
+  display?: string
+  read_at?: string
 }
 
 /** Account.credential：只有存在性与生命周期，永不含 token。 */
@@ -174,14 +186,18 @@ export function buildAccount(
   row: LedgerRow,
   checkin: { result: 'ok' | 'already'; at: number } | undefined,
   nowSec: number,
+  quotas?: Map<string, QuotaRecord>,
 ): AccountPayload {
   const credential: AccountCredential = {
     present: Boolean(ref.credential),
     ...(ref.credential && typeof ref.credential.expiresAt === 'number' ? { expires_at: ref.credential.expiresAt } : {}),
     ...(ref.credential && typeof ref.credential.refreshable === 'boolean' ? { refreshable: ref.credential.refreshable } : {}),
   }
+  const windows = quotaWindowsView(quotas ? quotaRecordForAccount(quotas, ref.pluginId, ref.accountId) : undefined)
   const quota: AccountQuota = {
-    // 额度是 P9 的多 window 模型；本端点只带**确有其值**的两项，其余省略不伪造
+    // 额度是 P9 的多 window 模型：windows 原样透传，legacy 标量由首条 window 派生；
+    // 没有窗口数据时只带签到标记，不伪造 remaining/total。
+    ...(windows ?? {}),
     ...(checkin ? { today_checked_in: true, checked_in_at: checkin.at } : {}),
   }
   return {
@@ -203,6 +219,7 @@ export function listAccounts(
   checkins: CheckinLedger,
   nowSec: number,
 ): AccountPayload[] {
+  const quotas = loadQuotaWindows(deps.quotaPath ?? defaultQuotaPath())
   const out: AccountPayload[] = []
   const seen = new Set<string>()
   for (const handle of deps.plugins.list()) {
@@ -214,7 +231,7 @@ export function listAccounts(
       seen.add(ref.accountId)
       const today = checkins.get(ref.pluginId, ref.accountId)
       const checkin = today && (today.result === 'ok' || today.result === 'already') ? { result: today.result, at: today.at } : undefined
-      out.push(buildAccount(ref, row, checkin, nowSec))
+      out.push(buildAccount(ref, row, checkin, nowSec, quotas))
     }
   }
   return out
@@ -282,7 +299,7 @@ export async function handleAccounts(
     const row = typeof body.enabled === 'boolean' ? ledger.setEnabled(found.ref.pluginId, found.ref.accountId, body.enabled) : found.row
     const today = checkins.get(found.ref.pluginId, found.ref.accountId)
     const checkin = today && (today.result === 'ok' || today.result === 'already') ? { result: today.result, at: today.at } : undefined
-    sendJSON(res, 200, { ok: true, account: buildAccount(found.ref, row, checkin, nowSec) })
+    sendJSON(res, 200, { ok: true, account: buildAccount(found.ref, row, checkin, nowSec, loadQuotaWindows(deps.quotaPath ?? defaultQuotaPath())) })
     return true
   }
 
