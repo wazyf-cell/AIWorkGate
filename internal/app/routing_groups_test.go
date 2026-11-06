@@ -108,3 +108,23 @@ func TestSnapshotPublishesDynamicGroups(t *testing.T) {
 		t.Fatalf("group members after refresh = %d, want 2", got)
 	}
 }
+
+func TestSnapshotExposesPricingForCheapMode(t *testing.T) {
+	app, _ := openAppWithStore(t)
+	app.cfg = config.Default()
+	app.cfg.Pricing = config.PricingConfig{Currency: "USD", Models: map[string]config.Price{
+		"m-cheap": {Input: 1, Output: 2, Multiplier: 0.5},
+	}}
+	src := newFakeSchedulerSource()
+	src.plugins = []model.PluginStatus{{Manifest: model.Manifest{ID: "p", APILevel: 2}, Enabled: true, Running: true}}
+	src.accounts["p"] = []model.Account{{ID: "a1", Enabled: true, Credential: &model.Credential{Present: true}}}
+	src.models["p"] = []model.ModelInfo{{ID: "m-cheap"}}
+
+	snap, err := app.snapshotFrom(context.Background(), src)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if got := snap.Prices["m-cheap"]; got != 1.5 {
+		t.Fatalf("price = %v, want (1+2)*0.5", got)
+	}
+}

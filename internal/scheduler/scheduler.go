@@ -26,6 +26,8 @@ import (
 const (
 	InterPoolSmart = "smart"
 	InterPoolFixed = "fixed"
+	// InterPoolCheap orders candidate pools by configured token price (P9/D-44).
+	InterPoolCheap = "cheap"
 )
 
 // In-pool account strategies (§6.3).
@@ -58,7 +60,7 @@ var StrategyNames = []string{
 }
 
 // InterPoolNames lists the accepted inter-pool modes.
-var InterPoolNames = []string{InterPoolSmart, InterPoolFixed}
+var InterPoolNames = []string{InterPoolSmart, InterPoolCheap, InterPoolFixed}
 
 // ValidStrategy reports whether name is an accepted in-pool strategy. The
 // empty string is accepted by the admin API as "reset to the default".
@@ -74,7 +76,7 @@ func ValidStrategy(name string) bool {
 
 // ValidInterPool reports whether name is an accepted inter-pool mode.
 func ValidInterPool(name string) bool {
-	return name == InterPoolSmart || name == InterPoolFixed
+	return name == InterPoolSmart || name == InterPoolCheap || name == InterPoolFixed
 }
 
 // AccountKey identifies one plugin-owned account.
@@ -274,6 +276,21 @@ func (s *Scheduler) weightedSourcesLocked(group string, sources []Source, weight
 	return out
 }
 
+// snapshotPrice looks up one source's effective price by model id, then by
+// "plugin/model" (both lower-cased).
+func snapshotPrice(snap *Snapshot, src Source) (float64, bool) {
+	if snap == nil || len(snap.Prices) == 0 {
+		return 0, false
+	}
+	if v, ok := snap.Prices[strings.ToLower(strings.TrimSpace(src.Model))]; ok {
+		return v, true
+	}
+	if v, ok := snap.Prices[strings.ToLower(src.PluginID+"/"+src.Model)]; ok {
+		return v, true
+	}
+	return 0, false
+}
+
 func bindingSourcesForRequest(b Binding, req Request, now time.Time) ([]Source, string) {
 	for _, rule := range b.Rules {
 		if rule.When.matches(req, now) {
@@ -288,6 +305,9 @@ type Snapshot struct {
 	Pools     map[string]*Pool
 	Bindings  map[string]Binding
 	InterPool string
+	// Prices maps a lower-cased model id to its effective per-1M price
+	// (input+output, multiplier applied). Nil/unknown means "no price".
+	Prices map[string]float64
 }
 
 // Sticky scopes mirror the persisted sticky_bindings.scope column.
@@ -1371,8 +1391,23 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 	}
 
 	// Fixed keeps the configured source order (binding items / pool priority);
-	// smart reorders by the §6.2 keys.
-	if mode != InterPoolFixed {
+	// smart reorders by the §6.2 keys; cheap puts the lowest configured price
+	// first and falls back to smart for unknown/equal prices (D-44).
+	switch mode {
+	case InterPoolFixed:
+	case InterPoolCheap:
+		sort.SliceStable(evaluated, func(i, j int) bool {
+			pi, oki := snapshotPrice(snap, evaluated[i].source)
+			pj, okj := snapshotPrice(snap, evaluated[j].source)
+			if oki && okj && pi != pj {
+				return pi < pj
+			}
+			if oki != okj {
+				return oki
+			}
+			return s.poolLessLocked(evaluated[i], evaluated[j], now)
+		})
+	default:
 		sort.SliceStable(evaluated, func(i, j int) bool {
 			return s.poolLessLocked(evaluated[i], evaluated[j], now)
 		})

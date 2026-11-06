@@ -154,6 +154,21 @@ func (a *App) snapshotFrom(ctx context.Context, src schedulerSource) (*scheduler
 			Members:              a.poolMemberSet(id),
 		}
 	}
+	// D-31③/P9: expose effective per-model prices for the cheap ordering.
+	if pricing := a.configSnapshot().Pricing; len(pricing.Models) > 0 {
+		snap.Prices = make(map[string]float64, len(pricing.Models))
+		for id, price := range pricing.Models {
+			id = strings.ToLower(strings.TrimSpace(id))
+			if id == "" {
+				continue
+			}
+			effective := price.Input + price.Output
+			if price.Multiplier > 0 {
+				effective *= price.Multiplier
+			}
+			snap.Prices[id] = effective
+		}
+	}
 	// P11: pattern groups resolve against the pools this round just built, so a
 	// vendor adding a model changes group membership at the next snapshot.
 	for id, binding := range a.routingGroupBindings(snap) {

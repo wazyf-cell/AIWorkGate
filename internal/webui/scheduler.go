@@ -42,7 +42,7 @@ var poolStrategies = map[string]bool{
 }
 
 // interPoolModes is the accepted inter-pool mode set (§6.2).
-var interPoolModes = map[string]bool{"smart": true, "fixed": true}
+var interPoolModes = map[string]bool{"smart": true, "cheap": true, "fixed": true}
 
 // reasoningEfforts is the accepted default_reasoning set (§6.5).
 var reasoningEfforts = map[string]bool{"": true, "off": true, "low": true, "medium": true, "high": true}
@@ -335,7 +335,7 @@ func (s *server) handleSchedulerGlobal(w http.ResponseWriter, r *http.Request) {
 	if body.InterPool != nil {
 		mode := strings.ToLower(strings.TrimSpace(*body.InterPool))
 		if !interPoolModes[mode] {
-			writeError(w, http.StatusBadRequest, "inter_pool must be smart or fixed", "invalid_inter_pool")
+			writeError(w, http.StatusBadRequest, "inter_pool must be smart, cheap or fixed", "invalid_inter_pool")
 			return
 		}
 		body.InterPool = &mode

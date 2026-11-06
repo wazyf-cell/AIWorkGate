@@ -811,7 +811,7 @@ async function runExplain() {
                   {{ label }}
                 </option>
               </select>
-              <span class="help">智能调度按积分到期、倍率、剩余积分与池优先级排序；固定优先严格按池顺序。</span>
+              <span class="help">智能：按积分到期、倍率、剩余积分与池优先级；便宜：按配置的单 token 价格升序（无价模型排后）；固定：严格按池顺序。</span>
             </div>
             <div class="field">
               <label for="global-strategy">默认池内策略</label>

@@ -330,3 +330,12 @@ func TestSchedulerErrorMapping(t *testing.T) {
 		t.Fatalf("type = %q", payload.Error.Type)
 	}
 }
+
+func TestSchedulerAcceptsCheapInterPool(t *testing.T) {
+	calls := 0
+	handler := New(schedulerOptions(&calls))
+	recorder := doRequest(t, handler, http.MethodPut, "/api/scheduler/global", `{"inter_pool":"cheap"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("cheap inter_pool = %d (%s)", recorder.Code, recorder.Body.String())
+	}
+}

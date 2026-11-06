@@ -1124,7 +1124,7 @@ export type PoolStrategy =
   | 'p2c'
   | 'fixed'
 
-export type InterPoolMode = 'smart' | 'fixed'
+export type InterPoolMode = 'smart' | 'cheap' | 'fixed'
 
 export type SchedulerPreset = 'balanced' | 'freshness' | 'amortized' | 'latency' | 'fixed'
 
@@ -1144,6 +1144,7 @@ export const POOL_STRATEGY_KEYS = Object.keys(POOL_STRATEGY_LABELS) as PoolStrat
 
 export const INTER_POOL_LABELS: Record<InterPoolMode, string> = {
   smart: '智能调度',
+  cheap: '便宜优先',
   fixed: '固定优先',
 }
 
@@ -1283,7 +1284,10 @@ export function normalizeSchedulerState(
   return {
     version: numberOr(raw?.version, 0),
     global: {
-      inter_pool: raw?.global?.inter_pool === 'fixed' ? 'fixed' : 'smart',
+      inter_pool:
+        raw?.global?.inter_pool === 'fixed' || raw?.global?.inter_pool === 'cheap'
+          ? raw.global.inter_pool
+          : 'smart',
       defaults: normalizePoolSettings(raw?.global?.defaults),
     },
     pools: pools.map((pool) => ({
