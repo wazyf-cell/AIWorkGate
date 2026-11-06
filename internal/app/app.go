@@ -493,16 +493,18 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 
 	// 10. Local API gateway.
 	a.gatewayHandler = gateway.New(gateway.Options{
-		Plugins:          a.pluginMgr,
-		A:                &aAdapter{app: a, baseURL: a.aBaseURL},
-		Keys:             a.keyVerifier,
-		Log:              apiLogSink{app: a},
-		DebugBody:        cfg.Logging.DebugBody,
-		AModelCacheTTL:   time.Duration(cfg.A.ModelCacheMinutes) * time.Minute,
-		CorsAllowOrigins: cfg.Gateway.CorsAllowOrigins,
-		AllowIPs:         cfg.Gateway.AllowIPs,
-		TrustedProxies:   cfg.Gateway.TrustedProxies,
-		ServiceMode:      cfg.Gateway.ServiceMode,
+		Plugins:                 a.pluginMgr,
+		A:                       &aAdapter{app: a, baseURL: a.aBaseURL},
+		Keys:                    a.keyVerifier,
+		Log:                     apiLogSink{app: a},
+		DebugBody:               cfg.Logging.DebugBody,
+		AModelCacheTTL:          time.Duration(cfg.A.ModelCacheMinutes) * time.Minute,
+		CorsAllowOrigins:        cfg.Gateway.CorsAllowOrigins,
+		AllowIPs:                cfg.Gateway.AllowIPs,
+		TrustedProxies:          cfg.Gateway.TrustedProxies,
+		ServiceMode:             cfg.Gateway.ServiceMode,
+		RateLimitPerMinute:      cfg.Gateway.RateLimitPerMinute,
+		RateLimitPerIPPerMinute: cfg.Gateway.RateLimitPerIPPerMinute,
 		// Bare model names route to the configured default plugin; the legacy A
 		// fallback only applies while that slot is empty and the switch is on.
 		DefaultPlugin: cfg.Gateway.DefaultPlugin,

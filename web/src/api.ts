@@ -1871,6 +1871,10 @@ export interface GatewayConfig {
   trusted_proxies?: string[]
   /** D-11: open | paused (503 for every /v1 call) | whitelist (owner keys only). */
   service_mode?: 'open' | 'paused' | 'whitelist'
+  /** P5-5: requests per rolling minute per key; 0 = off. */
+  rate_limit_per_minute?: number
+  /** P5-5: requests per rolling minute per source IP; 0 = off. */
+  rate_limit_per_ip_per_minute?: number
 }
 
 /**
@@ -1981,6 +1985,8 @@ export const DEFAULT_SETTINGS: Settings = {
     allow_ips: ['127.0.0.1', '::1'],
     trusted_proxies: [],
     service_mode: 'open',
+    rate_limit_per_minute: 0,
+    rate_limit_per_ip_per_minute: 0,
   },
   notify: {
     enabled: false,

@@ -147,6 +147,12 @@ type GatewayConfig struct {
 	// whitelist (only keys marked as owner are admitted), D-11.
 	ServiceMode string `json:"service_mode"`
 
+	// RateLimitPerMinute caps each key's requests per rolling minute; 0 = off.
+	RateLimitPerMinute int `json:"rate_limit_per_minute"`
+	// RateLimitPerIPPerMinute caps each source IP before authentication;
+	// 0 = off. Heavy protection belongs at the reverse proxy (P5-5).
+	RateLimitPerIPPerMinute int `json:"rate_limit_per_ip_per_minute"`
+
 	// DefaultPlugin serves bare model names (no "id/" prefix). Empty means a
 	// bare name is answered with 404 model_not_found.
 	DefaultPlugin string `json:"default_plugin"`
@@ -488,6 +494,8 @@ func (c *Config) Normalize() {
 	c.Gateway.AllowIPs = normalizeAllowIPs(c.Gateway.AllowIPs)
 	c.Gateway.TrustedProxies = normalizeIPList(c.Gateway.TrustedProxies, nil)
 	c.Gateway.ServiceMode = normalizeServiceMode(c.Gateway.ServiceMode)
+	c.Gateway.RateLimitPerMinute = clampRateLimit(c.Gateway.RateLimitPerMinute)
+	c.Gateway.RateLimitPerIPPerMinute = clampRateLimit(c.Gateway.RateLimitPerIPPerMinute)
 	c.Gateway.DefaultPlugin = strings.ToLower(strings.TrimSpace(c.Gateway.DefaultPlugin))
 
 	// Redact: default key file lives beside the data dir; kinds/categories
@@ -592,6 +600,17 @@ func normalizeServiceMode(raw string) string {
 	default:
 		return ServiceModeOpen
 	}
+}
+
+// clampRateLimit keeps a hand-edited request-per-minute value sane.
+func clampRateLimit(value int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > 1_000_000 {
+		return 1_000_000
+	}
+	return value
 }
 
 // normalizeAllowIPs keeps valid IP/CIDR entries, dedupes them and falls back to

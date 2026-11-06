@@ -105,6 +105,10 @@ type Options struct {
 	ServiceMode string
 	// KeyUsageTotal returns a key's lifetime request count (P5-1 cap).
 	KeyUsageTotal func(keyID string) (int, error)
+	// RateLimitPerMinute caps each key; RateLimitPerIPPerMinute caps each
+	// source IP before authentication (P5-5, 0 = off).
+	RateLimitPerMinute      int
+	RateLimitPerIPPerMinute int
 
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
@@ -206,6 +210,9 @@ type Gateway struct {
 	allowIPs       atomic.Value // ipAllowlist, set by SetAllowIPs
 	trustedProxies atomic.Value // ipAllowlist, set by SetTrustedProxies
 	serviceMode    atomic.Int32 // serviceOpen / servicePaused / serviceWhitelist
+	ratePerKey     atomic.Int64 // P5-5 per-key requests per minute
+	ratePerIP      atomic.Int64 // P5-5 per-IP requests per minute
+	limiter        *rateLimiter
 	defaultPlugin  string
 	legacyA        bool
 	now            func() time.Time
@@ -316,6 +323,7 @@ func newGateway(opts Options) *Gateway {
 		client:         &http.Client{Transport: transport, CheckRedirect: doNotFollowRedirects},
 		transport:      transport,
 		lim:            newLimiter(),
+		limiter:        newRateLimiter(),
 		pCache:         make(map[string]pluginModels),
 	}
 	g.debugBody.Store(opts.DebugBody)
@@ -323,6 +331,7 @@ func newGateway(opts Options) *Gateway {
 	g.SetAllowIPs(opts.AllowIPs)
 	g.SetTrustedProxies(opts.TrustedProxies)
 	g.SetServiceMode(opts.ServiceMode)
+	g.SetRateLimits(opts.RateLimitPerMinute, opts.RateLimitPerIPPerMinute)
 	return g
 }
 
@@ -555,6 +564,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// P5-5: per-IP limit runs before authentication so bad keys still cost.
+	if allowed, wait := g.ipRateAllowed(r); !allowed {
+		writeRateLimited(w, wait)
+		rec.errText = "rate limited (ip)"
+		g.fail(w, rec, http.StatusTooManyRequests, "rate_limited", "rate_limited",
+			"请求过于频繁：来源 IP 已达到每分钟上限，请稍后重试")
+		return
+	}
+
 	if allowed, origin := g.corsFor(r.Header.Get("Origin")); origin != "" && allowed {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
@@ -590,6 +608,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec.keyID, rec.keyName = keyID, keyName
+	// P5-5: the per-key window counts only authenticated traffic.
+	if allowed, wait := g.keyRateAllowed(keyID); !allowed {
+		writeRateLimited(w, wait)
+		rec.errText = "rate limited (key)"
+		g.fail(w, rec, http.StatusTooManyRequests, "rate_limited", "rate_limited",
+			"请求过于频繁：该客户端 Key 已达到每分钟上限，请稍后重试")
+		return
+	}
 	// The scope snapshot travels with the request context (plan 2026-10-21 §1)
 	// so the routing helpers never touch the store themselves.
 	if kr, found := g.keyRecordFor(keyID); found {

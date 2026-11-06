@@ -393,6 +393,9 @@ func (a *App) saveSettings(raw json.RawMessage) error {
 	if g, ok := a.gatewayHandler.(interface{ SetServiceMode(string) }); ok {
 		g.SetServiceMode(next.Gateway.ServiceMode)
 	}
+	if g, ok := a.gatewayHandler.(interface{ SetRateLimits(int, int) }); ok {
+		g.SetRateLimits(next.Gateway.RateLimitPerMinute, next.Gateway.RateLimitPerIPPerMinute)
+	}
 	// Direct egress accounting is a listener decision, not a plugin one: apply
 	// it before the files are rewritten, so switching it on puts the listener URL
 	// into egress.json right away. Running children keep the environment they

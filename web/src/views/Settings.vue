@@ -83,6 +83,8 @@ const form = reactive({
   gateway_allow_ips: '',
   gateway_trusted_proxies: '',
   gateway_service_mode: 'open' as 'open' | 'paused' | 'whitelist',
+  gateway_rate_key: 0,
+  gateway_rate_ip: 0,
 })
 
 /** Last raw payload from the host; keeps unknown keys for the round trip. */
@@ -714,6 +716,8 @@ async function load() {
     form.gateway_allow_ips = asStringList(gateway.allow_ips, defaults.gateway.allow_ips ?? []).join('\n')
     form.gateway_trusted_proxies = asStringList(gateway.trusted_proxies, defaults.gateway.trusted_proxies ?? []).join('\n')
     form.gateway_service_mode = (gateway.service_mode === 'paused' || gateway.service_mode === 'whitelist' ? gateway.service_mode : 'open')
+    form.gateway_rate_key = asNumber(gateway.rate_limit_per_minute, defaults.gateway.rate_limit_per_minute ?? 0)
+    form.gateway_rate_ip = asNumber(gateway.rate_limit_per_ip_per_minute, defaults.gateway.rate_limit_per_ip_per_minute ?? 0)
     savedSignature.value = settingsSignature()
   } catch (e) {
     error.value = errorMessage(e)
@@ -873,6 +877,8 @@ async function save() {
       allow_ips: allowIPs,
       trusted_proxies: trustedProxies,
       service_mode: form.gateway_service_mode,
+      rate_limit_per_minute: Math.max(0, Math.floor(Number(form.gateway_rate_key) || 0)),
+      rate_limit_per_ip_per_minute: Math.max(0, Math.floor(Number(form.gateway_rate_ip) || 0)),
     },
     // The notification policy lives in the same config.json block; sending it
     // here keeps a page-wide save from reverting a card edit. The webhook URL
@@ -1494,6 +1500,30 @@ async function saveLanPassword() {
           <span class="help">
             <code>paused</code> 在鉴权前拒绝所有 /v1 请求（维护/止损用）；<code>whitelist</code> 只放行在「客户端 Key」里勾选“属主 Key”的 Key。保存后即时生效。
           </span>
+        </div>
+        <div class="field">
+          <label for="set-rate-key">每 Key 每分钟请求上限</label>
+          <input
+            id="set-rate-key"
+            v-model.number="form.gateway_rate_key"
+            class="input"
+            type="number"
+            min="0"
+            step="1"
+          />
+          <span class="help">0 = 不限。按滚动 60 秒计；超限返回 429 <code>rate_limited</code> 并带 <code>Retry-After</code>。</span>
+        </div>
+        <div class="field">
+          <label for="set-rate-ip">每来源 IP 每分钟请求上限</label>
+          <input
+            id="set-rate-ip"
+            v-model.number="form.gateway_rate_ip"
+            class="input"
+            type="number"
+            min="0"
+            step="1"
+          />
+          <span class="help">0 = 不限。鉴权前执行（坏 Key 也计数）；重火力防护建议交给反代的 rate_limit/fail2ban。</span>
         </div>
         <div class="field">
           <label for="set-cors">允许的跨源来源</label>
