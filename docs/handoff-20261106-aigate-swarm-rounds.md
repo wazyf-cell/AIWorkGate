@@ -196,3 +196,43 @@ go test ./internal/gateway/...         → FAIL 仅 1 条：TestRedactABranchSin
 4. task-29 webui 接线是否有半成品文件未知（截断时正在做；接手者先 grep `conversations` 于 internal/webui/ internal/app/）。
 5. task-30 的 A 兜底实现状态未知（规格测试红；bridge-admin 部分消息称「A 路径只脱一遍已改」但 503 说明兜底分支本身未接）。
 6. 128KB 基准在共享机高负载下波动（4.5→12ms），判定非代码回归，未复测。
+
+---
+
+## 11 · 接手进度更新（2026-11-06 14:51，单代理执行，**本 agent 无蜂群**）
+
+> §6（蜂群编成/看板）对本 agent 无效：没有 team 板、roster、send_message、DSH 卡。以下为实测进度，覆盖正文中的旧状态。
+
+### 11.1 新增提交（接在 2ecddd0 之后）
+
+```
+aa32665  task-29 收尾：/api/usage/conversations 全链接线 + 测试 + Usage 默认会话聚合 + dist
+18537f9  task-30：A 兜底规格测试改为真实快照竞态夹具；红/绿反证通过
+a3e0213  task-27：quotas.json windows[] 桥→宿主透传 + Q1-A 配额组修正
+06c85fd  P12-3：/v1/models 下发 D-35 八字段 + model_prefs 消费 + structured 标记
+478311f  P9-3：free/pace 策略 + expiring_first 管理端校验修复 + 告警前端订阅同步
+```
+
+### 11.2 正文勘误
+
+1. §2.1「第 5 轮 WIP 未提交」不成立：截断 WIP 已包含在 2ecddd0，接手时工作区干净。
+2. §5.2 task-30 的诊断不成立：不是缺 A 兜底实现。`dispatch.go` 的 `errNotScheduled → forwardA` 分支一直存在；旧测试用 `p1/m1` + 存在 `p1` 池，`resolveModel` 必然接管，永远到不了兜底。真实触发窗口是 `hasBinding` 与 `scheduleModel` 两次快照读之间绑定消失。测试已改为计数 snapshot 复现该窗口，并做过「改回 `body` 则审计行断言变红」的反证。
+3. §4「trae/workbuddy 未登录」已过时：`~/.config/magpie/plugin-auth.json` 现有 `trae-cn`、`workbuddy` 条目（14:23 更新）；仍缺 `workbuddy-ai`。**凭据存在 ≠ 端到端 chat 已验收**，P1/P2 验收仍未跑。
+4. §5.1 task-29 剩余工作已全部完成（后端路由/handler/app 回调 + cursor 400 映射 + 默认视图翻转）。
+
+### 11.3 验收证据（本次实测）
+
+- `go build ./...` exit 0；`go test ./internal/...` **23 包全绿**（含 gateway）。
+- 桥 admin selftest **74/74**（新增 windows 透传、Q1-A 组断言）。
+- `npm run build`：typecheck + 样式债 0 + 视觉基线 **54/54**。
+- task-30 反证：把 `forwardA(origBody)` 改回 `forwardA(body)` → `redact: no values masked` 断言变红；恢复后绿。
+
+### 11.4 仍未做 / 阻塞
+
+1. **P3 旧插件退役**：破坏性，需用户单独批准；前置是 P1 真实 trae 登录验收（未跑）。
+2. **P4 凭据同步**：依赖用户服务器。
+3. **P1/P2 真实登录验收**：需要启动桥并打真实上游；本轮遵守「不启停进程」未跑。
+4. **P9-3 `cheap`**：D-44 原文依赖 D-31③ 价格引擎，当前仓内无价格数据；未做假实现。
+5. P12-3 的 `serves()` 存活性校验、决策模型 chat 400 互斥（依赖 P13 systemone）未做。
+6. P9 面板多窗口渲染、告警前端订阅之外的展示联动未做（数据通道已通）。
+7. `probeEvery=10` 为首版常量，未做分布调参。
