@@ -18,7 +18,12 @@ DRY_RUN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --binary) BINARY="${2:-}"; shift 2 ;;
+    --binary)
+      if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+        echo "missing value for --binary" >&2
+        exit 2
+      fi
+      BINARY="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -28,6 +33,11 @@ if [ -z "$TARGET" ]; then
   echo "usage: $0 user@host [--binary path] [--dry-run]" >&2
   exit 2
 fi
+# A missing user@host that leaves only flags would otherwise treat "--dry-run"
+# as the ssh target and run a real deployment.
+case "$TARGET" in
+  -*) echo "first argument must be user@host, got \"$TARGET\"" >&2; exit 2 ;;
+esac
 if [ ! -f "$BINARY" ]; then
   echo "binary not found: $BINARY (run scripts/build-linux.sh first)" >&2
   exit 1
@@ -50,9 +60,11 @@ echo "==> binary: $BINARY (sha256 $SUM)"
 # 1. Keep the current binary for rollback. A first install has nothing to keep.
 run ssh "$TARGET" "sudo mkdir -p /opt/aiworkgate && if [ -f /opt/aiworkgate/aiworkgate ]; then sudo cp -p /opt/aiworkgate/aiworkgate /opt/aiworkgate/aiworkgate.prev; fi"
 
-# 2. Upload out of place, verify, then swap atomically.
+# 2. Upload out of place, verify, then swap atomically: install to .new and
+# rename within the same directory — `install` onto the live file would be a
+# truncate+overwrite, leaving a truncated binary if interrupted.
 run scp "$BINARY" "$TARGET:$REMOTE_TMP"
-run ssh "$TARGET" "echo '$SUM  $REMOTE_TMP' | sha256sum -c - && sudo install -m 0755 '$REMOTE_TMP' /opt/aiworkgate/aiworkgate && rm -f '$REMOTE_TMP'"
+run ssh "$TARGET" "echo '$SUM  $REMOTE_TMP' | sha256sum -c - && sudo install -m 0755 '$REMOTE_TMP' /opt/aiworkgate/aiworkgate.new && sudo mv -f /opt/aiworkgate/aiworkgate.new /opt/aiworkgate/aiworkgate && rm -f '$REMOTE_TMP'"
 
 # 3. Restart and wait for readiness.
 run ssh "$TARGET" "sudo systemctl restart aiworkgate && for i in \$(seq 1 20); do curl -fsS http://127.0.0.1:7865/healthz >/dev/null && exit 0; sleep 1; done; echo 'health check failed; run scripts/rollback-linux.sh' >&2; exit 1"
