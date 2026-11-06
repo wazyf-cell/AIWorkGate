@@ -952,6 +952,10 @@ export interface UsageAccountCredit {
   plan?: string
   daily_credits?: number
   days_left?: number
+  /** D-53: estimated hours until the credits run out at the recent burn rate. */
+  runway_hours?: number
+  /** Projected empty time (unix seconds); absent when runway_hours is absent. */
+  runway_at?: number
 }
 
 export interface UsageCreditsResponse {

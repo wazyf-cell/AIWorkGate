@@ -869,6 +869,18 @@ function expiryDays(row: UsageAccountCredit): number | null {
   return Math.ceil((date.getTime() - Date.now()) / 86_400_000)
 }
 
+function runwayLabel(row: UsageAccountCredit): string {
+  const hours = row.runway_hours
+  if (typeof hours !== 'number' || !Number.isFinite(hours)) return '—'
+  if (hours >= 48) return `${(hours / 24).toFixed(1)} 天`
+  if (hours >= 1) return `${hours.toFixed(1)} 小时`
+  return `${Math.max(0, Math.round(hours * 60))} 分钟`
+}
+
+function runwayTitle(row: UsageAccountCredit): string | undefined {
+  return typeof row.runway_at === 'number' ? `按近 24 小时消耗速度，预计 ${formatTimestamp(row.runway_at)} 用完` : undefined
+}
+
 function expiryTone(row: UsageAccountCredit): 'past' | 'soon' | 'unknown' | '' {
   const daysLeft = expiryDays(row)
   if (daysLeft === null) return 'unknown'
@@ -1699,12 +1711,13 @@ onBeforeUnmount(() => {
                 <th>到期日</th>
                 <th>日消耗</th>
                 <th>预计可用天数</th>
+                <th>还能用（估算）</th>
               </tr>
             </thead>
             <tbody>
               <template v-if="loading.expiry && !expiryLoaded">
                 <tr v-for="n in 4" :key="`sk-${n}`">
-                  <td colspan="7"><span class="skeleton skeleton-line"></span></td>
+                  <td colspan="8"><span class="skeleton skeleton-line"></span></td>
                 </tr>
               </template>
               <template v-else>
@@ -1726,9 +1739,10 @@ onBeforeUnmount(() => {
                       <span v-else-if="expiryTone(row) === 'soon'" class="badge warn plain">临期</span>
                     </template>
                   </td>
+                  <td class="num" :title="runwayTitle(row)">{{ runwayLabel(row) }}</td>
                 </tr>
                 <tr v-if="expiry.length === 0">
-                  <td colspan="7">
+                  <td colspan="8">
                     <div class="empty">
                       <strong>暂无到期信息</strong>
                       <span>账号额度尚未回传到期时间，或筛选条件不匹配。</span>

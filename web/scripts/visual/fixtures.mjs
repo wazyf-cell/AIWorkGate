@@ -662,8 +662,8 @@ export const usageCredits = {
 
 export const usageExpiry = {
   accounts: [
-    { plugin_id: 'aichat', account_id: 'acct_alpha', display_name: '示例账号 Alpha', expires_at: '2026-11-12T00:00:00+08:00', days_left: 21 },
-    { plugin_id: 'officeace', account_id: 'acct_bravo', display_name: '示例账号 Bravo', expires_at: '2026-10-26T00:00:00+08:00', days_left: 4 },
+    { plugin_id: 'aichat', account_id: 'acct_alpha', display_name: '示例账号 Alpha', expires_at: '2026-11-12T00:00:00+08:00', days_left: 21, runway_hours: 240, runway_at: 1792650000 },
+    { plugin_id: 'officeace', account_id: 'acct_bravo', display_name: '示例账号 Bravo', expires_at: '2026-10-26T00:00:00+08:00', days_left: 4, runway_hours: 30, runway_at: 1792570000 },
     { plugin_id: 'aichat', account_id: 'acct_echo', display_name: '示例账号 Echo', expires_at: '2026-12-01T00:00:00+08:00', days_left: 40 },
   ],
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/url"
 	"strings"
 	"testing"
@@ -526,5 +527,64 @@ func TestExportClearSectionKeepsHistory(t *testing.T) {
 	}
 	if _, _, err := st.QueryAPILogsSince(0, "2026-10-20", "2026-10-20", 10); err != nil {
 		t.Fatalf("api_logs unreadable after clear: %v", err)
+	}
+}
+
+func TestCreditsRunwayEstimate(t *testing.T) {
+	st := openConversationStore(t)
+	base := fixedNow().Unix()
+	for _, obs := range []struct {
+		hoursAgo  int64
+		remaining float64
+	}{
+		{6, 600}, {3, 500}, {0, 400},
+	} {
+		if err := st.SaveQuotaSnapshot(model.QuotaSnapshot{
+			PluginID: "p", AccountID: "acc", Remaining: obs.remaining, Total: 1000,
+			At: base - obs.hoursAgo*3600,
+		}); err != nil {
+			t.Fatalf("SaveQuotaSnapshot: %v", err)
+		}
+	}
+	// A refill (remaining goes up) must not produce a negative burn rate.
+	for _, obs := range []struct {
+		hoursAgo  int64
+		remaining float64
+	}{{6, 100}, {0, 300}} {
+		if err := st.SaveQuotaSnapshot(model.QuotaSnapshot{
+			PluginID: "p", AccountID: "refill", Remaining: obs.remaining, Total: 1000,
+			At: base - obs.hoursAgo*3600,
+		}); err != nil {
+			t.Fatalf("SaveQuotaSnapshot: %v", err)
+		}
+	}
+
+	svc := NewService(st)
+	svc.Now = fixedNow
+	q, err := ParseQuery(url.Values{}, fixedNow())
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	resp, err := svc.Credits(q, false)
+	if err != nil {
+		t.Fatalf("Credits: %v", err)
+	}
+	byAccount := map[string]CreditItem{}
+	for _, item := range resp.Accounts {
+		byAccount[item.AccountID] = item
+	}
+	acc, ok := byAccount["acc"]
+	if !ok || acc.RunwayHours == nil || acc.RunwayAt == nil {
+		t.Fatalf("acc runway = %+v (ok %v), want an estimate", acc, ok)
+	}
+	// 600 -> 400 over 6h = 200/6h; 400 remaining lasts 12h.
+	if math.Abs(*acc.RunwayHours-12) > 0.01 {
+		t.Fatalf("runway = %v hours, want 12", *acc.RunwayHours)
+	}
+	if want := base + 12*3600; *acc.RunwayAt != want {
+		t.Fatalf("runway_at = %d, want %d", *acc.RunwayAt, want)
+	}
+	if refill := byAccount["refill"]; refill.RunwayHours != nil {
+		t.Fatalf("refill runway = %v, want unknown", *refill.RunwayHours)
 	}
 }

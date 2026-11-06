@@ -307,7 +307,7 @@ e1b77c8  退役内置 A 网关（D-60）
 | P6 | Gemini 入站（含工具调用双向翻译）+ SystemOne 路由完成；真实 JEV key 未验 |
 | P9 | 策略/告警/面板/告警订阅 + `cheap`（配置价）完成 |
 | P11 | 模式组 + 规则表（含 Token 条件）+ 权重 + 意图规则框架 + `/groups` 编辑器完成；真实 JEV 判定未验收 |
-| P13 | D-31 十列 + 按 served 统计 + 导出粒度/拆段 + 用量清空事件 + Prompt 六段分析完成；47 列清单已冻结（`docs/p13/01-导出列清单.md`） |
+| P13 | D-31 十列 + 按 served 统计 + 导出粒度/拆段 + 用量清空事件 + 还能用多久估算 + Prompt 六段分析完成；47 列清单已冻结（`docs/p13/01-导出列清单.md`） |
 | P14 | `/me` 完成（限制卡/用量/按模型/最近记录，无正文） |
 | P7 | 构建/部署/回滚脚本与演练手册完成；**服务器实跑未做** |
 | P3/P4 | 未开工（P3 破坏性；P4 依赖服务器） |
@@ -316,7 +316,7 @@ e1b77c8  退役内置 A 网关（D-60）
 
 - `go build ./...` exit 0。
 - `go test ./internal/...`：23 包通过；app/logging 偶发 Windows `TempDir RemoveAll: directory is not empty`（隔离重跑通过，非断言失败）。
-- `npm run build`：typecheck + 样式债 0 + 视觉 **63/63**（新增 `groups` / `groups-intent`；导航加「路由组」后全量重录）。
+- `npm run build`：typecheck + 样式债 0 + 视觉 **65/65**（新增 `groups` / `groups-intent` / `usage-expiry`）。
 - Linux 交叉编译：amd64/arm64 通过（ELF，2026-11-06 退役 A 后重建）；部署/回滚脚本 dry-run 通过。
 - opchost 桥自检：`node opchost/bridge/src/admin/testdata/selftest.mjs --exit` → 74/74。
 

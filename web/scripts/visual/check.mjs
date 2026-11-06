@@ -256,6 +256,21 @@ export const PAGES = [
       })()`,
     ],
   },
+  {
+    slug: 'usage-expiry',
+    path: '/usage',
+    title: '用量 · 到期与还能用',
+    ready: () => document.querySelectorAll('.main *').length > 40,
+    prepare: [
+      `(() => {
+        const tab = [...document.querySelectorAll('.tabs .tab')].find((el) => el.textContent.trim() === '到期');
+        if (!tab) throw new Error('expiry tab not found');
+        tab.click();
+      })()`,
+    ],
+    settled: () => (document.body.textContent ?? '').includes('还能用（估算）'),
+    variants: ['light', 'dark'],
+  },
   { slug: 'scheduler', path: '/scheduler', title: '调度', ready: () => document.querySelectorAll('.main *').length > 40 },
   { slug: 'groups', path: '/groups', title: '路由组', ready: () => document.querySelectorAll('.main *').length > 40 },
   {

@@ -66,6 +66,11 @@ type CreditItem struct {
 	Plan         string  `json:"plan"`
 	DailyCredits float64 `json:"daily_credits"`
 	DaysLeft     *int    `json:"days_left"`
+	// RunwayHours estimates how long the remaining credits last at the recent
+	// burn rate (D-53); nil when there is not enough history. RunwayAt is the
+	// projected empty time.
+	RunwayHours *float64 `json:"runway_hours,omitempty"`
+	RunwayAt    *int64   `json:"runway_at,omitempty"`
 }
 
 // CreditsResponse is the body of GET /api/usage/credits and .../expiry.
@@ -97,6 +102,43 @@ type SessionsResponse struct {
 	Total    int           `json:"total"`
 	Page     int           `json:"page"`
 	PageSize int           `json:"page_size"`
+}
+
+// runwayWindow and runwayMinSpan bound the burn-rate estimate: only
+// snapshots from the last day count, and the two observations must be at
+// least an hour apart so a rounding wobble is not read as a burn rate.
+const (
+	runwayWindow  = 24 * time.Hour
+	runwayMinSpan = time.Hour
+)
+
+// accountRunway estimates remaining hours from the newest and oldest quota
+// snapshots inside the window. A refill (remaining went up) or a short span
+// yields nil instead of a misleading number.
+func (s *Service) accountRunway(pluginID, accountID string, now int64) (*float64, *int64) {
+	if s == nil || s.Store == nil || now <= 0 {
+		return nil, nil
+	}
+	since := now - int64(runwayWindow/time.Second)
+	history, err := s.Store.QueryQuotaSnapshots(pluginID, accountID, since)
+	if err != nil || len(history) < 2 {
+		return nil, nil
+	}
+	newest, oldest := history[0], history[len(history)-1]
+	spanHours := float64(newest.At-oldest.At) / 3600
+	if spanHours < runwayMinSpan.Hours() {
+		return nil, nil
+	}
+	consumed := oldest.Remaining - newest.Remaining
+	if consumed <= 0 {
+		return nil, nil
+	}
+	hours := newest.Remaining / (consumed / spanHours)
+	if hours < 0 || math.IsNaN(hours) || math.IsInf(hours, 0) {
+		return nil, nil
+	}
+	at := now + int64(hours*3600)
+	return &hours, &at
 }
 
 func (s *Service) now() time.Time {
@@ -173,6 +215,7 @@ func (s *Service) Credits(q Query, sortByExpiry bool) (CreditsResponse, error) {
 		if name == "" {
 			name = snap.AccountID
 		}
+		runwayHours, runwayAt := s.accountRunway(snap.PluginID, snap.AccountID, now)
 		out.Accounts = append(out.Accounts, CreditItem{
 			PluginID:     snap.PluginID,
 			AccountID:    snap.AccountID,
@@ -183,6 +226,8 @@ func (s *Service) Credits(q Query, sortByExpiry bool) (CreditsResponse, error) {
 			Plan:         snap.Plan,
 			DailyCredits: snap.DailyCredits,
 			DaysLeft:     daysLeft(snap.ExpiresAt, now),
+			RunwayHours:  runwayHours,
+			RunwayAt:     runwayAt,
 		})
 	}
 	sort.SliceStable(out.Accounts, func(i, j int) bool {
