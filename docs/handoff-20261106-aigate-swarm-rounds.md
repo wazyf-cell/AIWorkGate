@@ -329,6 +329,7 @@ c2a9c98  P13: record usage clears instead of deleting history
 - P1/P2 真包探针（2026-11-06 22:09，临时数据目录、无 chat）：
   - `opencode-trae-auth` → `/meta` 报 `trae-cn`(6)+`trae-global`(5) 共 11 个模型；`/v1/models` 字段完整；无凭据 chat → **401 `needs_sign_in`**（非 500）。
   - `opencode-workbuddy-auth` → `/meta` 报 `workbuddy`(15)+`workbuddy-ai`(16) 两个独立 provider（符合 Q1 修订），模型字段完整。
+  - **宿主监管联调**（2026-11-06 22:11）：把桥编译成 exe 装进隔离预览实例 → 宿主启动插件、网关 `/v1/models` 发布 `bridge-trae/trae-cn/*` 等 11 个模型；签到调度正确区分 trae-cn（尝试）与 trae-global（409 pluginCheckins 关闭）；杀掉桥进程后 1s 内以新端口重启（pid 15488 / 4346），状态仍 1/1；无凭据 chat 在调度层返回 503「no eligible account (no credential)」。
   - 真实登录后的 chat 成功与额度记录仍待用户登录。
 
 ### 12.4 接手首要事项
