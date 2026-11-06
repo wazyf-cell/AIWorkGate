@@ -827,6 +827,13 @@ export type UsageFilterParams = {
   account?: string
 }
 
+/** One recorded "usage reset" marker; api_logs rows are never deleted. */
+export interface UsageClear {
+  id: number
+  cleared_at: number
+  note?: string
+}
+
 /** Export time-series bucket; the rest of the CSV is unaffected. */
 export type UsageGranularity = 'hour' | 'day' | 'week'
 
@@ -2484,6 +2491,17 @@ export const api = {
     /** Absolute CSV URL, for an `<a download>` click. */
     exportUrl(filters: UsageFilterParams, granularity: UsageGranularity = 'day'): string {
       return `/api/usage/export${qs({ ...filters, granularity })}`
+    },
+    /** Newest clear markers first; the default is just the latest one. */
+    clears(limit = 1): Promise<{ clears: UsageClear[] }> {
+      return request<{ clears: UsageClear[] }>(`/usage/clears${qs({ limit })}`)
+    },
+    /** Records a reset marker; history is kept intact. */
+    clear(note: string): Promise<{ clear: UsageClear; clears: UsageClear[] }> {
+      return request<{ clear: UsageClear; clears: UsageClear[] }>('/usage/clear', {
+        method: 'POST',
+        body: JSON.stringify({ note }),
+      })
     },
   },
 

@@ -115,6 +115,8 @@ func (a *App) webOptions() webui.Options {
 		UsageSessions:      a.usageSessionsPage,
 		UsageConversations: a.usageConversationsPage,
 		UsageExport:        a.usageExport,
+		ClearUsage:         a.clearUsage,
+		UsageClears:        a.usageClears,
 		UsageLatency:       a.usageLatency,
 		UsageKeyUsage:      a.usageKeyUsage,
 
@@ -2742,6 +2744,35 @@ func (a *App) usageExport(w io.Writer, query map[string][]string) (string, error
 		return "", err
 	}
 	return a.usageSvc.Export(w, q)
+}
+
+// clearUsage records a reset marker. Historical api_logs rows are untouched;
+// the marker only tells the UI/export where the current view starts.
+func (a *App) clearUsage(note string) (any, error) {
+	if a.store == nil {
+		return nil, errors.New("app: store is not available")
+	}
+	item, err := a.store.RecordUsageClear(time.Now().Unix(), note)
+	if err != nil {
+		return nil, err
+	}
+	clears, err := a.store.ListUsageClears(50)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"clear": item, "clears": clears}, nil
+}
+
+// usageClears serves GET /api/usage/clears.
+func (a *App) usageClears(limit int) (any, error) {
+	if a.store == nil {
+		return map[string]any{"clears": []model.UsageClear{}}, nil
+	}
+	clears, err := a.store.ListUsageClears(limit)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"clears": clears}, nil
 }
 
 // usageLatency serves GET /api/usage/latency (plan 2026-10-21 §5).

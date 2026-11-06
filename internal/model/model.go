@@ -570,3 +570,12 @@ type HostStatus struct {
 	EgressAssigned int `json:"egress_assigned"`
 	EgressFailed   int `json:"egress_failed"`
 }
+
+// UsageClear is one "reset the usage view" marker. It never deletes api_logs:
+// the history stays queryable, and the marker only tells the UI/export where
+// the current view starts.
+type UsageClear struct {
+	ID        int64  `json:"id"`
+	ClearedAt int64  `json:"cleared_at"`
+	Note      string `json:"note,omitempty"`
+}

@@ -211,6 +211,9 @@ type Options struct {
 	UsageSessions      func(query map[string][]string) (any, error)
 	UsageConversations func(query map[string][]string) (any, error)
 	UsageExport        func(w io.Writer, query map[string][]string) (filename string, err error)
+	// ClearUsage records a usage reset marker (never deletes history).
+	ClearUsage  func(note string) (any, error)
+	UsageClears func(limit int) (any, error)
 
 	// Observability over raw request logs (plan 2026-10-21 §5): per-day
 	// latency/TTFB percentiles and per-key token/credit totals. Both take an
@@ -417,6 +420,8 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/usage/sessions", s.handleUsageSessions)
 	mux.HandleFunc("/api/usage/conversations", s.handleUsageConversations)
 	mux.HandleFunc("/api/usage/export", s.handleUsageExport)
+	mux.HandleFunc("/api/usage/clear", s.handleUsageClear)
+	mux.HandleFunc("/api/usage/clears", s.handleUsageClears)
 	mux.HandleFunc("/api/usage/latency", s.handleUsageLatency)
 	mux.HandleFunc("/api/usage/latency/models", s.handleUsageModelLatency)
 	mux.HandleFunc("/api/usage/keys", s.handleUsageKeys)

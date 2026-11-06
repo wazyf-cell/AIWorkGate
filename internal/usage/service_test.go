@@ -412,7 +412,7 @@ func TestExportCSVBlocks(t *testing.T) {
 		t.Fatalf("filename = %q", filename)
 	}
 	text := buf.String()
-	if !strings.HasPrefix(text, "section,day,plugin_id,account_id,display_name,requests,prompt_tokens,completion_tokens,credits,remaining,total,expires_at,plan,daily_credits,days_left,granularity,cache_write,cache_write_1h,cache_unknown,reasoning_tokens,cost_usd,pricing_model,purpose,model_requested,model_upstream,model_served\n") {
+	if !strings.HasPrefix(text, "section,day,plugin_id,account_id,display_name,requests,prompt_tokens,completion_tokens,credits,remaining,total,expires_at,plan,daily_credits,days_left,granularity,cache_write,cache_write_1h,cache_unknown,reasoning_tokens,cost_usd,pricing_model,purpose,model_requested,model_upstream,model_served,cleared_at,clear_note\n") {
 		t.Fatalf("header missing: %q", text)
 	}
 	if !strings.Contains(text, "account,,mock,acc_1,主号") {
@@ -478,5 +478,53 @@ func TestExportGranularityAndModelSections(t *testing.T) {
 func TestParseQueryGranularityValidation(t *testing.T) {
 	if _, err := ParseQuery(url.Values{"granularity": {"minute"}}, fixedNow()); !errors.Is(err, ErrBadQuery) {
 		t.Fatalf("invalid granularity err = %v, want ErrBadQuery", err)
+	}
+}
+
+func TestExportClearSectionKeepsHistory(t *testing.T) {
+	st := openConversationStore(t)
+	if err := st.InsertAPIRequestLog(model.APIRequestLog{
+		TS: "2026-10-20T10:00:00+08:00", ReqID: "r1", Source: "plugin:p", Model: "m",
+		Status: 200, PromptTokens: 10, CompletionTokens: 5,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := st.RecordUsageClear(time.Date(2026, 10, 20, 12, 0, 0, 0, time.Local).Unix(), "before upgrade"); err != nil {
+		t.Fatalf("RecordUsageClear: %v", err)
+	}
+	svc := NewService(st)
+	q, err := ParseQuery(url.Values{"from": {"2026-10-19"}, "to": {"2026-10-21"}}, fixedNow())
+	if err != nil {
+		t.Fatalf("ParseQuery: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := svc.Export(&buf, q); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	records, err := csv.NewReader(bytes.NewReader(buf.Bytes())).ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+	if got := len(records[0]); got != 28 {
+		t.Fatalf("columns = %d, want 28", got)
+	}
+	var clearRow []string
+	series := 0
+	for _, row := range records[1:] {
+		switch row[0] {
+		case "clear":
+			clearRow = row
+		case "timeseries":
+			series++
+		}
+	}
+	if clearRow == nil || clearRow[1] != "2026-10-20" || clearRow[27] != "before upgrade" || clearRow[26] == "" {
+		t.Fatalf("clear row = %v", clearRow)
+	}
+	if series == 0 {
+		t.Fatal("history rows disappeared after the clear marker")
+	}
+	if _, _, err := st.QueryAPILogsSince(0, "2026-10-20", "2026-10-20", 10); err != nil {
+		t.Fatalf("api_logs unreadable after clear: %v", err)
 	}
 }

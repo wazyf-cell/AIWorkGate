@@ -640,6 +640,15 @@ var migrations = []migrationStep{
 			{"api_logs", "purpose", "TEXT"},
 		},
 	},
+	{ // version 21: usage clear events (D-54: record the reset, never delete rows)
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS usage_clears (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				cleared_at INTEGER NOT NULL,
+				note TEXT
+			)`,
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

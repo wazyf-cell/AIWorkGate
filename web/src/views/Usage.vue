@@ -8,6 +8,7 @@ import {
   type AccountGroup,
   type PluginStatus,
   type UsageAccountCredit,
+  type UsageClear,
   type UsageConversation,
   type UsageConversationsParams,
   type UsageFilterParams,
@@ -170,6 +171,43 @@ const filterParams = computed<UsageFilterParams>(() => ({
 const filterKey = computed(() => JSON.stringify(filterParams.value))
 const exportGranularity = ref<UsageGranularity>('day')
 const exportUrl = computed(() => api.usage.exportUrl(filterParams.value, exportGranularity.value))
+
+const lastClear = ref<UsageClear | null>(null)
+const clearArmed = ref(false)
+const clearBusy = ref(false)
+let clearArmTimer = 0
+
+async function loadClears() {
+  try {
+    const data = await api.usage.clears(1)
+    lastClear.value = data?.clears?.[0] ?? null
+  } catch {
+    lastClear.value = null
+  }
+}
+
+async function clearUsage() {
+  if (!clearArmed.value) {
+    clearArmed.value = true
+    window.clearTimeout(clearArmTimer)
+    clearArmTimer = window.setTimeout(() => {
+      clearArmed.value = false
+    }, 4000)
+    return
+  }
+  window.clearTimeout(clearArmTimer)
+  clearBusy.value = true
+  try {
+    const data = await api.usage.clear('从用量页手动清空')
+    lastClear.value = data?.clear ?? lastClear.value
+    clearArmed.value = false
+    toast('已记录清空事件；历史记录仍然保留，可在导出中查到')
+  } catch (e) {
+    toast(errorMessage(e), 'error')
+  } finally {
+    clearBusy.value = false
+  }
+}
 
 function applyPreset(next: Preset) {
   preset.value = next
@@ -965,6 +1003,7 @@ onMounted(() => {
   document.addEventListener('keydown', onKeydown)
   void loadOptions()
   void refresh()
+  void loadClears()
 })
 
 onBeforeUnmount(() => {
@@ -1047,6 +1086,17 @@ onBeforeUnmount(() => {
           </div>
 
           <span class="spacer"></span>
+          <span v-if="lastClear" class="small muted">上次清空 {{ formatTimestamp(lastClear.cleared_at) }}</span>
+          <button
+            type="button"
+            class="btn"
+            :class="{ danger: clearArmed }"
+            :disabled="clearBusy"
+            :title="'只记录清空事件，不删除任何历史记录'"
+            @click="clearUsage"
+          >
+            {{ clearBusy ? '记录中…' : clearArmed ? '确认清空' : '清空用量' }}
+          </button>
           <span class="small muted">导出粒度</span>
           <div class="seg" role="group" aria-label="导出时间粒度">
             <button

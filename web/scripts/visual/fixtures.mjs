@@ -858,3 +858,9 @@ export const routingGroups = {
     },
   ],
 }
+
+// P13 usage clear marker: the page shows the newest reset boundary while the
+// exported history remains untouched.
+export const usageClears = {
+  clears: [{ id: 2, cleared_at: 1792500000, note: '升级前清空' }],
+}

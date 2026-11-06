@@ -76,6 +76,7 @@ const ROUTES = [
   { path: '/api/usage/latency', body: () => F.usageLatency },
   { path: '/api/usage/keys', body: () => F.usageKeys },
   { path: '/api/usage/models', body: () => F.usageModels },
+  { path: '/api/usage/clears', body: () => F.usageClears },
   { test: (pathname) => pathname === '/api/checkin/all', body: () => ({ results: [] }) },
   { test: (pathname) => pathname.startsWith('/api/checkin'), body: () => F.checkinRecords },
   { test: (pathname) => pathname.startsWith('/api/pools/') && pathname.endsWith('/catalog'), body: () => F.poolCatalog },

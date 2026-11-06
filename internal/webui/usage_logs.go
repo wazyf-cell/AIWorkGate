@@ -539,3 +539,56 @@ func (s *server) handleLogStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// handleUsageClear records a reset marker. It never deletes api_logs rows:
+// historical usage stays queryable, and the marker only moves the "current
+// view" boundary (D-54).
+func (s *server) handleUsageClear(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodPost) {
+		return
+	}
+	if s.opts.ClearUsage == nil {
+		s.unavailable(w)
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	note := strings.TrimSpace(body.Note)
+	if len([]rune(note)) > 200 {
+		writeError(w, http.StatusBadRequest, "note is longer than 200 characters", "bad_request")
+		return
+	}
+	payload, err := s.opts.ClearUsage(note)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "clear usage: "+err.Error(), "internal_error")
+		return
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// handleUsageClears serves GET /api/usage/clears: newest markers first.
+func (s *server) handleUsageClears(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
+	if s.opts.UsageClears == nil {
+		s.unavailable(w)
+		return
+	}
+	payload, err := s.opts.UsageClears(parseLimit(r.URL.Query().Get("limit"), 50, 500))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read usage clears: "+err.Error(), "internal_error")
+		return
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, payload)
+}

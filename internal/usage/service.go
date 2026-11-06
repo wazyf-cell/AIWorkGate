@@ -291,6 +291,10 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	clears, err := s.Store.ListUsageClears(200)
+	if err != nil {
+		return "", err
+	}
 	formatCost := func(cost float64, sampled bool) string {
 		if !sampled {
 			return ""
@@ -303,7 +307,8 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 		"requests", "prompt_tokens", "completion_tokens", "credits",
 		"remaining", "total", "expires_at", "plan", "daily_credits", "days_left",
 		"granularity", "cache_write", "cache_write_1h", "cache_unknown", "reasoning_tokens",
-		"cost_usd", "pricing_model", "purpose", "model_requested", "model_upstream", "model_served"}); err != nil {
+		"cost_usd", "pricing_model", "purpose", "model_requested", "model_upstream", "model_served",
+		"cleared_at", "clear_note"}); err != nil {
 		return "", err
 	}
 	for _, row := range summary.Series {
@@ -315,6 +320,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			strconv.FormatFloat(row.Credits, 'f', -1, 64),
 			"", "", "", "", "", "",
 			"", "", "", "", "", "", "", "", "", "", "",
+			"", "",
 		}); err != nil {
 			return "", err
 		}
@@ -334,6 +340,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			strconv.FormatInt(row.ReasoningTokens, 10),
 			formatCost(row.CostUSD, row.CostSampled),
 			"", "", "", "", "",
+			"", "",
 		}); err != nil {
 			return "", err
 		}
@@ -352,6 +359,23 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			"", strconv.FormatInt(row.ReasoningTokens, 10),
 			formatCost(row.CostUSD, row.CostSampled),
 			"", "", "", "", row.Model,
+			"", "",
+		}); err != nil {
+			return "", err
+		}
+	}
+	for _, item := range clears {
+		local := time.Unix(item.ClearedAt, 0).In(time.Local)
+		day := local.Format("2006-01-02")
+		if day < q.FromDay || day > q.ToDay {
+			continue
+		}
+		if err := write([]string{
+			"clear", day, "", "", "",
+			"", "", "", "",
+			"", "", "", "", "", "",
+			"", "", "", "", "", "", "", "", "", "", "",
+			local.Format(time.RFC3339), item.Note,
 		}); err != nil {
 			return "", err
 		}
@@ -371,6 +395,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			strconv.FormatFloat(item.DailyCredits, 'f', -1, 64),
 			days,
 			"", "", "", "", "", "", "", "", "", "", "",
+			"", "",
 		}); err != nil {
 			return "", err
 		}
