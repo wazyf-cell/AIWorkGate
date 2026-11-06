@@ -32,3 +32,27 @@ func TestUpdateKeyPersistsLimits(t *testing.T) {
 		t.Fatalf("updated key = %+v", key)
 	}
 }
+
+func TestCreateKeyPersistsLimits(t *testing.T) {
+	app := newCustomModelApp(t)
+	st := app.store
+	expires := time.Now().Add(24 * time.Hour).Unix()
+	_, key, err := app.createKeySpec(webui.KeySpec{
+		Name: "friend", Enabled: true,
+		ModelScope: []string{"p/*"}, BindPool: "p", DailyQuota: 3,
+		ExpiresAt: expires, AllowedIPs: []string{"192.168.1.0/24"},
+		Owner: true, MaxRequestsTotal: 9, Share: true,
+	})
+	if err != nil {
+		t.Fatalf("createKeySpec: %v", err)
+	}
+	stored, ok, err := st.GetClientKey(key.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetClientKey: ok=%v err=%v", ok, err)
+	}
+	if stored.ExpiresAt != expires || len(stored.AllowedIPs) != 1 || stored.AllowedIPs[0] != "192.168.1.0/24" ||
+		!stored.Owner || stored.MaxRequestsTotal != 9 || !stored.Share ||
+		stored.BindPool != "p" || stored.DailyQuota != 3 || len(stored.ModelScope) != 1 {
+		t.Fatalf("stored key = %+v", stored)
+	}
+}

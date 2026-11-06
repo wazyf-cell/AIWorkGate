@@ -2397,17 +2397,26 @@ func (a *App) createKeySpec(spec webui.KeySpec) (string, model.ClientKey, error)
 	}
 	now := time.Now().Unix()
 	key := model.ClientKey{
-		ID:         id,
-		Name:       spec.Name,
-		Prefix:     prefix,
-		Enabled:    spec.Enabled,
-		CreatedAt:  now,
-		ModelScope: spec.ModelScope,
-		BindPool:   spec.BindPool,
-		DailyQuota: spec.DailyQuota,
+		ID:               id,
+		Name:             spec.Name,
+		Prefix:           prefix,
+		Enabled:          spec.Enabled,
+		CreatedAt:        now,
+		ModelScope:       spec.ModelScope,
+		BindPool:         spec.BindPool,
+		DailyQuota:       spec.DailyQuota,
+		ExpiresAt:        spec.ExpiresAt,
+		AllowedIPs:       spec.AllowedIPs,
+		Owner:            spec.Owner,
+		MaxRequestsTotal: spec.MaxRequestsTotal,
+		Share:            spec.Share,
 	}
 	key.QuotaLeft = store.ClientKeyQuotaLeft(key.DailyQuota, 0)
-	scope := store.ClientKeyScope{ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota}
+	scope := store.ClientKeyScope{
+		ModelScope: spec.ModelScope, BindPool: spec.BindPool, DailyQuota: spec.DailyQuota,
+		ExpiresAt: spec.ExpiresAt, AllowedIPs: spec.AllowedIPs, Owner: spec.Owner,
+		MaxRequestsTotal: spec.MaxRequestsTotal, Share: spec.Share,
+	}
 	if err := a.store.UpsertClientKeyScoped(id, key.Name, prefix, hash, key.Enabled, now, scope); err != nil {
 		_ = a.secrets.RemoveClientKey(id)
 		return "", model.ClientKey{}, err
