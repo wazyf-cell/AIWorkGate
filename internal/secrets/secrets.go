@@ -65,7 +65,7 @@ func Open(dir string) (*Store, error) {
 		return s, nil
 	}
 
-	plain, err := unprotect(sealed)
+	plain, err := unprotect(filepath.Dir(s.path), sealed)
 	if err != nil {
 		return nil, fmt.Errorf("secrets: decrypt %s: %w", s.path, err)
 	}
@@ -118,7 +118,7 @@ func (s *Store) saveLocked() error {
 		return fmt.Errorf("secrets: marshal: %w", err)
 	}
 	defer zero(plain)
-	sealed, err := protect(plain)
+	sealed, err := protect(filepath.Dir(s.path), plain)
 	if err != nil {
 		return err
 	}

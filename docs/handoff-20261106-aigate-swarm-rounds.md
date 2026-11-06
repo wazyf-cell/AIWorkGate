@@ -248,4 +248,4 @@ bc7c3a1  P5-1：客户端 Key 到期（schema v13）+ 过期 401 明确文案 + 
 - **P5/D-40**：`gateway.allow_ips` 默认仅本机、鉴权前拦截、不信任 `X-Forwarded-For`、保存即时生效；设置页可编辑。
 - **P5-1**：客户端 Key 可设到期日（schema v13），过期 401 带具体时间；`expires_at=0` 不受影响。
 - 全量验证：`go build ./...` + `go test ./internal/...` **23 包全绿**；`npm run build` + 视觉 **56/56**。
-- P5 仍未做：`max_requests_total`、Key 级 `allowed_ips`、`service_mode`（paused/whitelist）、`trusted_proxies`、IP 限流；分享 Key 的“到期必填”缺分享标记。
+- P5 本轮已完成：Key 到期/总请求上限/Key 级 `allowed_ips`、全局 IP 白名单、`trusted_proxies`、服务模式三态 + 属主 Key、双维限流、Linux 交叉编译 + Caddy/systemd 样例（`docs/p5/`）。仍未做：Linux 实机启动与长期验证（无服务器）、分享 Key 的“到期必填”缺分享标记。

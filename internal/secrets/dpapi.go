@@ -1,3 +1,5 @@
+//go:build windows
+
 package secrets
 
 import (
@@ -11,7 +13,8 @@ import (
 const dpapiFlags = windows.CRYPTPROTECT_UI_FORBIDDEN
 
 // protect seals plain with DPAPI in the current user's scope.
-func protect(plain []byte) ([]byte, error) {
+func protect(dir string, plain []byte) ([]byte, error) {
+	_ = dir
 	if len(plain) == 0 {
 		return nil, fmt.Errorf("secrets: refusing to encrypt an empty blob")
 	}
@@ -25,7 +28,8 @@ func protect(plain []byte) ([]byte, error) {
 }
 
 // unprotect opens a DPAPI blob produced by protect for the current user.
-func unprotect(sealed []byte) ([]byte, error) {
+func unprotect(dir string, sealed []byte) ([]byte, error) {
+	_ = dir
 	if len(sealed) == 0 {
 		return nil, fmt.Errorf("secrets: empty sealed blob")
 	}

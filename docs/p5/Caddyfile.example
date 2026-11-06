@@ -1,0 +1,35 @@
+# AIWorkGate + Caddy（P5-6）
+# 放到 /etc/caddy/Caddyfile，替换 ai.example.com 与邮箱；`caddy validate` 后 reload。
+
+{
+	email admin@example.com
+}
+
+ai.example.com {
+	encode zstd gzip
+
+	# 宿主只监听回环；Caddy 自动带 X-Forwarded-For。
+	# 首次启动后记得在管理页把 127.0.0.1 加入「信任的反向代理」，
+	# 并在「允许访问 /v1 的来源 IP」放行真实客户端网段。
+	reverse_proxy 127.0.0.1:7865
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# 管理页与 /v1 同端口。推荐只通过 SSH 隧道访问管理页；
+	# 若必须公网开放，取消下面注释并生成密码哈希：
+	#   caddy hash-password --plaintext '你的密码'
+	# @admin path / /assets/* /favicon.ico
+	# basic_auth @admin {
+	# 	admin $2a$14$替换为哈希
+	# }
+
+	log {
+		output file /var/log/caddy/aiworkgate.log
+		format json
+	}
+}

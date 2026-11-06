@@ -13,11 +13,14 @@ import (
 // DataDir returns the per-user AIWorkGate data directory,
 // %APPDATA%\AIWorkGate. It fails when APPDATA is not set.
 func DataDir() (string, error) {
-	appData := os.Getenv("APPDATA")
-	if appData == "" {
-		return "", errors.New("config: APPDATA is not set, cannot locate the data directory")
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		return filepath.Join(appData, "AIWorkGate"), nil
 	}
-	return filepath.Join(appData, "AIWorkGate"), nil
+	// Linux/macOS (and any environment without APPDATA): XDG config dir.
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		return filepath.Join(dir, "AIWorkGate"), nil
+	}
+	return "", errors.New("config: cannot locate the data directory (set APPDATA or HOME)")
 }
 
 // ConfigPath returns the configuration file path inside dir.

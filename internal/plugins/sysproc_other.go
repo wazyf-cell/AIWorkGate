@@ -15,6 +15,10 @@ import (
 // this keeps the package testable on other platforms.
 func hideWindow() *syscall.SysProcAttr { return nil }
 
+// defaultPortVerifyTimeout mirrors the Windows value: the wait for a child's
+// listener before the host reports the plugin as failed to start.
+const defaultPortVerifyTimeout = 5 * time.Second
+
 // pluginProcAttr builds the SysProcAttr used to spawn one plugin child.
 //
 // P8-① (uid isolation, docs/p8/00 §4.4): when the host opted into a sandbox

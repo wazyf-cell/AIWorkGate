@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"aiworkgate/internal/config"
@@ -394,7 +395,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	// otherwise overwrite the live token). It is DPAPI-sealed into secrets.dat so
 	// a later launch of this executable can reopen this UI (openExistingUI); a
 	// failure is not fatal, the first window still opens from memory.
-	a.adminToken = webui.NewSessionToken()
+	a.adminToken = initialAdminToken()
 	if err := a.secrets.SetExtra(AdminLaunchTokenSecretKey, a.adminToken); err != nil {
 		a.logger.Warn("app", "cannot persist the admin launch token; a second launch will not reopen this UI", nil)
 	}
@@ -607,7 +608,7 @@ func (a *App) Run() error {
 	}()
 
 	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	go func() {
 		select {
@@ -809,6 +810,18 @@ func (a *App) openUI() {
 	if err := winutil.OpenBrowser(url); err != nil {
 		a.logger.Warn("app", "cannot open browser", map[string]any{"url": url, "error": err.Error()})
 	}
+}
+
+// AdminTokenEnv lets a headless deployment pin the admin launch token instead
+// of the random per-start value (the tray would otherwise open the only URL
+// that carries it). Values shorter than 32 characters are ignored.
+const AdminTokenEnv = "AIWORKGATE_ADMIN_TOKEN"
+
+func initialAdminToken() string {
+	if token := strings.TrimSpace(os.Getenv(AdminTokenEnv)); len(token) >= 32 {
+		return token
+	}
+	return webui.NewSessionToken()
 }
 
 // adminUIQuery renders the launch-token query string. The token is never

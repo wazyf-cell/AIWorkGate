@@ -1,0 +1,36 @@
+# AIWorkGate 宿主（Linux）— P5-6 样例
+# install: cp docs/p5/aiworkgate.service.example /etc/systemd/system/aiworkgate.service
+#          systemctl daemon-reload && systemctl enable --now aiworkgate
+
+[Unit]
+Description=AIWorkGate local AI gateway
+Documentation=file:///opt/aiworkgate/docs/p5/00-公网部署与反代.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aiworkgate
+Group=aiworkgate
+# 数据目录 = $HOME/.config/AIWorkGate
+Environment=HOME=/var/lib/aiworkgate
+# AIWORKGATE_ADMIN_TOKEN=...（至少 32 字符；文件 0600）
+EnvironmentFile=-/etc/aiworkgate/env
+ExecStart=/opt/aiworkgate/aiworkgate
+Restart=on-failure
+RestartSec=3
+
+# 基本加固；若需要插件 uid 沙箱（plugins.sandbox_user），宿主必须以 root 运行，
+# 与本单元的 User= 互斥，请改用 systemd-run 方案（见 docs/p8）。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/aiworkgate
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
