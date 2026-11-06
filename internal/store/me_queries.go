@@ -129,6 +129,7 @@ type TimeSeriesRow struct {
 	Requests         int64
 	PromptTokens     int64
 	CompletionTokens int64
+	CacheRead        int64
 	CacheWrite       int64
 	CacheWrite1h     int64
 	CacheUnknown     int64
@@ -163,6 +164,7 @@ func (s *Store) UsageTimeSeries(fromDay, toDay, granularity string) ([]TimeSerie
 		     WHEN source LIKE 'custom:%' THEN substr(source, 8)
 		     ELSE COALESCE(source, '') END AS plugin,
 		COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cached_tokens), 0),
 		COALESCE(SUM(cache_write), 0), COALESCE(SUM(cache_write_1h), 0), COALESCE(SUM(cache_unknown), 0),
 		COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(credits), 0), SUM(cost_usd)
 		FROM api_logs WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
@@ -178,7 +180,7 @@ func (s *Store) UsageTimeSeries(fromDay, toDay, granularity string) ([]TimeSerie
 			cost sql.NullFloat64
 		)
 		if err := rows.Scan(&row.Bucket, &row.PluginID, &row.Requests, &row.PromptTokens,
-			&row.CompletionTokens, &row.CacheWrite, &row.CacheWrite1h, &row.CacheUnknown,
+			&row.CompletionTokens, &row.CacheRead, &row.CacheWrite, &row.CacheWrite1h, &row.CacheUnknown,
 			&row.ReasoningTokens, &row.Credits, &cost); err != nil {
 			return nil, fmt.Errorf("store: usage time series: scan: %w", err)
 		}
@@ -198,6 +200,7 @@ type ModelUsageRange struct {
 	Requests         int64
 	PromptTokens     int64
 	CompletionTokens int64
+	CacheRead        int64
 	CacheWrite       int64
 	CacheWrite1h     int64
 	ReasoningTokens  int64
@@ -219,6 +222,7 @@ func (s *Store) ModelUsageRange(fromDay, toDay string, limit int) ([]ModelUsageR
 	rows, err := s.db.QueryContext(ctx, `SELECT
 		COALESCE(NULLIF(model_served, ''), NULLIF(logical_model, ''), COALESCE(model, '')) AS served,
 		COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cached_tokens), 0),
 		COALESCE(SUM(cache_write), 0), COALESCE(SUM(cache_write_1h), 0), COALESCE(SUM(reasoning_tokens), 0),
 		COALESCE(SUM(credits), 0), SUM(cost_usd)
 		FROM api_logs WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
@@ -234,7 +238,7 @@ func (s *Store) ModelUsageRange(fromDay, toDay string, limit int) ([]ModelUsageR
 			cost sql.NullFloat64
 		)
 		if err := rows.Scan(&row.Model, &row.Requests, &row.PromptTokens, &row.CompletionTokens,
-			&row.CacheWrite, &row.CacheWrite1h, &row.ReasoningTokens, &row.Credits, &cost); err != nil {
+			&row.CacheRead, &row.CacheWrite, &row.CacheWrite1h, &row.ReasoningTokens, &row.Credits, &cost); err != nil {
 			return nil, fmt.Errorf("store: model usage range: scan: %w", err)
 		}
 		if cost.Valid {
@@ -254,6 +258,7 @@ type KeyUsageRange struct {
 	Requests         int64
 	PromptTokens     int64
 	CompletionTokens int64
+	CacheRead        int64
 	CacheWrite       int64
 	CacheWrite1h     int64
 	ReasoningTokens  int64
@@ -275,6 +280,7 @@ func (s *Store) KeyUsageRangeAggregates(fromDay, toDay string, limit int) ([]Key
 	rows, err := s.db.QueryContext(ctx, `SELECT
 		COALESCE(key_id, ''), COALESCE(key_name, ''),
 		COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cached_tokens), 0),
 		COALESCE(SUM(cache_write), 0), COALESCE(SUM(cache_write_1h), 0), COALESCE(SUM(reasoning_tokens), 0),
 		COALESCE(SUM(credits), 0), SUM(cost_usd)
 		FROM api_logs WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
@@ -290,7 +296,7 @@ func (s *Store) KeyUsageRangeAggregates(fromDay, toDay string, limit int) ([]Key
 			cost sql.NullFloat64
 		)
 		if err := rows.Scan(&row.KeyID, &row.KeyName, &row.Requests, &row.PromptTokens, &row.CompletionTokens,
-			&row.CacheWrite, &row.CacheWrite1h, &row.ReasoningTokens, &row.Credits, &cost); err != nil {
+			&row.CacheRead, &row.CacheWrite, &row.CacheWrite1h, &row.ReasoningTokens, &row.Credits, &cost); err != nil {
 			return nil, fmt.Errorf("store: key usage range: scan: %w", err)
 		}
 		if cost.Valid {

@@ -357,7 +357,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 		"remaining", "total", "expires_at", "plan", "daily_credits", "days_left",
 		"granularity", "cache_write", "cache_write_1h", "cache_unknown", "reasoning_tokens",
 		"cost_usd", "pricing_model", "purpose", "model_requested", "model_upstream", "model_served",
-		"cleared_at", "clear_note", "key_id", "key_name"}); err != nil {
+		"cleared_at", "clear_note", "key_id", "key_name", "cache_read"}); err != nil {
 		return "", err
 	}
 	for _, row := range summary.Series {
@@ -369,7 +369,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			strconv.FormatFloat(row.Credits, 'f', -1, 64),
 			"", "", "", "", "", "",
 			"", "", "", "", "", "", "", "", "", "", "",
-			"", "", "", "",
+			"", "", "", "", "",
 		}); err != nil {
 			return "", err
 		}
@@ -390,6 +390,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			formatCost(row.CostUSD, row.CostSampled),
 			"", "", "", "", "",
 			"", "", "", "",
+			strconv.FormatInt(row.CacheRead, 10),
 		}); err != nil {
 			return "", err
 		}
@@ -409,6 +410,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			formatCost(row.CostUSD, row.CostSampled),
 			"", "", "", "", row.Model,
 			"", "", "", "",
+			strconv.FormatInt(row.CacheRead, 10),
 		}); err != nil {
 			return "", err
 		}
@@ -428,6 +430,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			formatCost(row.CostUSD, row.CostSampled),
 			"", "", "", "", "",
 			"", "", row.KeyID, row.KeyName,
+			strconv.FormatInt(row.CacheRead, 10),
 		}); err != nil {
 			return "", err
 		}
@@ -445,6 +448,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			"", "", "", "", "", "", "", "", "", "", "",
 			local.Format(time.RFC3339), item.Note,
 			"", "",
+			"",
 		}); err != nil {
 			return "", err
 		}
@@ -464,7 +468,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			strconv.FormatFloat(item.DailyCredits, 'f', -1, 64),
 			days,
 			"", "", "", "", "", "", "", "", "", "", "",
-			"", "", "", "",
+			"", "", "", "", "",
 		}); err != nil {
 			return "", err
 		}
