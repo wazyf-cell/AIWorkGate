@@ -778,3 +778,21 @@ func TestNormalizeRoutingGroups(t *testing.T) {
 		t.Fatalf("display = %q", got[1].Display)
 	}
 }
+
+func TestNormalizeRoutingRules(t *testing.T) {
+	got := normalizeRoutingGroups([]RoutingGroupConfig{{
+		ID: "g", Match: []string{"*"},
+		Rules: []RoutingRuleConfig{
+			{Match: []string{"trae/*"}, When: RoutingWhen{MinChars: 10}},
+			{Match: []string{"re:["}},
+			{Match: []string{" "}},
+		},
+	}})
+	if len(got) != 1 || len(got[0].Rules) != 1 {
+		t.Fatalf("groups = %+v", got)
+	}
+	rule := got[0].Rules[0]
+	if rule.Name != "rule-1" || len(rule.Match) != 1 || rule.When.MinChars != 10 {
+		t.Fatalf("rule = %+v", rule)
+	}
+}

@@ -383,6 +383,10 @@ type reqRecord struct {
 	keyID          string
 	keyName        string
 	stream         bool
+	promptChars    int
+	hasImage       bool
+	thinking       bool
+	agent          string
 	status         int
 	ttfb           time.Duration
 	firstTokenAt   time.Time
@@ -849,9 +853,12 @@ func readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, int) {
 }
 
 type requestMeta struct {
-	model  string
-	stream bool
-	valid  bool
+	model       string
+	stream      bool
+	valid       bool
+	promptChars int
+	hasImage    bool
+	thinking    bool
 }
 
 // parseRequestMeta extracts the top-level model and stream fields. It is
@@ -861,13 +868,19 @@ func parseRequestMeta(body []byte) requestMeta {
 		return requestMeta{}
 	}
 	var probe struct {
-		Model  json.RawMessage `json:"model"`
-		Stream json.RawMessage `json:"stream"`
+		Model    json.RawMessage `json:"model"`
+		Stream   json.RawMessage `json:"stream"`
+		Messages json.RawMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
 		return requestMeta{}
 	}
-	meta := requestMeta{valid: true}
+	meta := requestMeta{
+		valid:       true,
+		promptChars: len(probe.Messages),
+		hasImage:    bytes.Contains(body, []byte(`"image_url"`)) || bytes.Contains(body, []byte(`"inline_data"`)) || bytes.Contains(body, []byte(`"type":"image"`)),
+		thinking:    bytes.Contains(body, []byte(`"thinking"`)) || bytes.Contains(body, []byte(`"reasoning_effort"`)) || bytes.Contains(body, []byte(`"reasoning":`)),
+	}
 	if len(probe.Model) > 0 {
 		var s string
 		if json.Unmarshal(probe.Model, &s) == nil {
@@ -1251,6 +1264,10 @@ func (g *Gateway) handleEnvelope(w http.ResponseWriter, r *http.Request, rec *re
 func (g *Gateway) prepareRecord(rec *reqRecord, r *http.Request, body []byte, meta requestMeta) {
 	rec.model = meta.model
 	rec.stream = meta.stream
+	rec.promptChars = meta.promptChars
+	rec.hasImage = meta.hasImage
+	rec.thinking = meta.thinking
+	rec.agent = strings.TrimSpace(r.UserAgent() + " " + r.Header.Get("X-Agent"))
 	rec.conversationID = conversationID(r, body)
 	if g.debugBody.Load() {
 		rec.bodyReq = string(body)

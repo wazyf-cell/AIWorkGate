@@ -172,6 +172,70 @@ type Binding struct {
 	Logical string
 	Display string
 	Items   []Source
+	// Rules override Items for the first request whose features match (P11).
+	Rules []BindingRule
+}
+
+// BindingRule is one feature-gated member set of a group.
+type BindingRule struct {
+	Name  string
+	When  BindingWhen
+	Items []Source
+}
+
+// BindingWhen is a conjunction of request features; zero values are ignored.
+type BindingWhen struct {
+	MinChars  int
+	MaxChars  int
+	Image     bool
+	Thinking  bool
+	Agent     string
+	StartHour *int
+	EndHour   *int
+}
+
+func (w BindingWhen) matches(req Request, now time.Time) bool {
+	if w.MinChars > 0 && req.PromptChars < w.MinChars {
+		return false
+	}
+	if w.MaxChars > 0 && req.PromptChars > w.MaxChars {
+		return false
+	}
+	if w.Image && !req.HasImage {
+		return false
+	}
+	if w.Thinking && !req.Thinking {
+		return false
+	}
+	if w.Agent != "" && !strings.Contains(strings.ToLower(req.Agent), strings.ToLower(w.Agent)) {
+		return false
+	}
+	if w.StartHour != nil && w.EndHour != nil {
+		hour := now.In(time.Local).Hour()
+		start, end := *w.StartHour, *w.EndHour
+		switch {
+		case start == end:
+			// whole day
+		case start < end:
+			if hour < start || hour >= end {
+				return false
+			}
+		default:
+			if hour < start && hour >= end {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func bindingSourcesForRequest(b Binding, req Request, now time.Time) ([]Source, string) {
+	for _, rule := range b.Rules {
+		if rule.When.matches(req, now) {
+			return rule.Items, rule.Name
+		}
+	}
+	return b.Items, ""
 }
 
 // Snapshot is the immutable scheduling view read once per request.
@@ -241,6 +305,11 @@ type Request struct {
 	ClientKey      string
 	Exclude        map[AccountKey]bool
 	Hedge          bool
+	// P11 group-rule features, computed by the gateway from the request body.
+	PromptChars int
+	HasImage    bool
+	Thinking    bool
+	Agent       string
 }
 
 // Decision is the answer of Pick.
@@ -1172,7 +1241,8 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		return nil, err
 	}
 	mode := interPoolMode(snap)
-	now := s.now().Unix()
+	nowTime := s.now()
+	now := nowTime.Unix()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1182,6 +1252,14 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		traces     []*poolTrace
 		rejections []string
 	)
+	if logical != "" {
+		if binding, ok := snap.Bindings[logical]; ok && len(binding.Rules) > 0 {
+			if items, rule := bindingSourcesForRequest(binding, req, nowTime); rule != "" {
+				sources = items
+				rejections = append(rejections, "binding rule: "+rule)
+			}
+		}
+	}
 	for _, src := range sources {
 		pool := snap.Pools[src.PluginID]
 		if pool == nil {

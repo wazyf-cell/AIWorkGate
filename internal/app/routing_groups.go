@@ -27,21 +27,7 @@ func resolveRoutingGroups(groups []config.RoutingGroupConfig, universe []string)
 		if group.Disabled || strings.TrimSpace(group.ID) == "" {
 			continue
 		}
-		var items []scheduler.Source
-		seen := map[string]bool{}
-		for _, pattern := range group.Match {
-			for _, id := range sorted {
-				if seen[id] || !routingPatternMatch(pattern, id) {
-					continue
-				}
-				plugin, model, ok := strings.Cut(id, "/")
-				if !ok || strings.TrimSpace(plugin) == "" || strings.TrimSpace(model) == "" {
-					continue
-				}
-				seen[id] = true
-				items = append(items, scheduler.Source{PluginID: plugin, Model: model})
-			}
-		}
+		items := resolveGroupMatch(group.Match, sorted)
 		if len(items) == 0 {
 			continue
 		}
@@ -49,9 +35,44 @@ func resolveRoutingGroups(groups []config.RoutingGroupConfig, universe []string)
 		if display == "" {
 			display = group.ID
 		}
-		out[group.ID] = scheduler.Binding{Logical: group.ID, Display: display, Items: items}
+		binding := scheduler.Binding{Logical: group.ID, Display: display, Items: items}
+		for _, rule := range group.Rules {
+			ruleItems := resolveGroupMatch(rule.Match, sorted)
+			if len(ruleItems) == 0 {
+				continue
+			}
+			binding.Rules = append(binding.Rules, scheduler.BindingRule{
+				Name:  rule.Name,
+				Items: ruleItems,
+				When: scheduler.BindingWhen{
+					MinChars: rule.When.MinChars, MaxChars: rule.When.MaxChars,
+					Image: rule.When.Image, Thinking: rule.When.Thinking, Agent: rule.When.Agent,
+					StartHour: rule.When.StartHour, EndHour: rule.When.EndHour,
+				},
+			})
+		}
+		out[group.ID] = binding
 	}
 	return out
+}
+
+func resolveGroupMatch(match []string, universe []string) []scheduler.Source {
+	var items []scheduler.Source
+	seen := map[string]bool{}
+	for _, pattern := range match {
+		for _, id := range universe {
+			if seen[id] || !routingPatternMatch(pattern, id) {
+				continue
+			}
+			plugin, model, ok := strings.Cut(id, "/")
+			if !ok || strings.TrimSpace(plugin) == "" || strings.TrimSpace(model) == "" {
+				continue
+			}
+			seen[id] = true
+			items = append(items, scheduler.Source{PluginID: plugin, Model: model})
+		}
+	}
+	return items
 }
 
 // routingPatternMatch supports exact ids, `*`/`?` globs over the whole id, and

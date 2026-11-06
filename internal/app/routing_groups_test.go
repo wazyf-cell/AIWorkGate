@@ -18,6 +18,9 @@ func TestResolveRoutingGroupsPatterns(t *testing.T) {
 		{ID: "everything", Match: []string{"*"}},
 		{ID: "disabled", Match: []string{"*"}, Disabled: true},
 		{ID: "missing", Match: []string{"nope/*"}},
+		{ID: "ruled", Match: []string{"trae/*"}, Rules: []config.RoutingRuleConfig{{
+			Name: "big", Match: []string{"workbuddy/*"}, When: config.RoutingWhen{MinChars: 500, Image: true},
+		}}},
 	}
 	out := resolveRoutingGroups(groups, universe)
 
@@ -39,6 +42,12 @@ func TestResolveRoutingGroupsPatterns(t *testing.T) {
 	}
 	if _, ok := out["missing"]; ok {
 		t.Fatalf("group with no members must not be published")
+	}
+	ruled := out["ruled"]
+	if len(ruled.Rules) != 1 || ruled.Rules[0].Name != "big" ||
+		ruled.Rules[0].When.MinChars != 500 || !ruled.Rules[0].When.Image ||
+		len(ruled.Rules[0].Items) != 1 || ruled.Rules[0].Items[0].PluginID != "workbuddy" {
+		t.Fatalf("ruled = %+v", ruled)
 	}
 }
 

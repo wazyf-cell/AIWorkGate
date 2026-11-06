@@ -124,8 +124,31 @@ type RoutingGroupConfig struct {
 	ID      string   `json:"id"`
 	Display string   `json:"display,omitempty"`
 	Match   []string `json:"match"`
+	// Rules, when present, may replace Match for requests whose features hit
+	// the first matching rule (deterministic first-match order).
+	Rules []RoutingRuleConfig `json:"rules,omitempty"`
 	// Disabled keeps the entry in config for later use without publishing it.
 	Disabled bool `json:"disabled"`
+}
+
+// RoutingRuleConfig selects a different member set for one request shape.
+type RoutingRuleConfig struct {
+	Name  string      `json:"name,omitempty"`
+	Match []string    `json:"match"`
+	When  RoutingWhen `json:"when"`
+}
+
+// RoutingWhen is a conjunction of request features; zero values are ignored.
+type RoutingWhen struct {
+	MinChars int    `json:"min_chars,omitempty"`
+	MaxChars int    `json:"max_chars,omitempty"`
+	Image    bool   `json:"image,omitempty"`
+	Thinking bool   `json:"thinking,omitempty"`
+	Agent    string `json:"agent,omitempty"`
+	// StartHour/EndHour bound the local hour, [start, end); a window that wraps
+	// midnight is allowed (e.g. 22..6).
+	StartHour *int `json:"start_hour,omitempty"`
+	EndHour   *int `json:"end_hour,omitempty"`
 }
 
 // DecisionConfig lists the generic structured-decision upstreams (D-18/P6).
@@ -686,8 +709,59 @@ func normalizeRoutingGroups(in []RoutingGroupConfig) []RoutingGroupConfig {
 			continue
 		}
 		group.Match = match
+		group.Rules = normalizeRoutingRules(group.Rules)
 		seen[group.ID] = true
 		out = append(out, group)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeRoutingRules drops rules with no usable match list or an invalid
+// re: pattern, bounds the hour window and defaults the rule name.
+func normalizeRoutingRules(in []RoutingRuleConfig) []RoutingRuleConfig {
+	out := make([]RoutingRuleConfig, 0, len(in))
+	for i, raw := range in {
+		rule := raw
+		rule.Name = strings.TrimSpace(rule.Name)
+		if rule.Name == "" {
+			rule.Name = fmt.Sprintf("rule-%d", i+1)
+		}
+		match := make([]string, 0, len(rule.Match))
+		valid := true
+		for _, pattern := range rule.Match {
+			pattern = strings.TrimSpace(pattern)
+			if pattern == "" {
+				continue
+			}
+			if strings.HasPrefix(pattern, "re:") {
+				if _, err := regexp.Compile(strings.TrimSpace(strings.TrimPrefix(pattern, "re:"))); err != nil {
+					valid = false
+					break
+				}
+			}
+			match = append(match, pattern)
+		}
+		if !valid || len(match) == 0 {
+			continue
+		}
+		rule.Match = match
+		rule.When.Agent = strings.TrimSpace(rule.When.Agent)
+		if rule.When.MinChars < 0 {
+			rule.When.MinChars = 0
+		}
+		if rule.When.MaxChars < 0 {
+			rule.When.MaxChars = 0
+		}
+		if rule.When.StartHour != nil && (*rule.When.StartHour < 0 || *rule.When.StartHour > 23) {
+			rule.When.StartHour = nil
+		}
+		if rule.When.EndHour != nil && (*rule.When.EndHour < 0 || *rule.When.EndHour > 24) {
+			rule.When.EndHour = nil
+		}
+		out = append(out, rule)
 	}
 	if len(out) == 0 {
 		return nil

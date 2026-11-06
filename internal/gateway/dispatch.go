@@ -329,7 +329,15 @@ func (g *Gateway) hasBinding(ctx context.Context, modelID string) bool {
 
 // scheduleModel resolves the model against the snapshot and asks the scheduler
 // for an account. It returns errNotScheduled for models that belong to A.
-func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, clientKey string, exclude map[scheduler.AccountKey]bool) (*scheduler.Snapshot, scheduler.Decision, error) {
+// requestFeatures carries the P11 group-rule inputs for one request.
+type requestFeatures struct {
+	PromptChars int
+	HasImage    bool
+	Thinking    bool
+	Agent       string
+}
+
+func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, clientKey string, features requestFeatures, exclude map[scheduler.AccountKey]bool) (*scheduler.Snapshot, scheduler.Decision, error) {
 	if g == nil || strings.TrimSpace(modelID) == "" {
 		return nil, scheduler.Decision{}, errNotScheduled
 	}
@@ -403,6 +411,10 @@ func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, cl
 		ConversationID: conversationID,
 		ClientKey:      clientKey,
 		Exclude:        exclude,
+		PromptChars:    features.PromptChars,
+		HasImage:       features.HasImage,
+		Thinking:       features.Thinking,
+		Agent:          features.Agent,
 	})
 	if err != nil {
 		return snap, scheduler.Decision{}, err
@@ -456,7 +468,9 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 	}()
 
 	for attempt := 0; attempt < maxScheduleAttempts; attempt++ {
-		snap, decision, err := g.scheduleModel(r.Context(), rec.model, rec.conversationID, requestClientKey(r, rec.keyID), exclude)
+		snap, decision, err := g.scheduleModel(r.Context(), rec.model, rec.conversationID, requestClientKey(r, rec.keyID), requestFeatures{
+			PromptChars: rec.promptChars, HasImage: rec.hasImage, Thinking: rec.thinking, Agent: rec.agent,
+		}, exclude)
 		if err != nil {
 			if errors.Is(err, errNotScheduled) {
 				// The scheduler does not own this name. A bare model name may
@@ -933,6 +947,10 @@ func (g *Gateway) prepareHedge(r *http.Request, rec *reqRecord, rawBody []byte, 
 		ConversationID: rec.conversationID,
 		ClientKey:      requestClientKey(r, rec.keyID),
 		Exclude:        exclude,
+		PromptChars:    rec.promptChars,
+		HasImage:       rec.hasImage,
+		Thinking:       rec.thinking,
+		Agent:          rec.agent,
 	})
 	if err != nil {
 		return nil, nil, err
