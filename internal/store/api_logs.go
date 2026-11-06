@@ -269,7 +269,8 @@ func (s *Store) queryAPIRequestLogs(f Filter, limit, offset int) ([]model.APIReq
 		)
 		if f.NoBodies {
 			if err := rows.Scan(
-				&rec.TS, &rec.ReqID, &rec.Source, &rec.Model, &rec.LogicalModel,
+				&rec.TS, &rec.ReqID, &rec.Source, &rec.Model,
+				&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed, &rec.LogicalModel,
 				&rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID, &stream, &rec.Status,
 				&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 				&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits, &rec.Error,
@@ -277,7 +278,8 @@ func (s *Store) queryAPIRequestLogs(f Filter, limit, offset int) ([]model.APIReq
 				return nil, 0, fmt.Errorf("store: query api logs: scan: %w", err)
 			}
 		} else if err := rows.Scan(
-			&rec.TS, &rec.ReqID, &rec.Source, &rec.Model, &rec.LogicalModel,
+			&rec.TS, &rec.ReqID, &rec.Source, &rec.Model,
+			&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed, &rec.LogicalModel,
 			&rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID, &stream, &rec.Status,
 			&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens, &credits,
