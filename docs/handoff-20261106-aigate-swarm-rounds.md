@@ -308,7 +308,7 @@ bb14166  P2: note the D-20 probe evidence
 d2b8e4c  P3: archive the eleven demo plugins
 ```
 
-远端：`wazyf-cell/AIWorkGate` 的 `main` 已同步到 `0eec47c`；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。仓库级 credential helper 读取 `~/.config/aiworkgate/github-token`（0600），推送不再弹账户选择；该文件是明文令牌，轮换时直接改它。
+远端：`wazyf-cell/AIWorkGate` 的 `main` 已同步到 `1370153`（最新提交以 `git log` 为准）；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。仓库级 credential helper 读取 `~/.config/aiworkgate/github-token`（0600），推送不再弹账户选择；该文件是明文令牌，轮换时直接改它。
 
 ### 12.2 阶段状态
 
