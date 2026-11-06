@@ -188,6 +188,11 @@ func isV1Path(path string) bool {
 	return path == "/v1" || strings.HasPrefix(path, "/v1/")
 }
 
+// isMePath reports whether path belongs to the key self-service page (P14).
+func isMePath(path string) bool {
+	return path == "/me" || strings.HasPrefix(path, "/me/")
+}
+
 // isLoopbackRemote reports whether a request's RemoteAddr is loopback. A value
 // that cannot be parsed is treated as remote (fail closed).
 func isLoopbackRemote(remote string) bool {

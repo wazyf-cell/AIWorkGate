@@ -151,6 +151,7 @@ type App struct {
 
 	gatewayHandler http.Handler
 	adminHandler   http.Handler
+	me             *meHandler
 	keyVerifier    *keyAdapter
 
 	// adminToken is the one-shot launch token minted in New once this process
@@ -533,6 +534,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	// 11. Admin API and SPA. The handler enforces the launch token this process
 	// minted above, so the URL the tray opens is the only way in.
 	a.adminHandler = webui.New(a.webOptions())
+	a.me = newMeHandler(a)
 
 	// 12/13. Router and HTTP server. SSE needs no WriteTimeout, but request
 	// reads must not stay open forever (slowloris-on-body).
@@ -883,6 +885,10 @@ func (a *App) routeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !allowedRequestHost(r.Host, cfg.ListenLAN, cfg.Gateway.PublicHosts) {
 		http.Error(w, "invalid host header", http.StatusForbidden)
 		a.logger.Warn("app", "rejected request with unexpected Host", map[string]any{"host": r.Host})
+		return
+	}
+	if isMePath(r.URL.Path) {
+		a.me.ServeHTTP(w, r)
 		return
 	}
 	if adminAuthRequired(cfg.ListenLAN, isLoopbackRemote(r.RemoteAddr), isV1Path(r.URL.Path)) {
