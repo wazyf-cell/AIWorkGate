@@ -650,6 +650,31 @@ func TestMessagesBareModelIsModelNotFound(t *testing.T) {
 		t.Fatalf("body = %s, want model_not_found", rr.Body.String())
 	}
 }
+
+// 2026-11-07 运行态排查回归：畸形 JSON 不能伪装成 404 model_not_found（空模型名），
+// 与 OpenAI 面的 invalid_json 语义对齐，且错误体保持 Anthropic 形状。
+func TestMessagesInvalidJSONIs400(t *testing.T) {
+	g := newTestGateway(t, Options{
+		Plugins: newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), "", ""),
+	})
+	for name, body := range map[string]string{
+		"malformed": "{bad json,,,",
+		"empty":     "",
+		"array":     `[1,2,3]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := serve(g, newChatRequest(t, "/v1/messages", clientKey, body))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", rr.Code, rr.Body.String())
+			}
+			payload := decodeAnthropicError(t, rr)
+			if payload.Error.Type != "invalid_request_error" {
+				t.Fatalf("error type = %q, want invalid_request_error", payload.Error.Type)
+			}
+		})
+	}
+}
+
 func TestMessagesRouteStreamsSSE(t *testing.T) {
 	frames := streamFrames(true)
 	srv, calls := newUpstreamServer(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {

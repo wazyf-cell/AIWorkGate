@@ -1161,7 +1161,16 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request, rec *re
 		rec.status = failStatus
 		return
 	}
-	g.prepareRecord(rec, r, body, parseRequestMeta(body))
+	meta := parseRequestMeta(body)
+	if !meta.valid {
+		// Same semantics as the OpenAI face's invalid_json: a malformed body
+		// must not masquerade as a 404 unknown model with an empty name.
+		rec.errText = "invalid JSON body"
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "request body must be a JSON object")
+		rec.status = http.StatusBadRequest
+		return
+	}
+	g.prepareRecord(rec, r, body, meta)
 
 	scheduled := g.sched != nil && g.snapshot != nil
 	tgt, isPlugin := g.matchPlugin(rec.model)
