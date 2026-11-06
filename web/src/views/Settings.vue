@@ -142,6 +142,8 @@ const NOTIFY_EVENTS: { value: NotifyEventKind; label: string }[] = [
   { value: 'checkin_done', label: '签到完成' },
   { value: 'account_dead', label: '账号失效' },
   { value: 'quota_low', label: '额度不足' },
+  { value: 'quota_expiring', label: '额度即将失效' },
+  { value: 'quota_resetting', label: '重置前未用完' },
 ]
 
 const notifyForm = reactive({

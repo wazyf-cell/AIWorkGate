@@ -1096,6 +1096,9 @@ export type LogStreamParams = {
 export type PoolStrategy =
   | 'credit_first'
   | 'remaining_first'
+  | 'expiring_first'
+  | 'free'
+  | 'pace'
   | 'random'
   | 'weighted3'
   | 'p2c'
@@ -1108,6 +1111,9 @@ export type SchedulerPreset = 'balanced' | 'freshness' | 'amortized' | 'latency'
 export const POOL_STRATEGY_LABELS: Record<PoolStrategy, string> = {
   credit_first: '积分先过期优先',
   remaining_first: '剩余积分多优先',
+  expiring_first: '券先烧完优先',
+  free: '免费额度优先',
+  pace: '按窗口匀速消耗',
   random: '随机',
   weighted3: '三因子加权随机',
   p2c: 'P2C 随机二选一',
@@ -1836,7 +1842,13 @@ export interface GatewayConfig {
  */
 export type NotifyChannel = 'generic' | 'bark' | 'serverchan' | 'wecom'
 
-export type NotifyEventKind = 'checkin_fail' | 'checkin_done' | 'account_dead' | 'quota_low'
+export type NotifyEventKind =
+  | 'checkin_fail'
+  | 'checkin_done'
+  | 'account_dead'
+  | 'quota_low'
+  | 'quota_expiring'
+  | 'quota_resetting'
 
 /** Non-secret half of the notification policy (config.json `notify`). */
 export interface NotifyConfig {
@@ -1932,7 +1944,7 @@ export const DEFAULT_SETTINGS: Settings = {
   notify: {
     enabled: false,
     channel: 'generic',
-    events: ['checkin_fail', 'checkin_done', 'account_dead', 'quota_low'],
+    events: ['checkin_fail', 'checkin_done', 'account_dead', 'quota_low', 'quota_expiring', 'quota_resetting'],
     min_interval_seconds: 600,
   },
 }

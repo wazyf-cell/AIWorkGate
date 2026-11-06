@@ -36,8 +36,9 @@ const (
 
 // poolStrategies is the accepted in-pool strategy set (§6.3).
 var poolStrategies = map[string]bool{
-	"credit_first": true, "remaining_first": true, "random": true,
-	"weighted3": true, "p2c": true, "fixed": true,
+	"credit_first": true, "remaining_first": true, "expiring_first": true,
+	"free": true, "pace": true,
+	"random": true, "weighted3": true, "p2c": true, "fixed": true,
 }
 
 // interPoolModes is the accepted inter-pool mode set (§6.2).
@@ -118,7 +119,7 @@ func validateStrategy(value *string, field string) error {
 	}
 	strategy := strings.TrimSpace(*value)
 	if strategy == "" || !poolStrategies[strategy] {
-		return fmt.Errorf("%s must be one of credit_first, remaining_first, random, weighted3, p2c, fixed", field)
+		return fmt.Errorf("%s must be one of credit_first, remaining_first, expiring_first, free, pace, random, weighted3, p2c, fixed", field)
 	}
 	return nil
 }

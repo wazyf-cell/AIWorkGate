@@ -33,6 +33,8 @@ const (
 	StrategyCreditFirst    = "credit_first"
 	StrategyRemainingFirst = "remaining_first"
 	StrategyExpiringFirst  = "expiring_first"
+	StrategyFree           = "free"
+	StrategyPace           = "pace"
 	StrategyRandom         = "random"
 	StrategyWeighted3      = "weighted3"
 	StrategyP2C            = "p2c"
@@ -51,6 +53,7 @@ var (
 // StrategyNames lists the accepted in-pool strategies in UI order.
 var StrategyNames = []string{
 	StrategyCreditFirst, StrategyRemainingFirst, StrategyExpiringFirst,
+	StrategyFree, StrategyPace,
 	StrategyRandom, StrategyWeighted3, StrategyP2C, StrategyFixed,
 }
 
@@ -62,6 +65,7 @@ var InterPoolNames = []string{InterPoolSmart, InterPoolFixed}
 func ValidStrategy(name string) bool {
 	switch name {
 	case StrategyCreditFirst, StrategyRemainingFirst, StrategyExpiringFirst,
+		StrategyFree, StrategyPace,
 		StrategyRandom, StrategyWeighted3, StrategyP2C, StrategyFixed:
 		return true
 	}
@@ -319,6 +323,11 @@ type Scheduler struct {
 
 	stickyEntries map[stickyKey]stickyEntry
 	stickyLoaded  map[string]bool
+
+	// probeSeq rotates an unmeasured account into the free/pace strategies
+	// every probeEvery picks (D-44), so an account with no quota report is not
+	// starved forever.
+	probeSeq uint64
 
 	// Durable cooldowns. Report enqueues writes on cooldownCh; a single worker
 	// coalesces them by key and flushes after cooldownPersistDelay.
@@ -1569,6 +1578,18 @@ func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []fl
 		}), scores
 	case StrategyExpiringFirst:
 		return indexByLess(accounts, expiringFirstLess), scores
+	case StrategyFree:
+		if idx, ok := s.probePickLocked(accounts); ok {
+			return idx, scores
+		}
+		return indexByLess(accounts, freeFirstLess), scores
+	case StrategyPace:
+		if idx, ok := s.probePickLocked(accounts); ok {
+			return idx, scores
+		}
+		return indexByLess(accounts, func(a, b Account) bool {
+			return paceLess(a, b, now)
+		}), scores
 	case StrategyFixed:
 		return indexByLess(accounts, func(a, b Account) bool {
 			if a.Priority != b.Priority {

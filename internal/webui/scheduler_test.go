@@ -77,6 +77,21 @@ func schedulerOptions(calls *int) Options {
 	}
 }
 
+func TestSchedulerAcceptsNewStrategies(t *testing.T) {
+	for _, strategy := range []string{"expiring_first", "free", "pace"} {
+		calls := 0
+		handler := New(schedulerOptions(&calls))
+		recorder := doRequest(t, handler, http.MethodPut, "/api/scheduler/pools/mock",
+			`{"strategy":"`+strategy+`"}`)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("strategy %s = %d, want 200 (%s)", strategy, recorder.Code, recorder.Body.String())
+		}
+		if calls != 1 {
+			t.Fatalf("strategy %s reached the callback %d times, want 1", strategy, calls)
+		}
+	}
+}
+
 func TestSchedulerValidationRejectsBeforeCallback(t *testing.T) {
 	calls := 0
 	handler := New(schedulerOptions(&calls))
