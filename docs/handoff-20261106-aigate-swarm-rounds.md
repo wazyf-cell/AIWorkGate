@@ -252,7 +252,7 @@ bc7c3a1  P5-1：客户端 Key 到期（schema v13）+ 过期 401 明确文案 + 
 
 ---
 
-## 12 · 进度快照（2026-11-06 16:34，单代理）
+## 12 · 进度快照（2026-11-06 22:08，单代理）
 
 > 本节覆盖 §1~§11 的旧状态；§6 蜂群编成对本 agent 仍无效（无蜂群）。
 
@@ -294,9 +294,15 @@ ab189af  D-31：缓存写侧/reasoning/purpose 五列
 dd7a976  P13：导出粒度/拆段 + Prompt 组成分析
 f8d6027  P11：组编辑器 + 意图规则框架
 e1b77c8  退役内置 A 网关（D-60）
+b25bf88  docs: record post-retirement Linux and bridge verification
+b759534  docs: describe the post-A product in the README
+c2a9c98  P13: record usage clears instead of deleting history
+0fc29d3  P13: estimate how long the remaining credits last
+3637935  P13: segment the export by client key
+98c3f00  P13: export the read-cache token count
 ```
 
-远端：`wazyf-cell/AIWorkGate` 的 `main` 在每批提交后按需推送；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。
+远端：`wazyf-cell/AIWorkGate` 的 `main` 已同步到 `98c3f00`；旧库备份标签 `backup/github-main-20261106` 保留。本地 `origin` 仍是旧本地检出路径，推送需显式指向 GitHub。
 
 ### 12.2 阶段状态
 
@@ -317,6 +323,7 @@ e1b77c8  退役内置 A 网关（D-60）
 - `go build ./...` exit 0。
 - `go test ./internal/...`：23 包通过；app/logging 偶发 Windows `TempDir RemoveAll: directory is not empty`（隔离重跑通过，非断言失败）。
 - `npm run build`：typecheck + 样式债 0 + 视觉 **65/65**（新增 `groups` / `groups-intent` / `usage-expiry`）。
+- 全量后端：`go test -ldflags=-buildid= ./internal/...` 24 包全 ok（2026-11-06 22:07 复核）。
 - Linux 交叉编译：amd64/arm64 通过（ELF，2026-11-06 退役 A 后重建）；部署/回滚脚本 dry-run 通过。
 - opchost 桥自检：`node opchost/bridge/src/admin/testdata/selftest.mjs --exit` → 74/74。
 
