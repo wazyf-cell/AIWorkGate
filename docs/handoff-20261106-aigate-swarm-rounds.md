@@ -308,7 +308,7 @@ c2a9c98  P13: record usage clears instead of deleting history
 
 | 阶段 | 状态 |
 |---|---|
-| P1/P2/P8/P10/P12-1/2 | 代码/本地验证完成；内置 A 网关已退役（D-60），裸模型名改由 `default_plugin`；真实登录与 Linux 实跑仍缺 |
+| P1/P2/P8/P10/P12-1/2 | 代码/本地验证完成；P1 真包探针通过（2 provider / 11 模型 / 无凭据 401）；内置 A 网关已退役（D-60），裸模型名改由 `default_plugin`；真实登录后的 chat 与 Linux 实跑仍缺 |
 | P5 | D-40/41(部分)/P5-1 全项/P5-4/P5-5/P5-6 完成；Key 分享标记强制到期完成 |
 | P6 | Gemini 入站（含工具调用双向翻译）+ SystemOne 路由完成；真实 JEV key 未验 |
 | P9 | 策略/告警/面板/告警订阅 + `cheap`（配置价）完成 |
@@ -326,6 +326,7 @@ c2a9c98  P13: record usage clears instead of deleting history
 - 全量后端：`go test -ldflags=-buildid= ./internal/...` 24 包全 ok（2026-11-06 22:07 复核）。
 - Linux 交叉编译：amd64/arm64 通过（ELF，2026-11-06 退役 A 后重建）；部署/回滚脚本 dry-run 通过。
 - opchost 桥自检：`node opchost/bridge/src/admin/testdata/selftest.mjs --exit` → 74/74。
+- P1 真包探针（2026-11-06 22:09，临时数据目录、无 chat）：桥加载 `opencode-trae-auth` → `/meta` 报 `trae-cn`(6)+`trae-global`(5) 共 11 个模型；`/v1/models` 字段完整；无凭据 chat → **401 `needs_sign_in`**（非 500）。真实登录后的 chat 成功仍待用户登录。
 
 ### 12.4 接手首要事项
 
