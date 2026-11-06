@@ -75,8 +75,61 @@ func (g *Gateway) SetAllowIPs(entries []string) {
 	g.allowIPs.Store(parseAllowlist(entries))
 }
 
-// ipAllowed checks the direct peer address; X-Forwarded-For is deliberately
-// ignored until trusted_proxies exists (P5-4).
+// SetTrustedProxies replaces the reverse proxies whose X-Forwarded-For is
+// believed. An empty list means the header is never trusted.
+func (g *Gateway) SetTrustedProxies(entries []string) {
+	if g == nil {
+		return
+	}
+	if len(entries) == 0 {
+		g.trustedProxies.Store(ipAllowlist{})
+		return
+	}
+	matcher := parseAllowlist(entries)
+	matcher.allowAll = false
+	g.trustedProxies.Store(matcher)
+}
+
+// trustedProxyList returns the current matcher; the zero value trusts nobody.
+func (g *Gateway) trustedProxyList() ipAllowlist {
+	stored := g.trustedProxies.Load()
+	if stored == nil {
+		return ipAllowlist{}
+	}
+	list, _ := stored.(ipAllowlist)
+	return list
+}
+
+// clientIP is the address the allowlist judges. The direct peer is the source
+// unless that peer is a configured reverse proxy, in which case the first
+// address from the right of X-Forwarded-For that is not itself a trusted proxy
+// is the client (P5-4). Everything else stays a direct address, so a client
+// cannot spoof its way past D-40.
+func (g *Gateway) clientIP(r *http.Request) net.IP {
+	peer := strings.TrimSpace(r.RemoteAddr)
+	if h, _, err := net.SplitHostPort(peer); err == nil {
+		peer = h
+	}
+	peerIP := net.ParseIP(peer)
+	trusted := g.trustedProxyList()
+	if peerIP == nil || !trusted.allows(peerIP) {
+		return peerIP
+	}
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(parts[i]))
+		if ip == nil {
+			continue
+		}
+		if trusted.allows(ip) {
+			continue
+		}
+		return ip
+	}
+	return peerIP
+}
+
+// ipAllowed checks the effective client address (see clientIP).
 func (g *Gateway) ipAllowed(r *http.Request) bool {
 	stored := g.allowIPs.Load()
 	if stored == nil {
@@ -86,9 +139,5 @@ func (g *Gateway) ipAllowed(r *http.Request) bool {
 	if !ok {
 		return true
 	}
-	host := strings.TrimSpace(r.RemoteAddr)
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	return list.allows(net.ParseIP(host))
+	return list.allows(g.clientIP(r))
 }

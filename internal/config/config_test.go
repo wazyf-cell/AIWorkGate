@@ -94,6 +94,28 @@ func TestNormalizeAllowIPs(t *testing.T) {
 	}
 }
 
+func TestNormalizeTrustedProxies(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"empty stays empty", nil, nil},
+		{"blanks dropped", []string{"", "  "}, nil},
+		{"deduped", []string{"127.0.0.1", " 127.0.0.1 "}, []string{"127.0.0.1"}},
+		{"invalid dropped", []string{"not-an-ip", "::1"}, []string{"::1"}},
+		{"cidr normalized", []string{"172.16.1.7/12"}, []string{"172.16.0.0/12"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeIPList(tc.in, nil)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("normalizeIPList(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadMissingFileCreatesDefault(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := Load(dir)

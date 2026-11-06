@@ -98,6 +98,9 @@ type Options struct {
 	// authentication. Nil means "no restriction" (tests, standalone); an empty
 	// non-nil list fails safe to loopback only.
 	AllowIPs []string
+	// TrustedProxies lists reverse proxies whose X-Forwarded-For is believed
+	// (P5-4). Empty means the header is never trusted.
+	TrustedProxies []string
 
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
@@ -196,6 +199,7 @@ type Gateway struct {
 	redact         RedactOptions
 	corsOrigins    atomic.Value // []string, set by SetCorsOrigins
 	allowIPs       atomic.Value // ipAllowlist, set by SetAllowIPs
+	trustedProxies atomic.Value // ipAllowlist, set by SetTrustedProxies
 	defaultPlugin  string
 	legacyA        bool
 	now            func() time.Time
@@ -310,6 +314,7 @@ func newGateway(opts Options) *Gateway {
 	g.debugBody.Store(opts.DebugBody)
 	g.SetCorsOrigins(opts.CorsAllowOrigins)
 	g.SetAllowIPs(opts.AllowIPs)
+	g.SetTrustedProxies(opts.TrustedProxies)
 	return g
 }
 

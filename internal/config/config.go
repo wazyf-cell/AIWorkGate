@@ -135,8 +135,13 @@ type GatewayConfig struct {
 
 	// AllowIPs is the global source-address allowlist (D-40), checked before
 	// authentication. Entries are IPs or CIDRs; empty fails safe to loopback
-	// only. X-Forwarded-For is not trusted until trusted_proxies exists.
+	// only. See TrustedProxies for reverse-proxy deployments.
 	AllowIPs []string `json:"allow_ips"`
+
+	// TrustedProxies lists reverse proxies whose X-Forwarded-For is believed
+	// (P5-4). Empty means never trust the header, so direct clients cannot
+	// spoof their source.
+	TrustedProxies []string `json:"trusted_proxies"`
 
 	// DefaultPlugin serves bare model names (no "id/" prefix). Empty means a
 	// bare name is answered with 404 model_not_found.
@@ -476,6 +481,7 @@ func (c *Config) Normalize() {
 
 	c.Gateway.CorsAllowOrigins = normalizeOriginList(c.Gateway.CorsAllowOrigins)
 	c.Gateway.AllowIPs = normalizeAllowIPs(c.Gateway.AllowIPs)
+	c.Gateway.TrustedProxies = normalizeIPList(c.Gateway.TrustedProxies, nil)
 	c.Gateway.DefaultPlugin = strings.ToLower(strings.TrimSpace(c.Gateway.DefaultPlugin))
 
 	// Redact: default key file lives beside the data dir; kinds/categories
@@ -562,10 +568,15 @@ func normalizeOriginList(in []string) []string {
 
 var timeOfDayPattern = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
 
-// normalizeAllowIPs keeps valid IP/CIDR entries, dedupes them and fails safe to
-// loopback when nothing valid remains (D-40). Invalid entries are dropped
-// rather than locking the host out of its own gateway.
+// normalizeAllowIPs keeps valid IP/CIDR entries, dedupes them and falls back to
+// loopback when nothing valid remains (D-40).
 func normalizeAllowIPs(in []string) []string {
+	return normalizeIPList(in, []string{"127.0.0.1", "::1"})
+}
+
+// normalizeIPList trims/dedupes/validates IP and CIDR entries, dropping
+// invalid ones and returning fallback when nothing valid remains.
+func normalizeIPList(in []string, fallback []string) []string {
 	out := make([]string, 0, len(in))
 	seen := map[string]bool{}
 	add := func(value string) {
@@ -589,7 +600,7 @@ func normalizeAllowIPs(in []string) []string {
 		}
 	}
 	if len(out) == 0 {
-		return []string{"127.0.0.1", "::1"}
+		return fallback
 	}
 	return out
 }

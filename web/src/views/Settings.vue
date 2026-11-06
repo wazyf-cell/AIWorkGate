@@ -81,6 +81,7 @@ const form = reactive({
   logging_debug_body: defaults.logging.debug_body,
   gateway_cors: '',
   gateway_allow_ips: '',
+  gateway_trusted_proxies: '',
 })
 
 /** Last raw payload from the host; keeps unknown keys for the round trip. */
@@ -701,6 +702,7 @@ async function load() {
     form.logging_debug_body = asBoolean(logging.debug_body, defaults.logging.debug_body)
     form.gateway_cors = asStringList(gateway.cors_allow_origins, defaults.gateway.cors_allow_origins ?? []).join('\n')
     form.gateway_allow_ips = asStringList(gateway.allow_ips, defaults.gateway.allow_ips ?? []).join('\n')
+    form.gateway_trusted_proxies = asStringList(gateway.trusted_proxies, defaults.gateway.trusted_proxies ?? []).join('\n')
     savedSignature.value = settingsSignature()
   } catch (e) {
     error.value = errorMessage(e)
@@ -806,6 +808,7 @@ async function save() {
     return
   }
   const allowIPs = parseCorsOrigins(form.gateway_allow_ips)
+  const trustedProxies = parseCorsOrigins(form.gateway_trusted_proxies)
 
   const notifyInterval = Number(notifyForm.min_interval_seconds)
   if (!Number.isInteger(notifyInterval) || notifyInterval < 60 || notifyInterval > 86400) {
@@ -857,6 +860,7 @@ async function save() {
     gateway: {
       cors_allow_origins: corsOrigins,
       allow_ips: allowIPs,
+      trusted_proxies: trustedProxies,
     },
     // The notification policy lives in the same config.json block; sending it
     // here keeps a page-wide save from reverting a card edit. The webhook URL
@@ -1500,6 +1504,23 @@ async function saveLanPassword() {
           </span>
           <span class="help">
             默认仅本机（<code>127.0.0.1</code> / <code>::1</code>）。手机或局域网访问需显式加入对应网段；无效项会被忽略。保存后即时生效。
+          </span>
+        </div>
+        <div class="field">
+          <label for="set-trusted-proxies">信任的反向代理</label>
+          <textarea
+            id="set-trusted-proxies"
+            v-model="form.gateway_trusted_proxies"
+            class="input mono"
+            rows="2"
+            spellcheck="false"
+            placeholder="127.0.0.1&#10;::1"
+          ></textarea>
+          <span class="help">
+            只有来自这些地址的 <code>X-Forwarded-For</code> 才会被采信，用于取真实客户端 IP；留空 = 永不采信（直连伪造无效）。
+          </span>
+          <span class="help">
+            本机 Caddy/Nginx 反代填 <code>127.0.0.1</code>；反代与宿主不在同一台机器时填反代出口 IP/CIDR。保存后即时生效。
           </span>
         </div>
       </div>

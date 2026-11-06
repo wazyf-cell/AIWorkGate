@@ -1858,6 +1858,8 @@ export interface GatewayConfig {
   cors_allow_origins?: string[]
   /** D-40: source IPs/CIDRs allowed to call /v1; empty means loopback only. */
   allow_ips?: string[]
+  /** P5-4: reverse proxies whose X-Forwarded-For is believed; empty = never. */
+  trusted_proxies?: string[]
 }
 
 /**
@@ -1966,6 +1968,7 @@ export const DEFAULT_SETTINGS: Settings = {
   gateway: {
     cors_allow_origins: [],
     allow_ips: ['127.0.0.1', '::1'],
+    trusted_proxies: [],
   },
   notify: {
     enabled: false,

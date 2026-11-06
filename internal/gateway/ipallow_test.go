@@ -40,6 +40,49 @@ func TestAllowIPsGateBeforeAuth(t *testing.T) {
 	}
 }
 
+func TestTrustedProxyClientIP(t *testing.T) {
+	cases := []struct {
+		name    string
+		allow   []string
+		trusted []string
+		remote  string
+		xff     string
+		want    int
+	}{
+		{
+			name: "trusted peer xff wins", allow: []string{"10.0.0.5"}, trusted: []string{"127.0.0.1"},
+			remote: "127.0.0.1:1000", xff: "10.0.0.5", want: http.StatusUnauthorized,
+		},
+		{
+			name: "trusted peer xff denied", allow: []string{"127.0.0.1"}, trusted: []string{"127.0.0.1"},
+			remote: "127.0.0.1:1000", xff: "10.0.0.5", want: http.StatusForbidden,
+		},
+		{
+			name: "chain walks right to left", allow: []string{"1.2.3.4"}, trusted: []string{"127.0.0.1"},
+			remote: "127.0.0.1:1000", xff: "9.9.9.9, 1.2.3.4, 127.0.0.1", want: http.StatusUnauthorized,
+		},
+		{
+			name: "trusted cidr", allow: []string{"10.0.0.5"}, trusted: []string{"172.16.0.0/12"},
+			remote: "172.17.0.2:1000", xff: "10.0.0.5", want: http.StatusUnauthorized,
+		},
+		{
+			name: "untrusted peer ignores xff", allow: []string{"127.0.0.1"}, trusted: []string{"127.0.0.1"},
+			remote: "10.0.0.5:1000", xff: "127.0.0.1", want: http.StatusForbidden,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newTestGateway(t, Options{AllowIPs: tc.allow, TrustedProxies: tc.trusted})
+			req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			req.RemoteAddr = tc.remote
+			req.Header.Set("X-Forwarded-For", tc.xff)
+			if rec := serve(g, req); rec.Code != tc.want {
+				t.Fatalf("status = %d (%s), want %d", rec.Code, rec.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestSetAllowIPsTakesEffectLive(t *testing.T) {
 	g := newTestGateway(t, Options{AllowIPs: []string{"127.0.0.1"}})
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
