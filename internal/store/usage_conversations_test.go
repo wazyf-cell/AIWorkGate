@@ -3,6 +3,7 @@ package store
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"aiworkgate/internal/model"
 )
@@ -175,5 +176,27 @@ func TestAPILogThreeModelColumnsRoundtrip(t *testing.T) {
 	log := rows[0].Log
 	if log.ModelRequested != "p1/m1" || log.ModelUpstream != "m1-cheap" || log.ModelServed != "m1-cheapest" {
 		t.Fatalf("row = %+v", log)
+	}
+}
+
+func TestModelUsageSummaryRanksServedModel(t *testing.T) {
+	s := openTestStore(t)
+	now := time.Now().Format(time.RFC3339)
+	rows := []model.APIRequestLog{
+		{TS: now, ReqID: "r1", Model: "p1/m1", ModelServed: "cheap", Status: 200},
+		{TS: now, ReqID: "r2", Model: "p1/m1", ModelServed: "cheap", Status: 200},
+		{TS: now, ReqID: "r3", Model: "p1/m1", Status: 200},
+	}
+	for _, row := range rows {
+		if err := s.InsertAPIRequestLog(row); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	out, err := s.ModelUsageSummary(7)
+	if err != nil {
+		t.Fatalf("ModelUsageSummary: %v", err)
+	}
+	if len(out) != 2 || out[0].Model != "cheap" || out[0].Requests != 2 || out[1].Model != "p1/m1" {
+		t.Fatalf("rows = %+v", out)
 	}
 }

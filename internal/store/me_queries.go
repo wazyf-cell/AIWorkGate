@@ -60,7 +60,7 @@ func (s *Store) KeyModelUsage(keyID, fromDay, toDay string, limit int) ([]KeyMod
 	ctx, cancel := s.ctx()
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT
-		COALESCE(NULLIF(logical_model, ''), COALESCE(model, '')) AS served,
+		COALESCE(NULLIF(model_served, ''), NULLIF(logical_model, ''), COALESCE(model, '')) AS served,
 		COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
 		FROM api_logs WHERE key_id = ? AND substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
 		GROUP BY served ORDER BY COUNT(*) DESC LIMIT ?`, keyID, fromDay, toDay, limit)
@@ -102,7 +102,7 @@ func (s *Store) RecentKeyLogs(keyID string, limit int) ([]MeLogRow, error) {
 	ctx, cancel := s.ctx()
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(ts, ''),
-		COALESCE(NULLIF(logical_model, ''), COALESCE(model, '')), COALESCE(source, ''),
+		COALESCE(NULLIF(model_served, ''), NULLIF(logical_model, ''), COALESCE(model, '')), COALESCE(source, ''),
 		COALESCE(status, 0), COALESCE(latency_ms, 0),
 		COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0)
 		FROM api_logs WHERE key_id = ? ORDER BY ts DESC LIMIT ?`, keyID, limit)

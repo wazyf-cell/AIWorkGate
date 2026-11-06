@@ -219,13 +219,16 @@ func (s *Store) ModelUsageSummary(days int) ([]ModelUsageRow, error) {
 	from, to, _ := analyticsWindow(days, time.Now())
 	ctx, cancel := s.ctx()
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, `SELECT model,
-		COALESCE(SUM(requests), 0), COALESCE(SUM(prompt_tokens), 0),
+	// P13/D-31: rank by the model the upstream actually served; fall back to the
+	// logical name and finally the routed name for rows that predate the column.
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		COALESCE(NULLIF(model_served, ''), NULLIF(logical_model, ''), COALESCE(model, '')) AS served,
+		COUNT(*), COALESCE(SUM(prompt_tokens), 0),
 		COALESCE(SUM(completion_tokens), 0), SUM(credits)
-		FROM usage_daily
-		WHERE day >= ? AND day <= ?
-		GROUP BY model
-		ORDER BY SUM(requests) DESC, model ASC`, from, to)
+		FROM api_logs
+		WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
+		GROUP BY served
+		ORDER BY COUNT(*) DESC, served ASC`, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("store: model usage summary: %w", err)
 	}
