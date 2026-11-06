@@ -80,6 +80,7 @@ const form = reactive({
   retention_proxy_log_days: defaults.retention.proxy_log_days,
   logging_debug_body: defaults.logging.debug_body,
   gateway_cors: '',
+  gateway_allow_ips: '',
 })
 
 /** Last raw payload from the host; keeps unknown keys for the round trip. */
@@ -681,6 +682,7 @@ async function load() {
 
     form.logging_debug_body = asBoolean(logging.debug_body, defaults.logging.debug_body)
     form.gateway_cors = asStringList(gateway.cors_allow_origins, defaults.gateway.cors_allow_origins ?? []).join('\n')
+    form.gateway_allow_ips = asStringList(gateway.allow_ips, defaults.gateway.allow_ips ?? []).join('\n')
     savedSignature.value = settingsSignature()
   } catch (e) {
     error.value = errorMessage(e)
@@ -785,6 +787,7 @@ async function save() {
     error.value = corsError
     return
   }
+  const allowIPs = parseCorsOrigins(form.gateway_allow_ips)
 
   const notifyInterval = Number(notifyForm.min_interval_seconds)
   if (!Number.isInteger(notifyInterval) || notifyInterval < 60 || notifyInterval > 86400) {
@@ -835,6 +838,7 @@ async function save() {
     },
     gateway: {
       cors_allow_origins: corsOrigins,
+      allow_ips: allowIPs,
     },
     // The notification policy lives in the same config.json block; sending it
     // here keeps a page-wide save from reverting a card edit. The webhook URL
@@ -1461,6 +1465,23 @@ async function saveLanPassword() {
           </span>
           <span class="help">
             未列入本列表的来源，其浏览器预检请求会被网关以 405 <code>cors_not_allowed</code> 拒绝；非浏览器客户端（不发送 Origin）不受此限制。保存后即时生效，无需重启。
+          </span>
+        </div>
+        <div class="field">
+          <label for="set-allow-ips">允许访问 /v1 的来源 IP</label>
+          <textarea
+            id="set-allow-ips"
+            v-model="form.gateway_allow_ips"
+            class="input mono"
+            rows="3"
+            spellcheck="false"
+            placeholder="127.0.0.1&#10;::1&#10;192.168.0.0/16"
+          ></textarea>
+          <span class="help">
+            每行一个 IP 或 CIDR；在鉴权之前校验，且不读取 <code>X-Forwarded-For</code>（直连伪造无效）。留空等同于只允许本机。
+          </span>
+          <span class="help">
+            默认仅本机（<code>127.0.0.1</code> / <code>::1</code>）。手机或局域网访问需显式加入对应网段；无效项会被忽略。保存后即时生效。
           </span>
         </div>
       </div>

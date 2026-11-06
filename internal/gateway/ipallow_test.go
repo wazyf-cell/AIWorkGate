@@ -1,0 +1,54 @@
+package gateway
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+// D-40: the allowlist runs before authentication, accepts exact IPs and CIDRs,
+// fails safe to loopback when empty, and never trusts X-Forwarded-For.
+func TestAllowIPsGateBeforeAuth(t *testing.T) {
+	cases := []struct {
+		name   string
+		allow  []string
+		remote string
+		xff    string
+		want   int
+	}{
+		{"nil means unrestricted", nil, "10.0.0.5:1000", "", http.StatusUnauthorized},
+		{"loopback allowed", []string{"127.0.0.1"}, "127.0.0.1:1000", "", http.StatusUnauthorized},
+		{"remote denied", []string{"127.0.0.1"}, "10.0.0.5:1000", "", http.StatusForbidden},
+		{"cidr allowed", []string{"192.168.0.0/16"}, "192.168.1.7:1000", "", http.StatusUnauthorized},
+		{"spoofed xff ignored", []string{"127.0.0.1"}, "10.0.0.5:1000", "127.0.0.1", http.StatusForbidden},
+		{"empty fails safe", []string{}, "10.0.0.5:1000", "", http.StatusForbidden},
+		{"invalid entries fail safe", []string{"not-an-ip"}, "10.0.0.5:1000", "", http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newTestGateway(t, Options{AllowIPs: tc.allow})
+			req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			req.RemoteAddr = tc.remote
+			if tc.xff != "" {
+				req.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			rec := serve(g, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d (%s), want %d", rec.Code, rec.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestSetAllowIPsTakesEffectLive(t *testing.T) {
+	g := newTestGateway(t, Options{AllowIPs: []string{"127.0.0.1"}})
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.RemoteAddr = "192.168.1.7:1000"
+	if rec := serve(g, req); rec.Code != http.StatusForbidden {
+		t.Fatalf("before update = %d, want 403", rec.Code)
+	}
+	g.SetAllowIPs([]string{"192.168.0.0/16"})
+	if rec := serve(g, req); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("after update = %d, want 401 (passed the gate)", rec.Code)
+	}
+}

@@ -500,6 +500,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		DebugBody:        cfg.Logging.DebugBody,
 		AModelCacheTTL:   time.Duration(cfg.A.ModelCacheMinutes) * time.Minute,
 		CorsAllowOrigins: cfg.Gateway.CorsAllowOrigins,
+		AllowIPs:         cfg.Gateway.AllowIPs,
 		// Bare model names route to the configured default plugin; the legacy A
 		// fallback only applies while that slot is empty and the switch is on.
 		DefaultPlugin: cfg.Gateway.DefaultPlugin,

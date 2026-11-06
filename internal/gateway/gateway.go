@@ -87,6 +87,11 @@ type Options struct {
 	// kept efforts) for one plugin, keyed by model id. Nil means "none".
 	Prefs func(pluginID string) (map[string]ModelPrefs, error)
 
+	// AllowIPs is the D-40 source-address allowlist for /v1, checked before
+	// authentication. Nil means "no restriction" (tests, standalone); an empty
+	// non-nil list fails safe to loopback only.
+	AllowIPs []string
+
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
 	// key of one entry; the key is never part of CustomModel. Both nil disable
@@ -183,6 +188,7 @@ type Gateway struct {
 	cacheTTL       time.Duration
 	redact         RedactOptions
 	corsOrigins    atomic.Value // []string, set by SetCorsOrigins
+	allowIPs       atomic.Value // ipAllowlist, set by SetAllowIPs
 	defaultPlugin  string
 	legacyA        bool
 	now            func() time.Time
@@ -296,6 +302,7 @@ func newGateway(opts Options) *Gateway {
 	}
 	g.debugBody.Store(opts.DebugBody)
 	g.SetCorsOrigins(opts.CorsAllowOrigins)
+	g.SetAllowIPs(opts.AllowIPs)
 	return g
 }
 
@@ -510,6 +517,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path != "/v1" && !strings.HasPrefix(path, "/v1/") {
 		g.fail(w, rec, http.StatusNotFound, "not_found_error", "not_found",
 			"unknown path "+path)
+		return
+	}
+
+	if !g.ipAllowed(r) {
+		rec.errText = "source ip not allowed"
+		g.fail(w, rec, http.StatusForbidden, "permission_error", "ip_not_allowed",
+			"来源 IP 不在允许列表：请在「设置 → 网关」加入该 IP/CIDR")
 		return
 	}
 

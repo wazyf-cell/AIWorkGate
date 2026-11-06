@@ -55,7 +55,7 @@ func TestDefault(t *testing.T) {
 			ProxyLogDays:    7,
 		},
 		Logging: LoggingConfig{DebugBody: false},
-		Gateway: GatewayConfig{DefaultPlugin: "", LegacyAFallback: true},
+		Gateway: GatewayConfig{DefaultPlugin: "", LegacyAFallback: true, AllowIPs: []string{"127.0.0.1", "::1"}},
 		Redact:  RedactConfig{RouteAware: true}, // P10-2：新增段，缺省即默认表
 		Notify: NotifyConfig{
 			Enabled:            false,
@@ -69,6 +69,28 @@ func TestDefault(t *testing.T) {
 	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("Default().Validate() = %v, want nil", err)
+	}
+}
+
+func TestNormalizeAllowIPs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"empty fails safe", nil, []string{"127.0.0.1", "::1"}},
+		{"blanks dropped", []string{"", "  "}, []string{"127.0.0.1", "::1"}},
+		{"deduped", []string{"10.0.0.1", " 10.0.0.1 "}, []string{"10.0.0.1"}},
+		{"cidr normalized", []string{"192.168.1.7/24"}, []string{"192.168.1.0/24"}},
+		{"invalid dropped", []string{"not-an-ip", "::1"}, []string{"::1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeAllowIPs(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("normalizeAllowIPs(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

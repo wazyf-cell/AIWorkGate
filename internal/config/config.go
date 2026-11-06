@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -131,6 +132,11 @@ type GatewayConfig struct {
 	// Empty means the gateway sends no CORS headers and rejects preflight, so
 	// only non-browser clients (which cannot be tricked by a web page) work.
 	CorsAllowOrigins []string `json:"cors_allow_origins"`
+
+	// AllowIPs is the global source-address allowlist (D-40), checked before
+	// authentication. Entries are IPs or CIDRs; empty fails safe to loopback
+	// only. X-Forwarded-For is not trusted until trusted_proxies exists.
+	AllowIPs []string `json:"allow_ips"`
 
 	// DefaultPlugin serves bare model names (no "id/" prefix). Empty means a
 	// bare name is answered with 404 model_not_found.
@@ -390,6 +396,9 @@ func Default() Config {
 			// it; a fresh install must not break existing client configs.
 			DefaultPlugin:   "",
 			LegacyAFallback: true,
+			// D-40: /v1 answers the local machine only until the user names the
+			// networks that may reach it.
+			AllowIPs: []string{"127.0.0.1", "::1"},
 		},
 		// Redaction is off by default this phase; Route awareness on.
 		Redact: RedactConfig{RouteAware: true},
@@ -466,6 +475,7 @@ func (c *Config) Normalize() {
 	c.Retention.ProxyLogDays = atLeast(c.Retention.ProxyLogDays, 1)
 
 	c.Gateway.CorsAllowOrigins = normalizeOriginList(c.Gateway.CorsAllowOrigins)
+	c.Gateway.AllowIPs = normalizeAllowIPs(c.Gateway.AllowIPs)
 	c.Gateway.DefaultPlugin = strings.ToLower(strings.TrimSpace(c.Gateway.DefaultPlugin))
 
 	// Redact: default key file lives beside the data dir; kinds/categories
@@ -551,6 +561,38 @@ func normalizeOriginList(in []string) []string {
 }
 
 var timeOfDayPattern = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
+
+// normalizeAllowIPs keeps valid IP/CIDR entries, dedupes them and fails safe to
+// loopback when nothing valid remains (D-40). Invalid entries are dropped
+// rather than locking the host out of its own gateway.
+func normalizeAllowIPs(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	add := func(value string) {
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	for _, raw := range in {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if ip := net.ParseIP(value); ip != nil {
+			add(ip.String())
+			continue
+		}
+		if _, network, err := net.ParseCIDR(value); err == nil {
+			add(network.String())
+		}
+	}
+	if len(out) == 0 {
+		return []string{"127.0.0.1", "::1"}
+	}
+	return out
+}
 
 // pluginIDPattern is the plugin id shape accepted in gateway.default_plugin. It
 // mirrors the manifest contract: a lowercase letter, then lowercase letters,

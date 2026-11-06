@@ -384,6 +384,9 @@ func (a *App) saveSettings(raw json.RawMessage) error {
 	if g, ok := a.gatewayHandler.(interface{ SetCorsOrigins([]string) }); ok {
 		g.SetCorsOrigins(next.Gateway.CorsAllowOrigins)
 	}
+	if g, ok := a.gatewayHandler.(interface{ SetAllowIPs([]string) }); ok {
+		g.SetAllowIPs(next.Gateway.AllowIPs)
+	}
 	// Direct egress accounting is a listener decision, not a plugin one: apply
 	// it before the files are rewritten, so switching it on puts the listener URL
 	// into egress.json right away. Running children keep the environment they

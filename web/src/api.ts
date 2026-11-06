@@ -1853,6 +1853,8 @@ export interface LoggingConfig {
  */
 export interface GatewayConfig {
   cors_allow_origins?: string[]
+  /** D-40: source IPs/CIDRs allowed to call /v1; empty means loopback only. */
+  allow_ips?: string[]
 }
 
 /**
@@ -1960,6 +1962,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   gateway: {
     cors_allow_origins: [],
+    allow_ips: ['127.0.0.1', '::1'],
   },
   notify: {
     enabled: false,
