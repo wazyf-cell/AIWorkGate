@@ -153,6 +153,18 @@ func (s *server) putModelOverride(w http.ResponseWriter, r *http.Request, plugin
 		return
 	}
 
+	// D-35 serves(): a newly set non-empty name must point at a model the
+	// plugin lists; clearing it stays allowed. Only check when this request
+	// sets the name, so an already-stored name never blocks an unrelated edit.
+	if present["display_name"] && patch.DisplayName != nil &&
+		strings.TrimSpace(*patch.DisplayName) != "" && s.opts.PluginServesModel != nil {
+		if serves, known := s.opts.PluginServesModel(pluginID, modelID); known && !serves {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("插件 %s 未上报模型 %s，无法重命名", pluginID, modelID), "invalid_request")
+			return
+		}
+	}
+
 	current, err := s.opts.ModelOverrides(pluginID)
 	if err != nil {
 		writeSchedulerError(w, "model overrides", err)

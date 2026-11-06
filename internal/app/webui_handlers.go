@@ -70,6 +70,7 @@ func (a *App) webOptions() webui.Options {
 		ModelOverrides:      a.store.GetModelOverrides,
 		PutModelOverride:    a.store.PutModelOverride,
 		DeleteModelOverride: a.store.DeleteModelOverride,
+		PluginServesModel:   a.pluginServesModel,
 
 		Accounts:   a.accounts,
 		Checkins:   a.checkins,

@@ -734,6 +734,44 @@ func (a *App) poolDetail(pluginID string) (any, error) {
 	}, nil
 }
 
+// pluginServesModel answers the D-35 serves() question ("does this plugin list
+// this model?") from the synced catalog first, then the manifest. known=false
+// means there is no list to check, so the editor fails open.
+func (a *App) pluginServesModel(pluginID, modelID string) (serves, known bool) {
+	pluginID = strings.TrimSpace(pluginID)
+	modelID = strings.TrimSpace(modelID)
+	if pluginID == "" || modelID == "" {
+		return false, false
+	}
+	if a.store != nil {
+		if rows, err := a.store.ListModelCatalog(pluginID); err == nil && len(rows) > 0 {
+			for _, row := range rows {
+				if strings.EqualFold(strings.TrimSpace(row.ModelID), modelID) {
+					return true, true
+				}
+			}
+			return false, true
+		}
+	}
+	if a.pluginMgr != nil {
+		for _, st := range a.pluginMgr.List() {
+			if st.Manifest.ID != pluginID {
+				continue
+			}
+			if len(st.Manifest.Models) == 0 {
+				return false, false
+			}
+			for _, m := range st.Manifest.Models {
+				if strings.EqualFold(strings.TrimSpace(m.ID), modelID) {
+					return true, true
+				}
+			}
+			return false, true
+		}
+	}
+	return false, false
+}
+
 func catalogEntryPayload(entry model.ModelCatalogEntry) map[string]any {
 	return map[string]any{
 		"model_id":       entry.ModelID,

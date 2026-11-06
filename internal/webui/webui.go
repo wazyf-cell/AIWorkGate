@@ -146,6 +146,10 @@ type Options struct {
 	ModelOverrides      func(pluginID string) (map[string]store.ModelOverride, error)
 	PutModelOverride    func(pluginID, model string, o store.ModelOverride) error
 	DeleteModelOverride func(pluginID, model string) error
+	// PluginServesModel reports whether a plugin actually lists a model (D-35
+	// serves()). known=false means there is no list to check, so the editor
+	// lets the write through instead of blocking an unsynced catalog.
+	PluginServesModel func(pluginID, model string) (serves, known bool)
 
 	// SetAccountEgress stores (or removes, with mode "default") one account's
 	// egress assignment. It reports whether a running plugin was reloaded and,
