@@ -107,6 +107,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-plugins.ps1   # plugins/
 ## 说明
 
 - 插件 `api_level` 接受 `1`–`2`：`1` 整池调度，`2` 允许宿主指定账号（`X-Aiworkgate-Account`）。
+- 设置 `AIWORKGATE_NO_BROWSER=1` 可禁止宿主自动打开浏览器（首次启动、托盘、二次启动都不弹），适合无头/自动化场景。
 - 内置 A 网关已退役（D-60）：A 与其他平台一样通过插件或自定义模型接入，不再有独立的 A 地址/Key/面板。
 - 账号级代理：代理账密不下发插件，插件只拿到 `http://<临时令牌>@127.0.0.1:<临时端口>`，监听器校验该令牌；失败不回退直连。
 
