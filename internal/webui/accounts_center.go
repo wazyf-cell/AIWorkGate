@@ -403,6 +403,39 @@ func (s *server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": applied})
 }
 
+// handleAccountCooldownClear implements POST
+// /api/accounts/{plugin}/{account}/cooldown/clear (D-45 手动解除). The route
+// keeps the scheduler resources in the path ({plugin}/{account}, matching
+// /api/scheduler/pools/{plugin}); everything else follows the account mutation
+// routes: POST-only (405 for every other method) and a 404 for an unknown
+// plugin. The account id is not validated against the plugin's live list on
+// purpose — cooldowns are host-side state, so clearing an id that holds none
+// is an idempotent no-op and a stopped plugin can still be cleared.
+func (s *server) handleAccountCooldownClear(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodPost) {
+		return
+	}
+	if s.opts.AccountCooldownClear == nil || s.opts.Plugins == nil {
+		s.unavailable(w)
+		return
+	}
+	pluginID := strings.TrimSpace(r.PathValue("plugin"))
+	accountID := strings.TrimSpace(r.PathValue("account"))
+	if pluginID == "" || accountID == "" {
+		writeError(w, http.StatusNotFound, "plugin and account are required", "not_found")
+		return
+	}
+	if _, ok := s.pluginStatus(pluginID); !ok {
+		writeError(w, http.StatusNotFound, "plugin not found: "+pluginID, "not_found")
+		return
+	}
+	if err := s.opts.AccountCooldownClear(pluginID, accountID); err != nil {
+		writeAccountError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // handleAccountIdentityDetails returns the plugin-reported device identity,
 // masked unless reveal is true.
 func (s *server) handleAccountIdentityDetails(w http.ResponseWriter, r *http.Request) {

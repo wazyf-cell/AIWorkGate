@@ -460,6 +460,13 @@ type APIRequestLog struct {
 	// ReasoningTokens is the upstream's thinking-token count when it reports a
 	// separate number (OpenAI style); Anthropic folds it into completion.
 	ReasoningTokens int64 `json:"reasoning_tokens,omitempty"`
+	// UsageKnown marks that the upstream actually reported a parseable usage
+	// object (D-18⑦). True only when usage was seen on the wire; false covers
+	// both "upstream sent no usage" and "usage could not be parsed" — for those
+	// rows Prompt/Completion stay 0 and mean "unknown", never "free". Historical
+	// rows predate the flag and read as 0 (unknown) on purpose: the fact was
+	// simply not recorded back then.
+	UsageKnown bool `json:"usage_known,omitempty"`
 	// Purpose is X-Aiworkgate-Purpose or the endpoint name (D-31).
 	Purpose string   `json:"purpose,omitempty"`
 	Credits *float64 `json:"credits,omitempty"`

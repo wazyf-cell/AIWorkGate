@@ -173,12 +173,16 @@ type Options struct {
 	// without aborting the batch. AccountSave applies a whole draft in one
 	// transaction. AccountIdentityDetails masks identifiers unless reveal is
 	// set. AccountLoginState summarizes each plugin's login policy.
+	// AccountCooldownClear forgets every host-side cooldown of one account
+	// (D-45 手动解除, POST /api/accounts/{plugin}/{account}/cooldown/clear);
+	// it never calls the plugin, so an unknown account id is a silent no-op.
 	AccountCheckin         func(pluginID, accountID string) (model.CheckinResult, error)
 	AccountRename          func(pluginID, accountID, alias string) error
 	AccountBulk            func(action string, items []model.AccountRef, params model.BulkParams) []model.BulkResult
 	AccountSave            func(draft model.AccountDraft) (model.SaveApplied, error)
 	AccountIdentityDetails func(pluginID, accountID string, reveal bool) (model.IdentityDetails, error)
 	AccountLoginState      func() []model.LoginState
+	AccountCooldownClear   func(pluginID, accountID string) error
 
 	// Groups backs /api/groups. Only listing and creation live here: renames,
 	// deletes and membership changes are part of the atomic account draft
@@ -393,6 +397,11 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/accounts/save", s.handleAccountSave)
 	mux.HandleFunc("/api/accounts/identity/details", s.handleAccountIdentityDetails)
 	mux.HandleFunc("/api/accounts/login-state", s.handleAccountLoginState)
+	// D-45 手动解除冷却: POST /api/accounts/{plugin}/{account}/cooldown/clear.
+	// The path segments follow the scheduler resources ({plugin}/{account});
+	// everything else about the endpoint (POST-only body-less action) follows
+	// the flat mutation routes above.
+	mux.HandleFunc("/api/accounts/{plugin}/{account}/cooldown/clear", s.handleAccountCooldownClear)
 	mux.HandleFunc("/api/groups", s.handleGroups)
 	mux.HandleFunc("/api/checkin", s.handleCheckins)
 	mux.HandleFunc("/api/checkin/all", s.handleCheckinAll)

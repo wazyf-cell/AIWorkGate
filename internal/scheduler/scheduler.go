@@ -370,6 +370,12 @@ type StickyStore interface {
 // counter, so the next request continues the backoff instead of restarting at
 // the base duration.
 //
+// Why is the D-24/D-45 reason class (CooldownRateLimit ... CooldownOther) and
+// By is the triggering account key ("plugin/account"); both are structured
+// metadata for the manual clear endpoint and the UI badge. The durable store
+// has no dedicated columns for them, so the app-side adapter folds Why into
+// the reason text ("[rate_limit] status 429") and rebuilds By from the row key.
+//
 // Ported from A (TraeWorkAssistant, MIT, 朱天伟) models.rs:712-731 and
 // store/docs.rs:1266-1290: A persists `until` plus `error_count` per account
 // and restores both into the pool on startup (api_server/pool.rs:331-370).
@@ -379,7 +385,12 @@ type CooldownRecord struct {
 	Model     string
 	Until     int64
 	Reason    string
-	Strikes   int
+	// Why is one of the D-24 classes (cooldown_policy.go); "" keeps legacy rows
+	// without attribution loadable.
+	Why string
+	// By is the account key that triggered the cooldown ("plugin/account").
+	By      string
+	Strikes int
 }
 
 // CooldownStore persists request-path cooldowns. *store.Store is wrapped by the
@@ -495,6 +506,11 @@ type Scheduler struct {
 	// than rpmWindowSeconds; Acquire is the only writer, so a restarted
 	// process starts with an empty window (advisory, in-memory by design).
 	rpmHits map[AccountKey][]int64
+	// usageHits logs the recent Acquire timestamps per account for the D-25②
+	// usage half-life: compositeScores decay each hit by usageHalfLifeSeconds
+	// so a just-heavily-used account is briefly demoted. In-memory by design —
+	// a restart starts from a neutral usage view.
+	usageHits map[AccountKey][]int64
 
 	stickyEntries map[stickyKey]stickyEntry
 	stickyLoaded  map[string]bool
@@ -613,6 +629,7 @@ func New(opts Options) *Scheduler {
 		pool5xx:       make(map[string]int),
 		circuit:       make(map[string]int64),
 		rpmHits:       make(map[AccountKey][]int64),
+		usageHits:     make(map[AccountKey][]int64),
 		stickyEntries: make(map[stickyKey]stickyEntry),
 		stickyLoaded:  make(map[string]bool),
 	}
@@ -642,6 +659,7 @@ func (s *Scheduler) Close() {
 	s.pool5xx = make(map[string]int)
 	s.circuit = make(map[string]int64)
 	s.rpmHits = make(map[AccountKey][]int64)
+	s.usageHits = make(map[AccountKey][]int64)
 	s.stickyEntries = make(map[stickyKey]stickyEntry)
 	s.stickyLoaded = make(map[string]bool)
 }
@@ -733,9 +751,9 @@ func (s *Scheduler) randFloat() float64 {
 }
 
 // Acquire counts one in-flight request for key. Call Release when it ends.
-// It also records one hit in the account's RPM window (P5 每分钟请求数):
-// every attempt that is about to go upstream counts, including retries and
-// the hedged second attempt.
+// It also records one hit in the account's RPM window (P5 每分钟请求数) and one
+// in the D-25② usage half-life window: every attempt that is about to go
+// upstream counts, including retries and the hedged second attempt.
 func (s *Scheduler) Acquire(key AccountKey) {
 	if s == nil || key.AccountID == "" {
 		return
@@ -745,6 +763,7 @@ func (s *Scheduler) Acquire(key AccountKey) {
 	defer s.mu.Unlock()
 	s.inFlight[key]++
 	s.recordRPMHitLocked(key, now)
+	s.recordUsageHitLocked(key, now)
 }
 
 // Release decrements the in-flight counter without going negative.
@@ -806,20 +825,38 @@ func (s *Scheduler) circuitOpenLocked(pluginID string, now int64) bool {
 // Report records the outcome of one request: EWMA first-byte latency, account
 // and model cooldowns, and the pool circuit breaker.
 //
+// Failure cooldowns are tiered by cause since D-24 (cooldown_policy.go):
+//
 //	429            -> (plugin,account,model) cooldown 30s doubling to 10m
-//	5xx / 0 / 408  -> account cooldown 60s; 3 consecutive open the pool 60s
-//	other statuses -> success bookkeeping (resets streaks)
+//	401            -> account cooldown 30m (auth_expired)
+//	5xx / 408 / 409 -> account cooldown 60s; 3 consecutive open the pool 60s
+//	0 (transport)  -> account cooldown 15s (network)
+//	other statuses -> success bookkeeping (resets streaks), as before
 func (s *Scheduler) Report(key AccountKey, model string, status int, ttfbMS int64, credits float64) {
+	s.ReportCause(key, model, FailureCause{Status: status}, ttfbMS, credits)
+}
+
+// ReportCause is Report with the D-24 attribution inputs attached: the error
+// text for quota/egress classification, the upstream Retry-After hint and the
+// quota window reset time. Callers that only know the status keep using
+// Report, which reproduces the pre-D-24 statuses bit for bit.
+func (s *Scheduler) ReportCause(key AccountKey, model string, cause FailureCause, ttfbMS int64, credits float64) {
 	if s == nil || key.AccountID == "" {
 		return
 	}
 	now := s.now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.applyReportLocked(key, model, cause, ttfbMS, credits, now)
+}
 
+// applyReportLocked is the shared body of Report/ReportCause. Caller holds
+// s.mu and now is the injected clock's unix second.
+func (s *Scheduler) applyReportLocked(key AccountKey, model string, cause FailureCause, ttfbMS int64, credits float64, now int64) {
 	if credits > 0 {
 		s.credits[key] += credits
 	}
+	status := cause.Status
 
 	success := status >= 200 && status < 400
 	if success {
@@ -847,48 +884,138 @@ func (s *Scheduler) Report(key AccountKey, model string, status int, ttfbMS int6
 		return
 	}
 
-	switch {
-	case status == 429:
+	// D-24: attribute the failure before picking the tier. An empty class
+	// keeps the legacy "unclassified failures do not cool down" behavior (a
+	// request-shaped 4xx such as 400 must not park the account).
+	why := ClassifyCooldown(status, cause.Message)
+	if why == "" {
+		// A non-5xx answer proves the pool is alive.
+		s.pool5xx[key.PluginID] = 0
+		return
+	}
+	by := key.String()
+
+	switch why {
+	case CooldownRateLimit:
 		// Rate limits are model-specific: another model of the same account
 		// may still work.
 		mk := modelCooldownKey{Key: key, Model: model}
 		state := s.modelCD[mk]
 		state.Strikes++
-		backoff := cooldown429Base
-		for i := 1; i < state.Strikes && backoff < cooldown429Max; i++ {
-			backoff *= 2
+		until := now + int64(cooldown429Backoff(state.Strikes))
+		if cause.RetryAfter > 0 {
+			// 尊重上游 Retry-After，最多信任 1 小时（05 号文档 longestWait）。
+			seconds := int64(cause.RetryAfter / time.Second)
+			if seconds <= 0 {
+				seconds = 1
+			}
+			if seconds > cooldownRetryCapSeconds {
+				seconds = cooldownRetryCapSeconds
+			}
+			until = now + seconds
 		}
-		if backoff > cooldown429Max {
-			backoff = cooldown429Max
-		}
-		state.Until = now + int64(backoff)
+		state.Until = until
 		s.modelCD[mk] = state
 		// An empty model would collide with the account-wide row (model_id ''),
 		// so such a report stays in memory only.
 		if model != "" {
 			s.enqueueCooldown(CooldownRecord{
 				PluginID: key.PluginID, AccountID: key.AccountID, Model: model,
-				Until: state.Until, Reason: "status 429", Strikes: state.Strikes,
+				Until: state.Until, Reason: "status 429", Why: why, By: by,
+				Strikes: state.Strikes,
 			})
 		}
 		s.pool5xx[key.PluginID] = 0
-	case status == 0 || status == 408 || status == 409 || status >= 500:
-		until := now + cooldownServerErr
+	case CooldownUpstreamError, CooldownQuotaExhausted, CooldownAuthExpired,
+		CooldownNetwork, CooldownEgress, CooldownOther:
+		until := now + accountCooldownSeconds(why, cause, now)
 		s.accountCD[key] = until
 		s.enqueueCooldown(CooldownRecord{
 			PluginID: key.PluginID, AccountID: key.AccountID,
-			Until: until, Reason: fmt.Sprintf("status %d", status),
+			Until: until, Reason: cooldownReasonText(status, cause, why), Why: why, By: by,
 		})
+		// The pool circuit breaker keeps its pre-D-24 condition exactly: only
+		// 5xx/transport/408 streaks open it. Auth/quota/egress/network-tier
+		// cooldowns park the account without blaming the pool.
 		if status >= 500 || status == 0 || status == 408 {
 			s.pool5xx[key.PluginID]++
 			if s.pool5xx[key.PluginID] >= circuitThreshold {
 				s.circuit[key.PluginID] = now + circuitSeconds
 				s.pool5xx[key.PluginID] = 0
 			}
+		} else {
+			s.pool5xx[key.PluginID] = 0
 		}
-	default:
-		// A non-5xx answer proves the pool is alive.
-		s.pool5xx[key.PluginID] = 0
+	}
+}
+
+// cooldown429Backoff returns the strike-driven 429 backoff seconds: 30s
+// doubling capped at 10 minutes (the pre-D-24 ladder, kept verbatim).
+func cooldown429Backoff(strikes int) int64 {
+	backoff := int64(cooldown429Base)
+	for i := 1; i < strikes && backoff < cooldown429Max; i++ {
+		backoff *= 2
+	}
+	if backoff > cooldown429Max {
+		backoff = cooldown429Max
+	}
+	return backoff
+}
+
+// cooldownReasonText renders the durable human reason of a cooldown. The
+// historic "status N" strings are kept so old rows and new rows read alike;
+// message-driven tiers name their cause.
+func cooldownReasonText(status int, cause FailureCause, why string) string {
+	switch why {
+	case CooldownQuotaExhausted:
+		return "quota exhausted"
+	case CooldownEgress:
+		return "egress rejected"
+	case CooldownNetwork:
+		return "network error"
+	case CooldownRateLimit:
+		if cause.RetryAfter > 0 {
+			return "status 429 retry-after"
+		}
+		return "status 429"
+	}
+	// upstream_error / auth_expired / other keep the historic "status N" form.
+	return fmt.Sprintf("status %d", status)
+}
+
+// ClearCooldown forgets every request-path cooldown of one account (D-45 手动
+// 解除): the account-wide row and all its per-model rows. The clear is
+// account-scoped on purpose — the UI button sits on the account row, and
+// leaving a per-model row behind would keep the account unpickable for that
+// model right after the user asked for a clear. The pool circuit breaker is
+// deliberately untouched: it is pool-level health, not per-account state, and
+// a hostile pool stays guarded even when one account is pardoned. Unknown
+// accounts clear nothing and stay silent.
+func (s *Scheduler) ClearCooldown(pluginID, accountID string) {
+	if s == nil || accountID == "" {
+		return
+	}
+	key := AccountKey{PluginID: pluginID, AccountID: accountID}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.accountCD[key]; ok {
+		delete(s.accountCD, key)
+		s.enqueueCooldownDelete(key.PluginID, key.AccountID, "")
+	}
+	models := make([]string, 0, 2)
+	for mk := range s.modelCD {
+		if mk.Key == key {
+			models = append(models, mk.Model)
+		}
+	}
+	for _, m := range models {
+		delete(s.modelCD, modelCooldownKey{Key: key, Model: m})
+		// An empty-model row lives in memory only (Report never persists it),
+		// so its delete must not target the account-wide store row.
+		if m != "" {
+			s.enqueueCooldownDelete(key.PluginID, key.AccountID, m)
+		}
 	}
 }
 
@@ -1961,6 +2088,11 @@ func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []fl
 			if a.Priority != b.Priority {
 				return a.Priority < b.Priority
 			}
+			// D-29: Priority 相同才按 Weight 排序（Weight=0 视为中性 1，等权
+			// 时仍按 ID，维持旧顺序）。
+			if wa, wb := effectiveWeight(a.Weight), effectiveWeight(b.Weight); wa != wb {
+				return wa > wb
+			}
 			return a.ID < b.ID
 		}), scores
 	default: // credit_first
@@ -1979,12 +2111,20 @@ func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []fl
 			if a.Priority != b.Priority {
 				return a.Priority < b.Priority
 			}
+			// D-29: 同 Priority 的 credit_first 也让权重发言（降序）。
+			if wa, wb := effectiveWeight(a.Weight), effectiveWeight(b.Weight); wa != wb {
+				return wa > wb
+			}
 			return a.ID < b.ID
 		}), scores
 	}
 }
 
-// compositeScores computes the weighted3 score of every account (§6.3).
+// compositeScores computes the weighted3 score of every account (§6.3). The
+// base urgency/ratio/latency blend is multiplied by the D-29 account weight
+// (equal-priority ties only, see score_factors.go) and the D-25② usage
+// half-life factor (recently used accounts are briefly demoted). Both factors
+// are 1 when they do not apply, so legacy scores stay bit-identical.
 func (s *Scheduler) compositeScores(pool *Pool, accounts []Account, now int64) []float64 {
 	scores := make([]float64, len(accounts))
 	if len(accounts) == 0 {
@@ -2003,6 +2143,7 @@ func (s *Scheduler) compositeScores(pool *Pool, accounts []Account, now int64) [
 			maxAdv = raw
 		}
 	}
+	weights := weightFactors(accounts)
 	for i, acc := range accounts {
 		urgency := expiryUrgency(acc.ExpiresAt, now)
 		ratio := remainingRatio(acc.Remaining, acc.Total)
@@ -2010,22 +2151,25 @@ func (s *Scheduler) compositeScores(pool *Pool, accounts []Account, now int64) [
 		if maxAdv > 0 {
 			latency = adv[i] / maxAdv
 		}
-		scores[i] = 0.45*urgency + 0.40*ratio + 0.15*latency
+		usage := s.decayedUsageLocked(accKey(pool.PluginID, acc.ID), now)
+		scores[i] = (0.45*urgency + 0.40*ratio + 0.15*latency) * weights[i] * usageFactor(usage)
 	}
 	return scores
 }
 
 // accountScoreLocked scores one account in isolation (explain rows of rejected
-// accounts, where no comparison set exists).
+// accounts, where no comparison set exists). The D-29 weight is not applied
+// here: it is a comparison-set factor, not an absolute one.
 func (s *Scheduler) accountScoreLocked(pluginID string, acc Account, now int64) float64 {
 	latency := s.ewma[accKey(pluginID, acc.ID)]
 	if latency <= 0 {
 		latency = defaultLatencyMS
 	}
 	adv := 1 / math.Max(1, latency)
-	return 0.45*expiryUrgency(acc.ExpiresAt, now) +
+	base := 0.45*expiryUrgency(acc.ExpiresAt, now) +
 		0.40*remainingRatio(acc.Remaining, acc.Total) +
 		0.15*adv
+	return base * usageFactor(s.decayedUsageLocked(accKey(pluginID, acc.ID), now))
 }
 
 // traceCandidates renders the explain rows for every traced source. Rejected

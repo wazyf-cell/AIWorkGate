@@ -91,6 +91,7 @@ func (a *App) webOptions() webui.Options {
 		AccountSave:            a.accountSave,
 		AccountIdentityDetails: a.accountIdentityDetails,
 		AccountLoginState:      a.accountLoginStates,
+		AccountCooldownClear:   a.accountCooldownClear,
 
 		Groups:      a.listGroups,
 		CreateGroup: a.createGroup,
@@ -1125,6 +1126,42 @@ func (a *App) clearHealthAfterLogin(pluginID string, status model.LoginStatus) {
 	a.logger.Info("app", "account health cleared after login", map[string]any{
 		"plugin": pluginID, "account": accountID,
 	})
+}
+
+// accountCooldownClear implements POST
+// /api/accounts/{plugin}/{account}/cooldown/clear (D-45 手动解除). It clears
+// every cooldown the host holds for the account: the request-path cooldowns in
+// the scheduling core (a.dispatch, account-wide plus its per-model rows) and
+// the health-overlay cooldown (plan 2026-10-21 §4) through the same path
+// clearHealthAfterLogin uses. The plugin itself is not called — cooldowns are
+// host-side state — so a stopped plugin still accepts a clear, and an account
+// id that holds no cooldown is a silent no-op (the clear is idempotent).
+func (a *App) accountCooldownClear(pluginID, accountID string) error {
+	pluginID = strings.TrimSpace(pluginID)
+	accountID = strings.TrimSpace(accountID)
+	if err := a.accountPlugin(pluginID); err != nil {
+		return err
+	}
+	if accountID == "" {
+		return fmt.Errorf("%w: account_id is required", webui.ErrInvalidRequest)
+	}
+	if a.dispatch != nil {
+		a.dispatch.ClearCooldown(pluginID, accountID)
+	}
+	if a.sched != nil {
+		a.sched.ClearAccountHealth(pluginID, accountID)
+	} else if a.store != nil {
+		if err := a.store.ClearAccountHealth(pluginID, accountID); err != nil {
+			a.logger.Warn("app", "cannot clear account health", map[string]any{
+				"plugin": pluginID, "account": accountID, "error": err.Error(),
+			})
+		}
+	}
+	a.logger.Info("app", "account cooldown cleared", map[string]any{
+		"plugin": pluginID, "account": accountID,
+	})
+	a.writeAudit(model.AuditAccount, "cooldown_clear", pluginID+"/"+accountID, "ok")
+	return nil
 }
 
 // accountLoginCancel abandons a login session; the plugin cleanup is optional.

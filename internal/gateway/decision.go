@@ -144,13 +144,18 @@ func (g *Gateway) handleDecision(w http.ResponseWriter, r *http.Request, rec *re
 	if resp.StatusCode >= 400 {
 		rec.errText = truncateUTF8(strings.TrimSpace(string(respBody)), 512)
 	}
+	// D-18⑦: the usage object is a pointer so "usage": null / a missing key
+	// stay unknown instead of masquerading as reported-zero usage. A present
+	// (parseable) object marks the row usage-known, zero counts included —
+	// same rule as the bodyTap paths.
 	var usage struct {
-		Usage struct {
+		Usage *struct {
 			InputTokens  int64 `json:"input_tokens"`
 			OutputTokens int64 `json:"output_tokens"`
 		} `json:"usage"`
 	}
-	if json.Unmarshal(respBody, &usage) == nil {
+	if json.Unmarshal(respBody, &usage) == nil && usage.Usage != nil {
+		rec.usageKnown = true
 		rec.prompt, rec.completion = usage.Usage.InputTokens, usage.Usage.OutputTokens
 	}
 	ct := resp.Header.Get("Content-Type")

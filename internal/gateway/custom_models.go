@@ -396,6 +396,7 @@ func (g *Gateway) copyCustomConverted(dst http.ResponseWriter, rec *reqRecord, r
 	}
 	tap.finish()
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
+	rec.usageKnown = tap.usageKnown
 	if g.debugBody.Load() {
 		rec.bodyResp = string(tap.preview)
 	}
@@ -469,6 +470,7 @@ func (g *Gateway) copyCustomBody(w http.ResponseWriter, resp *http.Response, rec
 	tap.feed(body)
 	tap.finish()
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
+	rec.usageKnown = tap.usageKnown
 	if g.debugBody.Load() {
 		rec.bodyResp = string(tap.preview)
 	}
@@ -501,6 +503,7 @@ func (g *Gateway) copyCustomAsStream(w http.ResponseWriter, resp *http.Response,
 	tap.feed(body)
 	tap.finish()
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
+	rec.usageKnown = tap.usageKnown
 	if g.debugBody.Load() {
 		rec.bodyResp = string(tap.preview)
 	}
@@ -566,6 +569,7 @@ func (g *Gateway) copyCustomStream(w http.ResponseWriter, resp *http.Response, r
 	}
 	tap.finish()
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
+	rec.usageKnown = tap.usageKnown
 	if g.debugBody.Load() {
 		rec.bodyResp = string(tap.preview)
 	}

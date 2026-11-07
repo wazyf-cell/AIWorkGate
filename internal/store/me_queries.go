@@ -80,7 +80,9 @@ func (s *Store) KeyModelUsage(keyID, fromDay, toDay string, limit int) ([]KeyMod
 }
 
 // MeLogRow is one request as the self-service page may see it: no bodies, no
-// conversation ids, no account credentials.
+// conversation ids, no account credentials. UsageKnown=false means the
+// upstream never reported usage, so Prompt/CompletionTokens read as "unknown"
+// rather than as reported zeroes (D-18⑦).
 type MeLogRow struct {
 	TS               string
 	Model            string
@@ -89,6 +91,7 @@ type MeLogRow struct {
 	LatencyMS        int64
 	PromptTokens     int64
 	CompletionTokens int64
+	UsageKnown       bool
 }
 
 // RecentKeyLogs returns the newest requests of one key (metadata only).
@@ -104,7 +107,7 @@ func (s *Store) RecentKeyLogs(keyID string, limit int) ([]MeLogRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(ts, ''),
 		COALESCE(NULLIF(model_served, ''), NULLIF(logical_model, ''), COALESCE(model, '')), COALESCE(source, ''),
 		COALESCE(status, 0), COALESCE(latency_ms, 0),
-		COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0)
+		COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(usage_known, 0)
 		FROM api_logs WHERE key_id = ? ORDER BY ts DESC LIMIT ?`, keyID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: recent key logs: %w", err)
@@ -112,11 +115,15 @@ func (s *Store) RecentKeyLogs(keyID string, limit int) ([]MeLogRow, error) {
 	defer rows.Close()
 	out := make([]MeLogRow, 0, limit)
 	for rows.Next() {
-		var row MeLogRow
+		var (
+			row        MeLogRow
+			usageKnown int64
+		)
 		if err := rows.Scan(&row.TS, &row.Model, &row.Source, &row.Status,
-			&row.LatencyMS, &row.PromptTokens, &row.CompletionTokens); err != nil {
+			&row.LatencyMS, &row.PromptTokens, &row.CompletionTokens, &usageKnown); err != nil {
 			return nil, fmt.Errorf("store: recent key logs: scan: %w", err)
 		}
+		row.UsageKnown = usageKnown != 0
 		out = append(out, row)
 	}
 	return out, rows.Err()

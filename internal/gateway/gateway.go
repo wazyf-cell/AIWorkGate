@@ -426,7 +426,10 @@ type reqRecord struct {
 	cacheWrite1h   int64
 	cacheUnknown   bool
 	reasoning      int64
-	purpose        string
+	// usageKnown marks that the upstream reported a parseable usage object
+	// (D-18⑦). Without it, prompt/completion 0 means "unknown", never "free".
+	usageKnown bool
+	purpose    string
 	credits        *float64
 	downgraded     string
 	errText        string
@@ -1599,6 +1602,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, rec *reqRecord
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
 	rec.cacheWrite, rec.cacheWrite1h = tap.cacheWrite, tap.cacheWrite1h
 	rec.cacheUnknown, rec.reasoning = tap.cacheUnknown, tap.reasoning
+	rec.usageKnown = tap.usageKnown
 	if tap.served != "" {
 		rec.modelServed = tap.served
 	}
@@ -1717,6 +1721,7 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 		CacheWrite1h:     rec.cacheWrite1h,
 		CacheUnknown:     rec.cacheUnknown,
 		ReasoningTokens:  rec.reasoning,
+		UsageKnown:       rec.usageKnown,
 		Purpose:          rec.purpose,
 		Credits:          rec.credits,
 		Error:            truncateUTF8(rec.errText, 512),

@@ -2309,6 +2309,13 @@ const accountsApi = Object.assign(
         body: JSON.stringify({ plugin_id: plugin, account_id: account }),
       })
     },
+    /** D-45 手动解除冷却：清掉宿主持有的该账号全部冷却（含模型级）。 */
+    clearCooldown(plugin: string, account: string): Promise<OkResponse> {
+      return request<OkResponse>(
+        `/accounts/${encodeURIComponent(plugin)}/${encodeURIComponent(account)}/cooldown/clear`,
+        { method: 'POST' },
+      )
+    },
   },
 )
 

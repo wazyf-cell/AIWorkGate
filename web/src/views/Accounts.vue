@@ -1099,6 +1099,21 @@ async function refreshRow(row: Row) {
   }
 }
 
+/** D-45 手动解除冷却：清掉宿主侧该账号的调度冷却与健康冷却。 */
+async function clearCooldownRow(row: Row) {
+  if (rowLocked(row) || busy[row.key]) return
+  busy[row.key] = true
+  try {
+    await api.accounts.clearCooldown(row.plugin_id, row.id)
+    await loadAccounts(true)
+    toast(`${displayName(row)}：冷却已解除`)
+  } catch (e) {
+    toast(errorMessage(e), 'error')
+  } finally {
+    busy[row.key] = false
+  }
+}
+
 const deleteConfirm = reactive<Record<string, boolean>>({})
 
 function askDelete(row: Row) {
@@ -2251,6 +2266,17 @@ onUnmounted(() => {
                             v-if="row.state_source === 'host' && cooldownLeft(row)"
                             class="badge muted plain"
                           >{{ cooldownLeft(row) }}</span>
+                          <button
+                            v-if="row.state_source === 'host' && cooldownLeft(row)"
+                            type="button"
+                            class="btn sm ghost"
+                            :disabled="busy[row.key]"
+                            :aria-label="`解除冷却：${displayName(row)}`"
+                            :title="`解除冷却：${displayName(row)}`"
+                            @click="clearCooldownRow(row)"
+                          >
+                            解除
+                          </button>
                           <span v-if="row.stale" class="badge muted plain" title="插件离线，显示上次快照">快照</span>
                           <span v-if="!isEnabled(row)" class="badge muted plain">已禁用</span>
                         </div>

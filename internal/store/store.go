@@ -655,6 +655,14 @@ var migrations = []migrationStep{
 			{"account_meta", "rpm", "INTEGER"},
 		},
 	},
+	{ // version 23: D-18⑦ usage-known flag on request logs
+		columns: []columnMigration{
+			// 1 = the upstream reported a parseable usage object, 0 = it did
+			// not (or the row predates the flag: those are honestly unknown,
+			// never counted as reported-zero usage).
+			{"api_logs", "usage_known", "INTEGER NOT NULL DEFAULT 0"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

@@ -27,6 +27,7 @@ func (s *Store) APILogByReqID(reqID string) (model.APIRequestLog, bool, error) {
 		credits      sql.NullFloat64
 		cost         sql.NullFloat64
 		cacheUnknown int64
+		usageKnown   int64
 	)
 	err := row.Scan(
 		&rec.TS, &rec.ReqID, &rec.Source, &rec.Model,
@@ -34,7 +35,7 @@ func (s *Store) APILogByReqID(reqID string) (model.APIRequestLog, bool, error) {
 		&rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID, &stream, &rec.Status,
 		&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 		&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens,
-		&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &rec.Purpose,
+		&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &usageKnown, &rec.Purpose,
 		&credits, &cost, &rec.PricingModel, &rec.Error,
 	)
 	if err == sql.ErrNoRows {
@@ -45,6 +46,7 @@ func (s *Store) APILogByReqID(reqID string) (model.APIRequestLog, bool, error) {
 	}
 	rec.Stream = stream != 0
 	rec.CacheUnknown = cacheUnknown != 0
+	rec.UsageKnown = usageKnown != 0
 	if credits.Valid {
 		v := credits.Float64
 		rec.Credits = &v

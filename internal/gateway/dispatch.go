@@ -1314,6 +1314,7 @@ func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Resp
 	rec.prompt, rec.completion, rec.cached = tap.prompt, tap.completion, tap.cached
 	rec.cacheWrite, rec.cacheWrite1h = tap.cacheWrite, tap.cacheWrite1h
 	rec.cacheUnknown, rec.reasoning = tap.cacheUnknown, tap.reasoning
+	rec.usageKnown = tap.usageKnown
 	if tap.served != "" {
 		rec.modelServed = tap.served
 	}
@@ -1395,8 +1396,21 @@ func (g *Gateway) reportAttempt(decision scheduler.Decision, pluginID, pinned st
 	if res.credits != nil {
 		credits = *res.credits
 	}
-	g.sched.Report(scheduler.AccountKey{PluginID: pluginID, AccountID: decision.AccountID},
-		decision.Model, status, rec.ttfb.Milliseconds(), credits)
+	// D-24: report with the cause attached so the cooldown tier, the upstream
+	// Retry-After hint and the quota markers drive the parked duration instead
+	// of a one-size status table. The message is capped: it is a transport-safe
+	// attribution summary, never a raw body dump.
+	cause := scheduler.FailureCause{
+		Status:  status,
+		Message: truncateUTF8(attemptBodyText(res), 512),
+	}
+	if raw := res.header.Get("Retry-After"); raw != "" {
+		if wait, ok := parseRetryAfter(raw, g.now()); ok && wait > 0 {
+			cause.RetryAfter = wait
+		}
+	}
+	g.sched.ReportCause(scheduler.AccountKey{PluginID: pluginID, AccountID: decision.AccountID},
+		decision.Model, cause, rec.ttfb.Milliseconds(), credits)
 }
 
 // attemptBodyText returns the buffered error body of one attempt, falling back

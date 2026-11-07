@@ -471,7 +471,7 @@ func (s *Store) UsageSessions(f UsageFilter, modelFilter, conversationFilter str
 	q := `SELECT ts, COALESCE(req_id, ''), COALESCE(source, ''), COALESCE(model, ''),
 		COALESCE(logical_model, ''), COALESCE(account, ''), COALESCE(conversation_id, ''),
 		COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), credits,
-		COALESCE(ttfb_ms, 0), COALESCE(latency_ms, 0), COALESCE(status, 0)
+		COALESCE(ttfb_ms, 0), COALESCE(latency_ms, 0), COALESCE(status, 0), COALESCE(usage_known, 0)
 		FROM api_logs` + where + ` ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, q, append(args, limit, offset)...)
 	if err != nil {
@@ -481,14 +481,16 @@ func (s *Store) UsageSessions(f UsageFilter, modelFilter, conversationFilter str
 	out := make([]model.APIRequestLog, 0, limit)
 	for rows.Next() {
 		var (
-			rec     model.APIRequestLog
-			credits sql.NullFloat64
+			rec        model.APIRequestLog
+			credits    sql.NullFloat64
+			usageKnown int64
 		)
 		if err := rows.Scan(&rec.TS, &rec.ReqID, &rec.Source, &rec.Model, &rec.LogicalModel,
 			&rec.Account, &rec.ConversationID, &rec.PromptTokens, &rec.CompletionTokens,
-			&credits, &rec.TTFBMS, &rec.LatencyMS, &rec.Status); err != nil {
+			&credits, &rec.TTFBMS, &rec.LatencyMS, &rec.Status, &usageKnown); err != nil {
 			return nil, 0, fmt.Errorf("store: usage sessions: scan: %w", err)
 		}
+		rec.UsageKnown = usageKnown != 0
 		if credits.Valid {
 			v := credits.Float64
 			rec.Credits = &v
@@ -892,18 +894,20 @@ func (s *Store) QueryAPILogsSince(id int64, fromDay, toDay string, limit int) ([
 			credits      sql.NullFloat64
 			cost         sql.NullFloat64
 			cacheUnknown int64
+			usageKnown   int64
 		)
 		if err := rows.Scan(&rowID, &rec.TS, &rec.ReqID, &rec.Source, &rec.Model,
 			&rec.ModelRequested, &rec.ModelUpstream, &rec.ModelServed,
 			&rec.LogicalModel, &rec.KeyID, &rec.KeyName, &rec.Account, &rec.ConversationID,
 			&stream, &rec.Status, &rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens,
-			&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &rec.Purpose,
+			&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &usageKnown, &rec.Purpose,
 			&credits, &cost, &rec.PricingModel, &rec.Error); err != nil {
 			return nil, id, fmt.Errorf("store: api logs since: scan: %w", err)
 		}
 		rec.Stream = stream != 0
 		rec.CacheUnknown = cacheUnknown != 0
+		rec.UsageKnown = usageKnown != 0
 		if credits.Valid {
 			v := credits.Float64
 			rec.Credits = &v

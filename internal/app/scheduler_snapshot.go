@@ -907,6 +907,36 @@ func (a *App) storeModelsCache(id string, models []model.ModelInfo, at time.Time
 // resumes the backoff. No credentials or account labels are stored here.
 type schedulerCooldownStore struct{ store *store.Store }
 
+// cooldownWhyMarker folds the D-45 reason class inside the durable reason
+// column ("[rate_limit] status 429"): store.SchedulerCooldown has no dedicated
+// why column and internal/store is not extended here. Rows without the
+// "[why] " marker (written before D-45, or by a scheduler that did not
+// attribute the failure) load with an empty Why, which every consumer must
+// tolerate.
+
+func encodeCooldownWhy(why, reason string) string {
+	if why == "" {
+		return reason
+	}
+	return "[" + why + "] " + reason
+}
+
+func decodeCooldownWhy(reason string) (why, rest string) {
+	reason = strings.TrimSpace(reason)
+	if !strings.HasPrefix(reason, "[") {
+		return "", reason
+	}
+	end := strings.Index(reason, "]")
+	if end < 0 {
+		return "", reason
+	}
+	why = strings.TrimSpace(reason[1:end])
+	if why == "" {
+		return "", reason
+	}
+	return why, strings.TrimSpace(reason[end+1:])
+}
+
 func (s schedulerCooldownStore) LoadCooldowns(now int64) ([]scheduler.CooldownRecord, error) {
 	if s.store == nil {
 		return nil, nil
@@ -917,9 +947,11 @@ func (s schedulerCooldownStore) LoadCooldowns(now int64) ([]scheduler.CooldownRe
 	}
 	out := make([]scheduler.CooldownRecord, 0, len(rows))
 	for _, row := range rows {
+		why, reason := decodeCooldownWhy(row.Reason)
 		out = append(out, scheduler.CooldownRecord{
 			PluginID: row.PluginID, AccountID: row.AccountID, Model: row.ModelID,
-			Until: row.Until, Reason: row.Reason, Strikes: row.Strikes,
+			Until: row.Until, Reason: reason, Why: why, By: row.PluginID + "/" + row.AccountID,
+			Strikes: row.Strikes,
 		})
 	}
 	return out, nil
@@ -931,7 +963,8 @@ func (s schedulerCooldownStore) SaveCooldown(record scheduler.CooldownRecord) er
 	}
 	return s.store.UpsertSchedulerCooldown(store.SchedulerCooldown{
 		PluginID: record.PluginID, AccountID: record.AccountID, ModelID: record.Model,
-		Until: record.Until, Reason: record.Reason, Strikes: record.Strikes,
+		Until: record.Until, Reason: encodeCooldownWhy(record.Why, record.Reason),
+		Strikes: record.Strikes,
 	})
 }
 

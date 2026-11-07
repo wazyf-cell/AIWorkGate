@@ -31,6 +31,10 @@ type bodyTap struct {
 	cacheWrite1h int64
 	cacheUnknown bool
 	reasoning    int64
+	// usageKnown marks that the upstream actually sent a parseable usage
+	// object (D-18⑦), even when every count inside is zero. prompt/completion
+	// without it mean "unknown", never "reported zero".
+	usageKnown bool
 	// served is the model the upstream reported in the response, if any.
 	served string
 	// cached is the cached prompt prefix reported by the upstream. Ported from
@@ -249,25 +253,47 @@ func (u usageCounts) cachedPrompt() int64 {
 }
 
 func (t *bodyTap) parseUsage(b []byte) {
+	// The usage fields are pointers so "usage": null and a missing usage key
+	// both stay nil (D-18⑦): only a real object marks the row usage-known.
 	var payload struct {
-		Usage   usageCounts `json:"usage"`
+		Usage   *usageCounts `json:"usage"`
 		Message *struct {
-			Usage usageCounts `json:"usage"`
+			Usage *usageCounts `json:"usage"`
 		} `json:"message"`
 		Response *struct {
-			Usage usageCounts `json:"usage"`
+			Usage *usageCounts `json:"usage"`
 		} `json:"response"`
 	}
 	if err := json.Unmarshal(b, &payload); err != nil {
 		return
 	}
+	if payload.Usage != nil {
+		t.usageKnown = true
+	}
 	if payload.Message != nil {
-		t.apply(payload.Message.Usage)
+		if payload.Message.Usage != nil {
+			t.usageKnown = true
+		}
+		t.apply(derefUsage(payload.Message.Usage))
 	}
 	if payload.Response != nil {
-		t.apply(payload.Response.Usage)
+		if payload.Response.Usage != nil {
+			t.usageKnown = true
+		}
+		t.apply(derefUsage(payload.Response.Usage))
 	}
-	t.apply(payload.Usage)
+	if payload.Usage != nil {
+		t.apply(*payload.Usage)
+	}
+}
+
+// derefUsage turns an absent usage object into the zero counts; apply ignores
+// every zero, so this keeps the old "no usage" behaviour byte for byte.
+func derefUsage(u *usageCounts) usageCounts {
+	if u == nil {
+		return usageCounts{}
+	}
+	return *u
 }
 
 func (t *bodyTap) apply(u usageCounts) {
