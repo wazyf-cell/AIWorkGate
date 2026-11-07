@@ -27,7 +27,7 @@ func getAccountMetaTx(ctx context.Context, tx *sql.Tx, pluginID, accountID strin
 // ---------------------------------------------------------------- account_meta
 
 const accountMetaColumns = `COALESCE(alias, ''), COALESCE(group_id, ''),
-	enabled_override, priority, weight, COALESCE(note, ''), COALESCE(updated_at, 0),
+	enabled_override, priority, weight, rpm, COALESCE(note, ''), COALESCE(updated_at, 0),
 	COALESCE(status_kind, ''), COALESCE(cooldown_until, 0), COALESCE(cooldown_reason, ''),
 	COALESCE(failure_count, 0)`
 
@@ -39,10 +39,11 @@ func scanAccountMeta(scan func(dest ...any) error, meta *model.AccountMeta) erro
 		enabled  sql.NullInt64
 		prio     sql.NullInt64
 		weight   sql.NullFloat64
+		rpm      sql.NullInt64
 		failures sql.NullInt64
 	)
 	if err := scan(&meta.PluginID, &meta.AccountID, &meta.Alias, &meta.GroupID,
-		&enabled, &prio, &weight, &meta.Note, &meta.UpdatedAt,
+		&enabled, &prio, &weight, &rpm, &meta.Note, &meta.UpdatedAt,
 		&meta.StatusKind, &meta.CooldownUntil, &meta.CooldownReason, &failures); err != nil {
 		return err
 	}
@@ -60,6 +61,10 @@ func scanAccountMeta(scan func(dest ...any) error, meta *model.AccountMeta) erro
 	if weight.Valid {
 		v := weight.Float64
 		meta.Weight = &v
+	}
+	if rpm.Valid {
+		v := int(rpm.Int64)
+		meta.RPM = &v
 	}
 	return nil
 }
@@ -80,18 +85,19 @@ func (s *Store) UpsertAccountMeta(meta model.AccountMeta) error {
 	ctx, cancel := s.ctx()
 	defer cancel()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO account_meta
-		(plugin_id, account_id, alias, group_id, enabled_override, priority, weight, note, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(plugin_id, account_id, alias, group_id, enabled_override, priority, weight, rpm, note, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(plugin_id, account_id) DO UPDATE SET
 			alias = excluded.alias,
 			group_id = excluded.group_id,
 			enabled_override = excluded.enabled_override,
 			priority = excluded.priority,
 			weight = excluded.weight,
+			rpm = excluded.rpm,
 			note = excluded.note,
 			updated_at = excluded.updated_at`,
 		meta.PluginID, meta.AccountID, nullStr(meta.Alias), nullStr(meta.GroupID),
-		optBool(meta.EnabledOverride), optInt(meta.Priority), optFloat(meta.Weight),
+		optBool(meta.EnabledOverride), optInt(meta.Priority), optFloat(meta.Weight), optInt(meta.RPM),
 		nullStr(meta.Note), updatedAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert account meta: %w", err)
@@ -551,23 +557,27 @@ func (s *Store) SaveAccountDraft(draft model.AccountDraft) (model.SaveApplied, e
 		if item.WeightSet() {
 			meta.Weight = item.Weight
 		}
+		if item.RPMSet() {
+			meta.RPM = item.RPM
+		}
 		if item.EnabledOverrideSet() {
 			meta.EnabledOverride = item.EnabledOverride
 		}
 		meta.PluginID, meta.AccountID = pluginID, accountID
 		if _, err := tx.ExecContext(ctx, `INSERT INTO account_meta
-			(plugin_id, account_id, alias, group_id, enabled_override, priority, weight, note, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(plugin_id, account_id, alias, group_id, enabled_override, priority, weight, rpm, note, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(plugin_id, account_id) DO UPDATE SET
 				alias = excluded.alias,
 				group_id = excluded.group_id,
 				enabled_override = excluded.enabled_override,
 				priority = excluded.priority,
 				weight = excluded.weight,
+				rpm = excluded.rpm,
 				note = excluded.note,
 				updated_at = excluded.updated_at`,
 			pluginID, accountID, nullStr(meta.Alias), nullStr(meta.GroupID),
-			optBool(meta.EnabledOverride), optInt(meta.Priority), optFloat(meta.Weight),
+			optBool(meta.EnabledOverride), optInt(meta.Priority), optFloat(meta.Weight), optInt(meta.RPM),
 			nullStr(meta.Note), now); err != nil {
 			return fail("save %s/%s: %w", pluginID, accountID, err)
 		}

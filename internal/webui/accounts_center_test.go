@@ -305,6 +305,8 @@ func TestAccountSaveRoute(t *testing.T) {
 		{`{"accounts":[{"plugin_id":"mock","account_id":"acc_1","priority":-1}]}`, "invalid_priority"},
 		{`{"accounts":[{"plugin_id":"mock","account_id":"acc_1","weight":0.05}]}`, "invalid_weight"},
 		{`{"accounts":[{"plugin_id":"mock","account_id":"acc_1","weight":101}]}`, "invalid_weight"},
+		{`{"accounts":[{"plugin_id":"mock","account_id":"acc_1","rpm":-1}]}`, "invalid_rpm"},
+		{`{"accounts":[{"plugin_id":"mock","account_id":"acc_1","rpm":1000001}]}`, "invalid_rpm"},
 		{`{"accounts":[{"plugin_id":"mock","account_id":"acc_1","alias":"` + strings.Repeat("a", 65) + `"}]}`, "invalid_alias"},
 		{`{"accounts":[{"plugin_id":"mock","account_id":"acc_1","group_id":"grp_missing"}]}`, "invalid_group"},
 		{`{"groups":[{"id":"grp_x","name":""}]}`, "invalid_group"},

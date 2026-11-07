@@ -49,8 +49,14 @@ func TestDefault(t *testing.T) {
 			ProxyLogDays:    7,
 		},
 		Logging: LoggingConfig{DebugBody: false},
-		Gateway: GatewayConfig{DefaultPlugin: "", AllowIPs: []string{"127.0.0.1", "::1"}, ServiceMode: "open"},
-		Redact:  RedactConfig{RouteAware: true}, // P10-2：新增段，缺省即默认表
+		Gateway: GatewayConfig{
+			DefaultPlugin:       "",
+			AllowIPs:            []string{"127.0.0.1", "::1"},
+			ServiceMode:         "open",
+			QueueTimeoutSeconds: 30,
+			QueueMaxDepth:       0,
+		},
+		Redact: RedactConfig{RouteAware: true}, // P10-2：新增段，缺省即默认表
 		Notify: NotifyConfig{
 			Enabled:            false,
 			Channel:            "generic",
@@ -324,6 +330,43 @@ func TestCorsOriginsWireKey(t *testing.T) {
 	}
 }
 
+// TestGatewayQueueLimitRoundTrip proves the P5 排队 fields keep their wire
+// spelling and that an explicit "wait forever" (0) survives Save/Load instead
+// of drifting back to the 30s default.
+func TestGatewayQueueLimitRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Default()
+	cfg.Gateway.QueueTimeoutSeconds = 0
+	cfg.Gateway.QueueMaxDepth = 64
+	if err := Save(dir, cfg); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Gateway.QueueTimeoutSeconds != 0 || got.Gateway.QueueMaxDepth != 64 {
+		t.Fatalf("round trip = timeout %d / depth %d, want 0 / 64",
+			got.Gateway.QueueTimeoutSeconds, got.Gateway.QueueMaxDepth)
+	}
+	raw, err := os.ReadFile(ConfigPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Gateway struct {
+			QueueTimeoutSeconds int `json:"queue_timeout_seconds"`
+			QueueMaxDepth       int `json:"queue_max_depth"`
+		} `json:"gateway"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	if file.Gateway.QueueTimeoutSeconds != 0 || file.Gateway.QueueMaxDepth != 64 {
+		t.Fatalf("file gateway section = %s, want queue_timeout_seconds=0 queue_max_depth=64", raw)
+	}
+}
+
 func TestLoadClamps(t *testing.T) {
 	tests := []struct {
 		name string
@@ -392,6 +435,51 @@ func TestLoadClamps(t *testing.T) {
 			then: func(t *testing.T, c Config) {
 				if c.Checkin.RetryCount != 0 {
 					t.Fatalf("retry_count = %d, want 0", c.Checkin.RetryCount)
+				}
+			},
+		},
+		{
+			name: "negative queue timeout folds onto unlimited wait",
+			raw:  `{"gateway": {"queue_timeout_seconds": -5}}`,
+			then: func(t *testing.T, c Config) {
+				if c.Gateway.QueueTimeoutSeconds != 0 {
+					t.Fatalf("queue_timeout_seconds = %d, want 0 (unlimited)", c.Gateway.QueueTimeoutSeconds)
+				}
+			},
+		},
+		{
+			name: "explicit queue timeout zero stays unlimited wait",
+			raw:  `{"gateway": {"queue_timeout_seconds": 0}}`,
+			then: func(t *testing.T, c Config) {
+				if c.Gateway.QueueTimeoutSeconds != 0 {
+					t.Fatalf("queue_timeout_seconds = %d, want 0 (unlimited)", c.Gateway.QueueTimeoutSeconds)
+				}
+			},
+		},
+		{
+			name: "absent queue timeout keeps the 30s default",
+			raw:  `{"gateway": {}}`,
+			then: func(t *testing.T, c Config) {
+				if c.Gateway.QueueTimeoutSeconds != DefaultQueueTimeoutSeconds {
+					t.Fatalf("queue_timeout_seconds = %d, want %d", c.Gateway.QueueTimeoutSeconds, DefaultQueueTimeoutSeconds)
+				}
+			},
+		},
+		{
+			name: "queue depth negative folds onto unbounded",
+			raw:  `{"gateway": {"queue_max_depth": -2}}`,
+			then: func(t *testing.T, c Config) {
+				if c.Gateway.QueueMaxDepth != 0 {
+					t.Fatalf("queue_max_depth = %d, want 0 (unbounded)", c.Gateway.QueueMaxDepth)
+				}
+			},
+		},
+		{
+			name: "queue depth clamps to the maximum",
+			raw:  `{"gateway": {"queue_max_depth": 999999}}`,
+			then: func(t *testing.T, c Config) {
+				if c.Gateway.QueueMaxDepth != MaxQueueDepth {
+					t.Fatalf("queue_max_depth = %d, want %d", c.Gateway.QueueMaxDepth, MaxQueueDepth)
 				}
 			},
 		},

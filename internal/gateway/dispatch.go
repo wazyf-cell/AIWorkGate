@@ -420,7 +420,7 @@ func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, cl
 		}
 	}
 
-	decision, err := g.sched.Pick(ctx, snap, scheduler.Request{
+	decision, err := g.sched.PickWait(ctx, snap, scheduler.Request{
 		Model:           routeModel,
 		ConversationID:  conversationID,
 		ClientKey:       clientKey,
@@ -598,11 +598,16 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 			headers.Set(accountHeader, pinned)
 		}
 
-		release, err := g.lim.acquire(r.Context(), id, g.plugins.Concurrency(id), g.queueTimeout)
+		release, err := g.lim.acquire(r.Context(), id, g.plugins.Concurrency(id), g.queueWait())
 		if err != nil {
 			if errors.Is(err, errQueueTimeout) {
 				g.fail(w, rec, http.StatusTooManyRequests, "concurrency_limit", "concurrency_limit",
 					fmt.Sprintf("插件 %s 并发已满，排队超时", id))
+				return
+			}
+			if errors.Is(err, errQueueFull) {
+				g.fail(w, rec, http.StatusTooManyRequests, "rate_limited", "queue_full",
+					fmt.Sprintf("插件 %s 并发已满且排队已满（上限 %d），请稍后重试", id, g.lim.depth.Load()))
 				return
 			}
 			rec.status = 499
@@ -1020,7 +1025,7 @@ func (g *Gateway) prepareHedge(r *http.Request, rec *reqRecord, rawBody []byte, 
 	}
 	headers.Set(hedgeHeader, "1")
 
-	release, err := g.lim.acquire(r.Context(), id, g.plugins.Concurrency(id), g.queueTimeout)
+	release, err := g.lim.acquire(r.Context(), id, g.plugins.Concurrency(id), g.queueWait())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1113,6 +1118,12 @@ func (g *Gateway) failSchedule(w http.ResponseWriter, rec *reqRecord, err error)
 	switch {
 	case errors.Is(err, scheduler.ErrUnknownModel):
 		g.writeUnknownModel(w, rec, rec.model, "")
+	case errors.Is(err, scheduler.ErrAccountRateLimited):
+		// P5 每分钟请求数: every candidate account hit its per-minute cap and
+		// the scheduler's two-minute wait budget expired.
+		w.Header().Set("Retry-After", "30")
+		g.fail(w, rec, http.StatusTooManyRequests, "rate_limited", "account_rate_limited",
+			"所选模型的全部账号已达每分钟请求上限，等待后仍不可用: "+msg)
 	case errors.Is(err, scheduler.ErrNoCandidate):
 		w.Header().Set("Retry-After", "10")
 		g.fail(w, rec, http.StatusServiceUnavailable, "no_available_account",

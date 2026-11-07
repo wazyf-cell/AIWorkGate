@@ -238,6 +238,8 @@ export interface Account {
   group_id?: string
   priority?: number
   weight?: number
+  /** P5 per-minute request cap from the overlay; 0/absent = unlimited. */
+  rpm?: number
   /** null/undefined = follow the plugin, true/false = forced by the host. */
   enabled_override?: boolean | null
   enabled_effective?: boolean
@@ -362,6 +364,8 @@ export interface AccountSavePatch {
   group_id?: string | null
   priority?: number
   weight?: number
+  /** P5 per-minute request cap; 0 = unlimited. */
+  rpm?: number
   enabled_override?: boolean | null
   egress?: AccountEgressBinding
 }

@@ -133,8 +133,15 @@ type Options struct {
 	// BodyCap caps the response preview bytes kept for logging. Default 8KB.
 	BodyCap int
 	// QueueTimeout is how long a chat request waits for a plugin slot before
-	// receiving 429 concurrency_limit. Default 30s.
+	// receiving 429 concurrency_limit. The zero value keeps the historical 30s
+	// default; a negative value (the app maps config queue_timeout_seconds=0,
+	// P5 排队等待 "一直等") waits without a deadline, bounded only by the
+	// client's context.
 	QueueTimeout time.Duration
+	// QueueMaxDepth caps how many requests may wait per plugin for a slot
+	// (P5 排队上限). A request arriving on a full queue is rejected with 429
+	// queue_full immediately; 0 = unbounded.
+	QueueMaxDepth int
 	// ModelCacheTTL is how long a plugin's fetched model list is reused.
 	// Default 10m.
 	ModelCacheTTL time.Duration
@@ -180,23 +187,26 @@ var (
 
 // Gateway is the http.Handler returned by New.
 type Gateway struct {
-	plugins           PluginRegistry
-	keys              KeyVerifier
-	logs              APILogSink
-	sched             *scheduler.Scheduler
-	snapshot          func(context.Context) (*scheduler.Snapshot, error)
-	schedLog          SchedLogger
-	overrides         func(pluginID string) (map[string]ModelOverride, error)
-	prefs             func(pluginID string) (map[string]ModelPrefs, error)
-	customModels      func() ([]CustomModel, error)
-	customModelKey    func(id string) (string, bool)
-	keyRecord         func(keyID string) (KeyRecord, bool, error)
-	keyUsageToday     func(keyID, day string) (int, error)
-	keyUsageTotal     func(keyID string) (int, error)
-	keyUsage          func(keyID, day string, requests, promptTokens, completionTokens, cachedTokens int, credits *float64)
-	debugBody         atomic.Bool
-	bodyCap           int
-	queueTimeout      time.Duration
+	plugins        PluginRegistry
+	keys           KeyVerifier
+	logs           APILogSink
+	sched          *scheduler.Scheduler
+	snapshot       func(context.Context) (*scheduler.Snapshot, error)
+	schedLog       SchedLogger
+	overrides      func(pluginID string) (map[string]ModelOverride, error)
+	prefs          func(pluginID string) (map[string]ModelPrefs, error)
+	customModels   func() ([]CustomModel, error)
+	customModelKey func(id string) (string, bool)
+	keyRecord      func(keyID string) (KeyRecord, bool, error)
+	keyUsageToday  func(keyID, day string) (int, error)
+	keyUsageTotal  func(keyID string) (int, error)
+	keyUsage       func(keyID, day string, requests, promptTokens, completionTokens, cachedTokens int, credits *float64)
+	debugBody      atomic.Bool
+	bodyCap        int
+	// queueTimeoutNS holds nanoseconds; negative = wait forever (P5 排队等待
+	// "一直等"), 0 never occurs after newGateway. Atomic so the admin config
+	// save can retune it while traffic flows.
+	queueTimeoutNS    atomic.Int64
 	modelCacheTTL     time.Duration
 	redact            RedactOptions
 	corsOrigins       atomic.Value // []string, set by SetCorsOrigins
@@ -267,7 +277,10 @@ func newGateway(opts Options) *Gateway {
 		bodyCap = defaultBodyCap
 	}
 	queueTimeout := opts.QueueTimeout
-	if queueTimeout <= 0 {
+	if queueTimeout == 0 {
+		// Options unset: keep the historical 30s fallback. Only the app's
+		// explicit mapping of config queue_timeout_seconds=0 passes a negative
+		// value, which the limiter reads as "wait forever".
 		queueTimeout = defaultQueueTimeout
 	}
 	modelCacheTTL := opts.ModelCacheTTL
@@ -307,7 +320,6 @@ func newGateway(opts Options) *Gateway {
 		keyUsageTotal:     opts.KeyUsageTotal,
 		keyUsage:          opts.KeyUsage,
 		bodyCap:           bodyCap,
-		queueTimeout:      queueTimeout,
 		modelCacheTTL:     modelCacheTTL,
 		redact:            opts.Redact,
 		defaultPlugin:     strings.ToLower(strings.TrimSpace(opts.DefaultPlugin)),
@@ -330,7 +342,26 @@ func newGateway(opts Options) *Gateway {
 	g.SetTrustedProxies(opts.TrustedProxies)
 	g.SetServiceMode(opts.ServiceMode)
 	g.SetRateLimits(opts.RateLimitPerMinute, opts.RateLimitPerIPPerMinute)
+	g.SetQueueLimits(queueTimeout, opts.QueueMaxDepth)
 	return g
+}
+
+// queueWait returns the configured slot-wait deadline: negative = unlimited.
+func (g *Gateway) queueWait() time.Duration {
+	return time.Duration(g.queueTimeoutNS.Load())
+}
+
+// SetQueueLimits retunes the P5 排队 pair at runtime (admin config save):
+// wait < 0 means wait forever, depth 0 means unbounded.
+func (g *Gateway) SetQueueLimits(wait time.Duration, depth int) {
+	if g == nil {
+		return
+	}
+	if wait == 0 {
+		wait = defaultQueueTimeout
+	}
+	g.queueTimeoutNS.Store(int64(wait))
+	g.lim.SetQueueDepth(depth)
 }
 
 // doNotFollowRedirects keeps the gateway transparent: a 3xx from A or a plugin
@@ -1383,11 +1414,16 @@ func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *req
 		}
 	}
 
-	release, err := g.lim.acquire(r.Context(), id, g.plugins.Concurrency(id), g.queueTimeout)
+	release, err := g.lim.acquire(r.Context(), id, g.plugins.Concurrency(id), g.queueWait())
 	if err != nil {
 		if errors.Is(err, errQueueTimeout) {
 			g.fail(w, rec, http.StatusTooManyRequests, "concurrency_limit", "concurrency_limit",
 				fmt.Sprintf("插件 %s 并发已满，排队超时", id))
+			return
+		}
+		if errors.Is(err, errQueueFull) {
+			g.fail(w, rec, http.StatusTooManyRequests, "rate_limited", "queue_full",
+				fmt.Sprintf("插件 %s 并发已满且排队已满（上限 %d），请稍后重试", id, g.lim.depth.Load()))
 			return
 		}
 		// The client went away while queuing; nothing sensible to write.

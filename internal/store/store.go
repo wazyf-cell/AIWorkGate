@@ -649,6 +649,12 @@ var migrations = []migrationStep{
 			)`,
 		},
 	},
+	{ // version 22: P5 per-account RPM cap (供应商字段规格图三: 每分钟请求数)
+		columns: []columnMigration{
+			// NULL = not overridden (0/absent = unlimited, like priority/weight).
+			{"account_meta", "rpm", "INTEGER"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

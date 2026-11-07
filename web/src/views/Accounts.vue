@@ -185,6 +185,7 @@ interface Draft {
   group_id: string
   priority: number
   weight: number
+  rpm: number
   egress: string
 }
 
@@ -196,6 +197,7 @@ function snapshot(row: Row): Draft {
     group_id: row.group_id ?? '',
     priority: row.priority ?? 100,
     weight: row.weight ?? 1,
+    rpm: row.rpm ?? 0,
     egress: egressKey(row),
   }
 }
@@ -217,6 +219,7 @@ function normalizeDraft(row: Row) {
     current.group_id === base.group_id &&
     current.priority === base.priority &&
     current.weight === base.weight &&
+    current.rpm === base.rpm &&
     current.egress === base.egress
   if (same) delete draft[row.key]
 }
@@ -242,6 +245,10 @@ function rowWeight(row: Row): number {
   return draft[row.key]?.weight ?? row.weight ?? 1
 }
 
+function rowRPM(row: Row): number {
+  return draft[row.key]?.rpm ?? row.rpm ?? 0
+}
+
 function rowEgressKey(row: Row): string {
   return draft[row.key]?.egress ?? egressKey(row)
 }
@@ -255,6 +262,7 @@ function isDirty(row: Row): boolean {
       current.group_id !== base.group_id ||
       current.priority !== base.priority ||
       current.weight !== base.weight ||
+      current.rpm !== base.rpm ||
       current.egress !== base.egress
     ) {
       return true
@@ -293,15 +301,27 @@ function setWeight(row: Row, value: number) {
   normalizeDraft(row)
 }
 
-function onNumberChange(row: Row, event: Event, field: 'priority' | 'weight') {
+function setRPM(row: Row, value: number) {
+  if (!Number.isFinite(value)) return
+  // P5 每分钟请求数: 0 = 不限；负数按 0 处理。
+  const next = Math.max(0, Math.round(value))
+  if (next === rowRPM(row)) return
+  ensureDraft(row).rpm = next
+  normalizeDraft(row)
+}
+
+function onNumberChange(row: Row, event: Event, field: 'priority' | 'weight' | 'rpm') {
   const input = event.target as HTMLInputElement
   if (input.value.trim() === '') {
-    input.value = String(field === 'priority' ? rowPriority(row) : rowWeight(row))
+    const fallback =
+      field === 'priority' ? rowPriority(row) : field === 'weight' ? rowWeight(row) : rowRPM(row)
+    input.value = String(fallback)
     return
   }
   const value = Number(input.value)
   if (field === 'priority') setPriority(row, value)
-  else setWeight(row, value)
+  else if (field === 'weight') setWeight(row, value)
+  else setRPM(row, value)
 }
 
 /* ------------------------------------------------------------------ */
@@ -1665,6 +1685,7 @@ async function saveAll() {
         patch.alias = current.alias
         if (current.priority !== (row.priority ?? 100)) patch.priority = current.priority
         if (current.weight !== (row.weight ?? 1)) patch.weight = current.weight
+        if (current.rpm !== (row.rpm ?? 0)) patch.rpm = current.rpm
         if (current.egress !== egressKey(row)) patch.egress = egressBinding(current.egress)
       }
       patches.push(patch)
@@ -2428,8 +2449,21 @@ onUnmounted(() => {
                                     @change="onNumberChange(row, $event, 'weight')"
                                   />
                                 </label>
+                                <label class="field field-compact" :for="`rpm-${row.key}`">
+                                  每分钟上限
+                                  <input
+                                    :id="`rpm-${row.key}`"
+                                    :name="`rpm-${row.key}`"
+                                    class="input input-compact"
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    :value="rowRPM(row)"
+                                    @change="onNumberChange(row, $event, 'rpm')"
+                                  />
+                                </label>
                               </div>
-                              <p class="small muted">优先级、权重随「保存配置」提交。</p>
+                              <p class="small muted">优先级、权重、每分钟上限（0 = 不限）随「保存配置」提交。</p>
                               <p v-if="row.last_error" class="small text-danger text-danger">
                                 {{ row.last_error }}
                               </p>

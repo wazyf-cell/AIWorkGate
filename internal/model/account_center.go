@@ -24,8 +24,12 @@ type AccountMeta struct {
 	EnabledOverride *bool    `json:"enabled_override,omitempty"`
 	Priority        *int     `json:"priority,omitempty"`
 	Weight          *float64 `json:"weight,omitempty"`
-	Note            string   `json:"note,omitempty"`
-	UpdatedAt       int64    `json:"updated_at,omitempty"`
+	// RPM is the P5 per-minute request cap (每分钟请求数; 0 = 不限). Nil means
+	// "not overridden" and resolves to 0 (off) like every other overlay
+	// pointer.
+	RPM       *int   `json:"rpm,omitempty"`
+	Note      string `json:"note,omitempty"`
+	UpdatedAt int64  `json:"updated_at,omitempty"`
 
 	// Health four-tuple (plan 2026-10-21 §4), persisted in the account_meta
 	// columns of the same names. They are written independently of the overlay
@@ -60,6 +64,15 @@ func (m AccountMeta) EffectiveWeight() float64 {
 		return DefaultAccountWeight
 	}
 	return *m.Weight
+}
+
+// EffectiveRPM resolves the P5 per-minute request cap: an unset or negative
+// overlay value means "off" (0 = unlimited).
+func (m AccountMeta) EffectiveRPM() int {
+	if m.RPM == nil || *m.RPM < 0 {
+		return 0
+	}
+	return *m.RPM
 }
 
 // AccountGroup is a display-only account group (§D89: one group per account).
@@ -218,10 +231,11 @@ type AccountDraftItem struct {
 	GroupID         *string      `json:"group_id"`
 	Priority        *int         `json:"priority"`
 	Weight          *float64     `json:"weight"`
+	RPM             *int         `json:"rpm"`
 	EnabledOverride *bool        `json:"enabled_override"`
 	Egress          *EgressDraft `json:"egress"`
 
-	aliasSet, groupIDSet, prioritySet, weightSet, overrideSet, egressSet bool
+	aliasSet, groupIDSet, prioritySet, weightSet, rpmSet, overrideSet, egressSet bool
 }
 
 // accountDraftWire decodes the optional fields as raw JSON so presence and an
@@ -233,6 +247,7 @@ type accountDraftWire struct {
 	GroupID         json.RawMessage `json:"group_id"`
 	Priority        json.RawMessage `json:"priority"`
 	Weight          json.RawMessage `json:"weight"`
+	RPM             json.RawMessage `json:"rpm"`
 	EnabledOverride json.RawMessage `json:"enabled_override"`
 	Egress          json.RawMessage `json:"egress"`
 }
@@ -250,6 +265,7 @@ func (item *AccountDraftItem) UnmarshalJSON(data []byte) error {
 		groupIDSet:  len(wire.GroupID) > 0,
 		prioritySet: len(wire.Priority) > 0,
 		weightSet:   len(wire.Weight) > 0,
+		rpmSet:      len(wire.RPM) > 0,
 		overrideSet: len(wire.EnabledOverride) > 0,
 		egressSet:   len(wire.Egress) > 0,
 	}
@@ -284,6 +300,13 @@ func (item *AccountDraftItem) UnmarshalJSON(data []byte) error {
 		}
 		item.Weight = &value
 	}
+	if item.rpmSet && !isJSONNull(wire.RPM) {
+		var value int
+		if err := json.Unmarshal(wire.RPM, &value); err != nil {
+			return fmt.Errorf("model: rpm: %w", err)
+		}
+		item.RPM = &value
+	}
 	if item.overrideSet && !isJSONNull(wire.EnabledOverride) {
 		var value bool
 		if err := json.Unmarshal(wire.EnabledOverride, &value); err != nil {
@@ -316,6 +339,10 @@ func (item AccountDraftItem) PrioritySet() bool { return item.prioritySet || ite
 
 // WeightSet reports whether the draft carried a weight (value or null).
 func (item AccountDraftItem) WeightSet() bool { return item.weightSet || item.Weight != nil }
+
+// RPMSet reports whether the draft carried an rpm value (value or null; null
+// clears the cap back to "off").
+func (item AccountDraftItem) RPMSet() bool { return item.rpmSet || item.RPM != nil }
 
 // EnabledOverrideSet reports whether the draft carried an enable override.
 func (item AccountDraftItem) EnabledOverrideSet() bool {

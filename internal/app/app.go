@@ -472,6 +472,10 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		ServiceMode:             cfg.Gateway.ServiceMode,
 		RateLimitPerMinute:      cfg.Gateway.RateLimitPerMinute,
 		RateLimitPerIPPerMinute: cfg.Gateway.RateLimitPerIPPerMinute,
+		// P5 排队等待/排队上限: queue_timeout_seconds=0 (一直等) maps onto the
+		// gateway's negative sentinel; queue_max_depth 0 stays unbounded.
+		QueueTimeout:  queueTimeoutOption(cfg.Gateway.QueueTimeoutSeconds),
+		QueueMaxDepth: cfg.Gateway.QueueMaxDepth,
 		// Bare model names route to the configured default plugin only.
 		DefaultPlugin:     cfg.Gateway.DefaultPlugin,
 		Schedule:          a.dispatch,
@@ -531,6 +535,9 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	a.cleanupFiles(cfg, time.Now())
 	safego.Go(a.logger, "retentionLoop", func() { a.retentionLoop() })
 	safego.Go(a.logger, "modelSyncLoop", func() { a.modelSyncLoop() })
+	// 17. D-21③ runtime wiring: the three quota alert rules re-evaluate on a
+	// fixed interval and reach the configured notify channel.
+	safego.Go(a.logger, "quotaAlertLoop", func() { a.quotaAlertLoop() })
 
 	list := a.pluginMgr.List()
 	running := 0

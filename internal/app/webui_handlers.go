@@ -389,6 +389,12 @@ func (a *App) saveSettings(raw json.RawMessage) error {
 	if g, ok := a.gatewayHandler.(interface{ SetRateLimits(int, int) }); ok {
 		g.SetRateLimits(next.Gateway.RateLimitPerMinute, next.Gateway.RateLimitPerIPPerMinute)
 	}
+	// The P5 排队 pair is read per request, so a save takes effect immediately.
+	if g, ok := a.gatewayHandler.(interface {
+		SetQueueLimits(time.Duration, int)
+	}); ok {
+		g.SetQueueLimits(queueTimeoutOption(next.Gateway.QueueTimeoutSeconds), next.Gateway.QueueMaxDepth)
+	}
 	// Direct egress accounting is a listener decision, not a plugin one: apply
 	// it before the files are rewritten, so switching it on puts the listener URL
 	// into egress.json right away. Running children keep the environment they

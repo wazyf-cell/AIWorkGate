@@ -61,9 +61,16 @@ const (
 	DefaultMarketUpdateIntervalMinutes = 360
 	// MarketUpdatePolicyPrompt (default) records available updates but never
 	// installs them; MarketUpdatePolicyAuto is an explicit opt-in that applies
-	// updates through the rollback primitive.
+	// updates through the rollback primitive. Any other value normalizes to prompt.
 	MarketUpdatePolicyPrompt = "prompt"
 	MarketUpdatePolicyAuto   = "auto"
+
+	// DefaultQueueTimeoutSeconds is the shipped gateway.queue_timeout_seconds
+	// (P5 排队等待). It mirrors the gateway's historical 30s fallback so an
+	// existing config file that lacks the field behaves exactly as before.
+	DefaultQueueTimeoutSeconds = 30
+	// MaxQueueDepth clamps a hand-edited gateway.queue_max_depth.
+	MaxQueueDepth = 100_000
 )
 
 // DefaultNoProxy lists destinations that must never be sent to a proxy.
@@ -246,6 +253,17 @@ type GatewayConfig struct {
 	// RateLimitPerIPPerMinute caps each source IP before authentication;
 	// 0 = off. Heavy protection belongs at the reverse proxy (P5-5).
 	RateLimitPerIPPerMinute int `json:"rate_limit_per_ip_per_minute"`
+
+	// QueueTimeoutSeconds bounds how long one request waits for a plugin
+	// concurrency slot before receiving 429 concurrency_limit (P5 排队等待).
+	// The shipped default of 30s keeps the pre-existing behaviour; an explicit
+	// 0 means "wait forever" (bounded only by the client disconnecting). A
+	// negative value normalizes to 0.
+	QueueTimeoutSeconds int `json:"queue_timeout_seconds"`
+	// QueueMaxDepth caps how many requests may wait per plugin for a slot
+	// (P5 排队上限). A request arriving when the queue is full is rejected
+	// immediately with 429 queue_full instead of parking; 0 = unbounded.
+	QueueMaxDepth int `json:"queue_max_depth"`
 
 	// PublicHosts lists the hostnames a reverse proxy may send while the host
 	// itself is loopback-only. Without it, the DNS-rebinding guard rejects a
@@ -493,8 +511,10 @@ func Default() Config {
 			DefaultPlugin: "",
 			// D-40: /v1 answers the local machine only until the user names the
 			// networks that may reach it.
-			AllowIPs:    []string{"127.0.0.1", "::1"},
-			ServiceMode: "open",
+			AllowIPs:            []string{"127.0.0.1", "::1"},
+			ServiceMode:         "open",
+			QueueTimeoutSeconds: DefaultQueueTimeoutSeconds,
+			QueueMaxDepth:       0,
 		},
 		// Redaction is off by default this phase; Route awareness on.
 		Redact: RedactConfig{RouteAware: true},
@@ -573,6 +593,14 @@ func (c *Config) Normalize() {
 	c.Pricing = normalizePricing(c.Pricing)
 	c.Gateway.RateLimitPerMinute = clampRateLimit(c.Gateway.RateLimitPerMinute)
 	c.Gateway.RateLimitPerIPPerMinute = clampRateLimit(c.Gateway.RateLimitPerIPPerMinute)
+	// P5 排队等待: a negative value is a typo, not a request for negative
+	// waiting — fold it onto the "wait forever" spelling. An explicit 0 stays
+	// 0 (unlimited wait); the 30s default comes from Default() when the file
+	// lacks the field, so old configs keep their behaviour.
+	if c.Gateway.QueueTimeoutSeconds < 0 {
+		c.Gateway.QueueTimeoutSeconds = 0
+	}
+	c.Gateway.QueueMaxDepth = clampQueueDepth(c.Gateway.QueueMaxDepth)
 	c.Gateway.PublicHosts = normalizePublicHosts(c.Gateway.PublicHosts)
 	c.Gateway.DefaultPlugin = strings.ToLower(strings.TrimSpace(c.Gateway.DefaultPlugin))
 
@@ -687,6 +715,18 @@ func clampRateLimit(value int) int {
 	}
 	if value > 1_000_000 {
 		return 1_000_000
+	}
+	return value
+}
+
+// clampQueueDepth folds a negative gateway.queue_max_depth onto "unbounded"
+// (0) and caps absurd hand-edited values.
+func clampQueueDepth(value int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > MaxQueueDepth {
+		return MaxQueueDepth
 	}
 	return value
 }

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -328,5 +329,47 @@ func TestDeleteAccountDataCascade(t *testing.T) {
 	}
 	if err := s.DeleteAccountData("mock", ""); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("empty account id = %v", err)
+	}
+}
+
+// TestAccountDraftRPMPersists proves the P5 每分钟请求数 rides the account
+// draft: an explicit value is stored, an absent field keeps the stored value
+// and an explicit null clears the cap back to "off".
+func TestAccountDraftRPMPersists(t *testing.T) {
+	s := openTestStore(t)
+
+	rpm := 120
+	if _, err := s.SaveAccountDraft(model.AccountDraft{
+		Accounts: []model.AccountDraftItem{{PluginID: "mock", AccountID: "acc_1", RPM: &rpm}},
+	}); err != nil {
+		t.Fatalf("save rpm draft: %v", err)
+	}
+	meta, ok, _ := s.GetAccountMeta("mock", "acc_1")
+	if !ok || meta.RPM == nil || *meta.RPM != 120 {
+		t.Fatalf("meta = %+v, want rpm 120", meta)
+	}
+
+	// An absent field keeps the stored cap.
+	if _, err := s.SaveAccountDraft(model.AccountDraft{
+		Accounts: []model.AccountDraftItem{{PluginID: "mock", AccountID: "acc_1", Priority: intPtr(3)}},
+	}); err != nil {
+		t.Fatalf("save absent draft: %v", err)
+	}
+	meta, _, _ = s.GetAccountMeta("mock", "acc_1")
+	if meta.RPM == nil || *meta.RPM != 120 || meta.Priority == nil || *meta.Priority != 3 {
+		t.Fatalf("meta = %+v, want rpm kept and priority set", meta)
+	}
+
+	// An explicit null (JSON) clears the cap.
+	var draft model.AccountDraft
+	if err := json.Unmarshal([]byte(`{"accounts":[{"plugin_id":"mock","account_id":"acc_1","rpm":null}]}`), &draft); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveAccountDraft(draft); err != nil {
+		t.Fatalf("save null draft: %v", err)
+	}
+	meta, _, _ = s.GetAccountMeta("mock", "acc_1")
+	if meta.RPM != nil {
+		t.Fatalf("meta = %+v, want rpm cleared", meta)
 	}
 }

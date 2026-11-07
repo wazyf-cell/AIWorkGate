@@ -236,3 +236,14 @@ func newProxyID() string {
 	}
 	return "px_" + hex.EncodeToString(b[:])
 }
+
+// queueTimeoutOption maps the P5 排队等待 config value onto the gateway
+// option: a positive count of seconds becomes a deadline, an explicit 0 ("一直
+// 等") becomes the gateway's negative "wait forever" sentinel. Normalize folds
+// negative config values onto 0, so <=0 here is always the unlimited spelling.
+func queueTimeoutOption(seconds int) time.Duration {
+	if seconds <= 0 {
+		return -1
+	}
+	return time.Duration(seconds) * time.Second
+}

@@ -200,12 +200,14 @@ func (s stickyStoreAdapter) DeleteExpiredSticky(now int64) (int64, error) {
 // StateSource is "plugin", "host" or "" for normal.
 type accountEntry struct {
 	model.Account
-	PluginID         string               `json:"plugin_id"`
-	Alias            string               `json:"alias"`
-	DisplayName      string               `json:"display_name"`
-	GroupID          string               `json:"group_id"`
-	Priority         int                  `json:"priority"`
-	Weight           float64              `json:"weight"`
+	PluginID    string  `json:"plugin_id"`
+	Alias       string  `json:"alias"`
+	DisplayName string  `json:"display_name"`
+	GroupID     string  `json:"group_id"`
+	Priority    int     `json:"priority"`
+	Weight      float64 `json:"weight"`
+	// RPM is the P5 per-minute request cap the UI edits (0 = unlimited).
+	RPM              int                  `json:"rpm"`
 	EnabledOverride  *bool                `json:"enabled_override"`
 	EnabledEffective bool                 `json:"enabled_effective"`
 	Stale            bool                 `json:"stale"`
@@ -311,6 +313,7 @@ func mergeAccountEntries(pluginID string, accounts []model.Account, opt accountM
 			entry.Note = overlay.Note
 			entry.Priority = overlay.EffectivePriority()
 			entry.Weight = overlay.EffectiveWeight()
+			entry.RPM = overlay.EffectiveRPM()
 			if overlay.StatusKind != "" {
 				entry.StatusKind = overlay.StatusKind
 			}

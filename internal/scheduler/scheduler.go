@@ -50,6 +50,10 @@ var (
 	ErrUnknownModel = errors.New("scheduler: unknown model")
 	// ErrNoCandidate reports that every pool/account was filtered out.
 	ErrNoCandidate = errors.New("scheduler: no candidate account")
+	// ErrAccountRateLimited reports that every candidate account is paused by
+	// its per-minute request cap (P5 每分钟请求数) and PickWait's budget
+	// expired before a window slid the account back in.
+	ErrAccountRateLimited = errors.New("scheduler: account rate limited")
 )
 
 // StrategyNames lists the accepted in-pool strategies in UI order.
@@ -111,10 +115,14 @@ type Account struct {
 	// ResetAt is the F-14 "周期重置" timestamp (0 = unknown). Filled by the
 	// bridge from windows[] resetsAt; legacy data has no periodic reset, so
 	// the resetting alert rule stays silent.
-	ResetAt        int64
-	Plan           string
-	Priority       int
-	Weight         float64
+	ResetAt  int64
+	Plan     string
+	Priority int
+	Weight   float64
+	// RPM is the account's per-minute request cap from the host overlay (P5
+	// 每分钟请求数; 0 = off). Hits are counted per upstream attempt (Acquire),
+	// so retries and hedged seconds count too.
+	RPM            int
 	CooldownUntil  int64
 	ModelCooldowns map[string]int64
 	// Egress is the recent-evidence verdict of the account's assigned proxy,
@@ -439,8 +447,13 @@ type Options struct {
 	// best-effort by Close, so Report never blocks on SQLite.
 	Cooldowns CooldownStore
 	// Log receives the single restore summary line (counts only). Nil is fine.
-	Log      func(msg string, fields map[string]any)
-	Now      func() time.Time
+	Log func(msg string, fields map[string]any)
+	Now func() time.Time
+	// Sleep replaces the internal wait between RPM-paused re-plans (P5
+	// PickWait). Tests inject one that advances the injected clock instead of
+	// really sleeping, so the two-minute budget stays instant under test.
+	// Nil falls back to a context-aware time.Sleep.
+	Sleep    func(time.Duration)
 	Rand     func() float64
 	EWMAlpha float64
 }
@@ -466,6 +479,7 @@ type Scheduler struct {
 
 	stickyStore StickyStore
 	nowFn       func() time.Time
+	sleepFn     func(time.Duration)
 	randFn      func() float64
 	ewmAlpha    float64
 
@@ -476,6 +490,11 @@ type Scheduler struct {
 	modelCD   map[modelCooldownKey]cooldownState
 	pool5xx   map[string]int
 	circuit   map[string]int64
+	// rpmHits logs the recent Acquire timestamps per account for the P5
+	// per-minute request cap. The window slides by dropping entries older
+	// than rpmWindowSeconds; Acquire is the only writer, so a restarted
+	// process starts with an empty window (advisory, in-memory by design).
+	rpmHits map[AccountKey][]int64
 
 	stickyEntries map[stickyKey]stickyEntry
 	stickyLoaded  map[string]bool
@@ -546,6 +565,14 @@ const (
 	circuitThreshold  = 3
 	circuitSeconds    = 60
 
+	// rpmWindowSeconds is the sliding window of the P5 per-account request
+	// cap: hits older than this drop out and free a slot again.
+	rpmWindowSeconds = 60
+	// rpmWaitBudget bounds how long PickWait parks a request while every
+	// candidate account is paused by its per-minute cap (P5: 最多等 2 分钟,
+	// then 429 account_rate_limited).
+	rpmWaitBudget = 2 * time.Minute
+
 	// cooldownPersistDelay debounces durable cooldown writes: a burst of
 	// reports coalesces into one upsert/delete per account+model key.
 	cooldownPersistDelay = 500 * time.Millisecond
@@ -565,6 +592,7 @@ func New(opts Options) *Scheduler {
 	if now == nil {
 		now = time.Now
 	}
+	sleep := opts.Sleep
 	random := opts.Rand
 	if random == nil {
 		random = rand.Float64
@@ -574,6 +602,7 @@ func New(opts Options) *Scheduler {
 		cooldownStore: opts.Cooldowns,
 		cooldownLog:   opts.Log,
 		nowFn:         now,
+		sleepFn:       sleep,
 		randFn:        random,
 		ewmAlpha:      alpha,
 		inFlight:      make(map[AccountKey]int),
@@ -583,6 +612,7 @@ func New(opts Options) *Scheduler {
 		modelCD:       make(map[modelCooldownKey]cooldownState),
 		pool5xx:       make(map[string]int),
 		circuit:       make(map[string]int64),
+		rpmHits:       make(map[AccountKey][]int64),
 		stickyEntries: make(map[stickyKey]stickyEntry),
 		stickyLoaded:  make(map[string]bool),
 	}
@@ -611,6 +641,7 @@ func (s *Scheduler) Close() {
 	s.modelCD = make(map[modelCooldownKey]cooldownState)
 	s.pool5xx = make(map[string]int)
 	s.circuit = make(map[string]int64)
+	s.rpmHits = make(map[AccountKey][]int64)
 	s.stickyEntries = make(map[stickyKey]stickyEntry)
 	s.stickyLoaded = make(map[string]bool)
 }
@@ -621,6 +652,69 @@ func (s *Scheduler) now() time.Time {
 		return s.nowFn()
 	}
 	return time.Now()
+}
+
+// waitClock pauses until d elapses or ctx ends. Tests replace the sleeper
+// (Options.Sleep) with one that advances the injected clock, so PickWait's
+// two-minute budget stays instant under test.
+func (s *Scheduler) waitClock(ctx context.Context, d time.Duration) {
+	if s == nil {
+		return
+	}
+	if s.sleepFn != nil {
+		s.sleepFn(d)
+		return
+	}
+	if d <= 0 {
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+// recordRPMHitLocked appends one usage timestamp to the account's window and
+// prunes the entries that slid out.
+func (s *Scheduler) recordRPMHitLocked(key AccountKey, now int64) {
+	s.rpmHits[key] = append(rpmPruneHits(s.rpmHits[key], now), now)
+}
+
+// rpmPruneHits drops hits older than the sliding window, reusing the slice.
+func rpmPruneHits(hits []int64, now int64) []int64 {
+	cutoff := now - rpmWindowSeconds
+	keep := hits[:0]
+	for _, at := range hits {
+		if at > cutoff {
+			keep = append(keep, at)
+		}
+	}
+	return keep
+}
+
+// rpmCountLocked returns the number of in-window hits for the account.
+func (s *Scheduler) rpmCountLocked(key AccountKey, now int64) int {
+	hits := rpmPruneHits(s.rpmHits[key], now)
+	s.rpmHits[key] = hits
+	return len(hits)
+}
+
+// rpmWakeUnixLocked returns the unix second at which the account's window
+// drops back below its cap. The caller only invokes it for paused accounts
+// (count >= rpm): the (count-rpm+1)-th oldest hit must slide out first.
+func (s *Scheduler) rpmWakeUnixLocked(key AccountKey, rpm int, now int64) int64 {
+	hits := rpmPruneHits(s.rpmHits[key], now)
+	s.rpmHits[key] = hits
+	if len(hits) == 0 {
+		return now
+	}
+	idx := len(hits) - rpm
+	if idx < 0 || idx > len(hits)-1 {
+		idx = 0
+	}
+	return hits[idx] + rpmWindowSeconds
 }
 
 // randFloat returns a value in [0,1).
@@ -639,13 +733,18 @@ func (s *Scheduler) randFloat() float64 {
 }
 
 // Acquire counts one in-flight request for key. Call Release when it ends.
+// It also records one hit in the account's RPM window (P5 每分钟请求数):
+// every attempt that is about to go upstream counts, including retries and
+// the hedged second attempt.
 func (s *Scheduler) Acquire(key AccountKey) {
 	if s == nil || key.AccountID == "" {
 		return
 	}
+	now := s.now().Unix()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.inFlight[key]++
+	s.recordRPMHitLocked(key, now)
 }
 
 // Release decrements the in-flight counter without going negative.
@@ -1267,6 +1366,13 @@ type accountOutcome struct {
 	account    Account
 	selectable bool
 	reason     string
+	// permanent marks blockers that never recover by waiting (disabled / no
+	// credential / not a pool member); they veto the P5 RPM wait.
+	permanent bool
+	// rpmLimited marks a P5 per-minute-cap pause; rpmUntil is the unix second
+	// the window slides back below the cap.
+	rpmLimited bool
+	rpmUntil   int64
 }
 
 // poolTrace keeps the outcome of every source, including pools that failed
@@ -1290,6 +1396,11 @@ type plan struct {
 	stickyKey      string
 	skipConvSticky bool
 	skipPoolSticky bool
+	// rpmWaitable marks a failed plan whose only recoverable blocker is the
+	// per-account RPM window; rpmWake is the earliest second at which some
+	// candidate slides back in (P5 每分钟请求数).
+	rpmWaitable bool
+	rpmWake     time.Time
 }
 
 // Pick selects one account for req. It never mutates snap.
@@ -1303,6 +1414,44 @@ func (s *Scheduler) Pick(ctx context.Context, snap *Snapshot, req Request) (Deci
 	}
 	s.persistSticky(p)
 	return p.decision, nil
+}
+
+// PickWait is Pick with the P5 per-account RPM wait appended: when a plan
+// fails only because every candidate account hit its per-minute request cap,
+// the call re-plans as the windows slide, at most rpmWaitBudget (2 minutes),
+// before returning ErrAccountRateLimited. Without an RPM pause the first plan
+// decides, exactly like Pick.
+func (s *Scheduler) PickWait(ctx context.Context, snap *Snapshot, req Request) (Decision, error) {
+	if s == nil {
+		return Decision{}, fmt.Errorf("%w: scheduler is nil", ErrNoCandidate)
+	}
+	p, err := s.plan(snap, req)
+	if err == nil {
+		s.persistSticky(p)
+		return p.decision, nil
+	}
+	if !p.rpmWaitable {
+		return Decision{}, err
+	}
+	deadline := s.now().Add(rpmWaitBudget)
+	for {
+		if ctx.Err() != nil {
+			return Decision{}, err
+		}
+		wake := p.rpmWake
+		if wake.After(deadline) {
+			return Decision{}, fmt.Errorf("%w: every candidate account is paused by its per-minute request cap", ErrAccountRateLimited)
+		}
+		s.waitClock(ctx, wake.Sub(s.now()))
+		p, err = s.plan(snap, req)
+		if err == nil {
+			s.persistSticky(p)
+			return p.decision, nil
+		}
+		if !p.rpmWaitable {
+			return Decision{}, err
+		}
+	}
 }
 
 // Explain returns the same decision as Pick together with every candidate and
@@ -1408,8 +1557,9 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		if len(reasons) == 0 {
 			reasons = []string{"no candidate pool"}
 		}
-		return &plan{candidates: traceCandidates(traces, nil, Account{}, false, s, now), reasons: reasons},
-			fmt.Errorf("%w: %s", ErrNoCandidate, strings.Join(reasons, "; "))
+		p := &plan{candidates: traceCandidates(traces, nil, Account{}, false, s, now), reasons: reasons}
+		p.rpmWaitable, p.rpmWake = rpmWaitWindow(traces)
+		return p, fmt.Errorf("%w: %s", ErrNoCandidate, strings.Join(reasons, "; "))
 	}
 
 	// Fixed keeps the configured source order (binding items / pool priority);
@@ -1622,26 +1772,35 @@ func matchSticky(candidates []*poolCandidate, entry stickyEntry, conversation bo
 // retry never destroys a sticky pin.
 func (s *Scheduler) evaluateAccountsLocked(pool *Pool, modelID string, req Request, now int64) (healthy, stickyOK, selectable []Account, full bool, outcomes []accountOutcome) {
 	limit := pool.AccountConcurrency
-	// Hard account filters first: a member that is disabled, credential-less or
-	// cooling down is not a candidate at all.
+	// Hard account filters first: a member that is disabled, credential-less,
+	// cooling down or RPM-paused is not a candidate at all.
 	candidates := make([]Account, 0, len(pool.Accounts))
 	for _, acc := range pool.Accounts {
 		key := AccountKey{PluginID: pool.PluginID, AccountID: acc.ID}
 		reason := ""
+		oc := accountOutcome{account: acc, selectable: false}
 		switch {
 		case pool.Members != nil && !pool.Members[acc.ID]:
-			reason = "not a pool member"
+			reason, oc.permanent = "not a pool member", true
 		case !acc.Enabled:
-			reason = "account disabled"
+			reason, oc.permanent = "account disabled", true
 		case !acc.CredentialPresent:
-			reason = "no credential"
+			reason, oc.permanent = "no credential", true
 		case s.accountCooldownLocked(acc, key, now) > now:
 			reason = "account cooldown until " + unixString(s.accountCooldownLocked(acc, key, now))
 		case s.modelCooldownLocked(acc, key, modelID, now) > now:
 			reason = "model cooldown until " + unixString(s.modelCooldownLocked(acc, key, modelID, now))
+		case acc.RPM > 0 && s.rpmCountLocked(key, now) >= acc.RPM:
+			// P5 每分钟请求数: the sliding 60s window already holds the cap;
+			// the account becomes selectable again when the oldest surplus
+			// hits slide out.
+			oc.rpmLimited = true
+			oc.rpmUntil = s.rpmWakeUnixLocked(key, acc.RPM, now)
+			reason = fmt.Sprintf("rpm limit %d/min until %s", acc.RPM, unixString(oc.rpmUntil))
 		}
 		if reason != "" {
-			outcomes = append(outcomes, accountOutcome{account: acc, selectable: false, reason: reason})
+			oc.reason = reason
+			outcomes = append(outcomes, oc)
 			continue
 		}
 		candidates = append(candidates, acc)
@@ -1980,6 +2139,39 @@ func (s *Scheduler) accountAtLimitLocked(pool *Pool, acc Account) bool {
 		return false
 	}
 	return s.inFlight[accKey(pool.PluginID, acc.ID)] >= limit
+}
+
+// rpmWaitWindow inspects the trace outcomes of a failed plan: waiting is
+// worthwhile when at least one candidate is paused by its per-minute request
+// cap and no account is blocked by a permanent filter (disabled / no
+// credential / not a member) — those never recover, so the request would fail
+// however long it waits. Recoverable non-RPM blockers (cooldowns, per-attempt
+// exclusions) do not veto the wait: their windows slide too, and the
+// caller's budget bounds the total wait anyway.
+func rpmWaitWindow(traces []*poolTrace) (bool, time.Time) {
+	waitable := false
+	var wake time.Time
+	for _, tr := range traces {
+		for _, oc := range tr.outcome {
+			if oc.selectable || oc.permanent {
+				// A failed plan never has selectable accounts; treat either
+				// as "no point waiting" to stay on the safe side.
+				return false, time.Time{}
+			}
+			if oc.rpmLimited {
+				waitable = true
+				until := time.Unix(oc.rpmUntil, 0)
+				if wake.IsZero() || until.Before(wake) {
+					wake = until
+				}
+			}
+		}
+	}
+	if !waitable {
+		return false, time.Time{}
+	}
+	// Re-plan one second past the slide so the window boundary is crossed.
+	return true, wake.Add(time.Second)
 }
 
 // hasIdleAlternativeLocked reports whether another selectable account of the

@@ -658,6 +658,11 @@ func schedulerAccount(acc model.Account, meta model.AccountMeta, hasMeta bool) s
 	if hasMeta && meta.Weight != nil {
 		weight = *meta.Weight
 	}
+	// P5 每分钟请求数 rides the overlay like priority/weight; 0 = unlimited.
+	rpm := 0
+	if hasMeta {
+		rpm = meta.EffectiveRPM()
+	}
 	// The health cooldown of plan 2026-10-21 §4 is a scheduling fact too: a
 	// parked account must not be picked while it is cooling down.
 	cooldownUntil := acc.CooldownUntil
@@ -677,6 +682,7 @@ func schedulerAccount(acc model.Account, meta model.AccountMeta, hasMeta bool) s
 		Plan:              acc.Quota.Plan,
 		Priority:          priority,
 		Weight:            weight,
+		RPM:               rpm,
 		CooldownUntil:     cooldownUntil,
 		ModelCooldowns:    acc.ModelCooldowns,
 	}

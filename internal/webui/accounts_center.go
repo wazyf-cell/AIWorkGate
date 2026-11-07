@@ -17,8 +17,10 @@ const (
 	maxAccountPriority = 999
 	minAccountWeight   = 0.1
 	maxAccountWeight   = 100.0
-	maxBulkItems       = 1000
-	maxDraftItems      = 5000
+	// maxAccountRPM bounds the P5 per-minute request cap (0 = unlimited).
+	maxAccountRPM = 1_000_000
+	maxBulkItems  = 1000
+	maxDraftItems = 5000
 )
 
 // bulkActions is the accepted POST /api/accounts/bulk action set. "egress" is
@@ -357,6 +359,13 @@ func (s *server) handleAccountSave(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("weight must be between %.1f and %.0f", minAccountWeight, maxAccountWeight), "invalid_weight")
 				return
 			}
+		}
+		// P5 每分钟请求数: 0/absent keeps the cap off; only positive bounds
+		// are accepted.
+		if item.RPM != nil && (*item.RPM < 0 || *item.RPM > maxAccountRPM) {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("rpm must be between 0 and %d (0 = unlimited)", maxAccountRPM), "invalid_rpm")
+			return
 		}
 		if item.Egress != nil {
 			mode, proxyID, ok := s.normalizeEgress(item.Egress.Mode, item.Egress.ProxyID)
