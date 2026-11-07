@@ -60,6 +60,16 @@ const VARIANTS = [
  * Keep `ready` narrow — a `document.querySelectorAll('tbody tr').length > 0`
  * that also matches an unrelated table lower on the page would fire too early.
  */
+
+/**
+ * 账号页数据已渲染的判据（accounts-quota-windows 专用）。
+ *
+ * ready 的源码被 `check.mjs:576` 串化后在浏览器页内求值，所以判据必须自包含地
+ * 写在 ready 里（只能用页面里存在的 document/window）。旧判据只看
+ * `[class*="account"]` 的页面外壳，数据未渲染也会放行 → prepare 里查
+ * `tbody tr` 找不到行直接抛 "Alpha row missing"（连跑 3 次 2 败 1 过）。
+ * 下面改成「表格里必须出现 fixture 的『示例账号 Alpha』行」。
+ */
 export const PAGES = [
   { slug: 'dashboard', path: '/', title: '概览', ready: () => !!document.querySelector('.main') && !document.querySelector('.loading') },
   { slug: 'plugins', path: '/plugins', title: '插件', ready: () => document.querySelectorAll('.main *').length > 40 },
@@ -89,7 +99,15 @@ export const PAGES = [
     slug: 'accounts-quota-windows',
     path: '/accounts',
     title: '账号 · 多窗口额度',
-    ready: () => document.querySelectorAll('[class*="account"]').length > 0,
+    // 判据在页内求值（源码被串化执行）：必须自包含、只用页面里的 document。
+    // 表格里出现「示例账号 Alpha」行才放行——避免数据未渲染就进入交互 prepare。
+    ready: () => {
+      const rows = document.querySelectorAll('tbody tr')
+      for (const row of rows) {
+        if (row.textContent.includes('示例账号 Alpha')) return true
+      }
+      return false
+    },
     prepare: [
       `(() => {
         const row = [...document.querySelectorAll('tbody tr')].find((tr) => tr.textContent.includes('示例账号 Alpha'));

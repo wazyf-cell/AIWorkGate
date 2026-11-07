@@ -733,6 +733,17 @@ var migrations = []migrationStep{
 			{"client_keys", "cost_budget_usd", "REAL NOT NULL DEFAULT 0"},
 		},
 	},
+	{ // version 29: D-09 per-channel last usage + model_catalog source layer
+		columns: []columnMigration{
+			// D-09 "每个渠道记最后使用时间": one row per plugin account channel,
+			// recorded by the request log insert (the gateway consumption
+			// chain) so an admin can see when a channel was last used.
+			{"account_meta", "last_used_at", "INTEGER"},
+			// D-49 fallback layer bookkeeping: vendor / models_dev / plugin /
+			// snapshot. Rows written before v29 keep NULL (unknown layer).
+			{"model_catalog", "source", "TEXT"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

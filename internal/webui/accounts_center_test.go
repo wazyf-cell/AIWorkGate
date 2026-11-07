@@ -402,7 +402,7 @@ func TestAccountLoginStateRoute(t *testing.T) {
 		AccountLoginState: func() []model.LoginState {
 			return []model.LoginState{{
 				PluginID: "mock", Name: "Mock", APILevel: 2, Methods: []string{"api_key"},
-				Source: model.LoginSourceManifest,
+				Source: model.LoginSourceManifest, LastUsedAt: 123456,
 			}}
 		},
 	})
@@ -417,6 +417,9 @@ func TestAccountLoginStateRoute(t *testing.T) {
 	if len(payload.Plugins) != 1 || payload.Plugins[0].PluginID != "mock" ||
 		payload.Plugins[0].APILevel != 2 || payload.Plugins[0].Source != model.LoginSourceManifest {
 		t.Fatalf("payload = %+v", payload)
+	}
+	if payload.Plugins[0].LastUsedAt != 123456 {
+		t.Fatalf("D-09 last_used_at not exposed: %+v", payload.Plugins[0])
 	}
 	recorder = doRequest(t, handler, http.MethodPost, "/api/accounts/login-state", "{}")
 	if recorder.Code != http.StatusMethodNotAllowed {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"aiworkgate/internal/model"
@@ -128,7 +129,27 @@ func (s *Store) InsertAPIRequestLog(rec model.APIRequestLog) error {
 	if err != nil {
 		return fmt.Errorf("store: insert api log: %w", err)
 	}
+	// D-09 "每个渠道记最后使用时间": a request that consumed a plugin account
+	// refreshes that channel's last_used_at. This is the gateway consumption
+	// chain's write point — the gateway logs every request through this
+	// insert. It is best-effort: an audit detail must never fail the log.
+	if pluginID, accountID := logChannel(rec); pluginID != "" && accountID != "" {
+		_ = s.TouchAccountLastUsed(pluginID, accountID, nowUnix())
+	}
 	return nil
+}
+
+// logChannel resolves the (plugin, account) a request consumed. Only
+// plugin-sourced rows (source "plugin:<id>") with an account count; custom
+// connections and the admin "a" source have no channel row in account_meta.
+func logChannel(rec model.APIRequestLog) (pluginID, accountID string) {
+	source := strings.TrimSpace(rec.Source)
+	if !strings.HasPrefix(source, "plugin:") {
+		return "", ""
+	}
+	pluginID = strings.TrimSpace(strings.TrimPrefix(source, "plugin:"))
+	accountID = strings.TrimSpace(rec.Account)
+	return pluginID, accountID
 }
 
 // QueryAPIRequestLogs returns matching rows newest first together with the

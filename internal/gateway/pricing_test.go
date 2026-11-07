@@ -81,6 +81,99 @@ func TestPoolRateDoesNotCoverModelPrice(t *testing.T) {
 	}
 }
 
+// D-30③ 收官：池上下文接线（PoolRateFor 回调）。对照 task-32 语义：
+// 模型级已设价格不被池倍率覆盖；无模型价时池倍率才乘基价。
+
+func TestPoolRateForDoesNotCoverModelPrice(t *testing.T) {
+	srv, _ := newUpstreamServer(t, jsonResponder(http.StatusOK,
+		`{"model":"m","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":1000000,"completion_tokens":0,"total_tokens":1000000}}`))
+	logs := &fakeLogSink{}
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	called := 0
+	g := newTestGateway(t, Options{
+		Plugins: reg,
+		Log:     logs,
+		PriceFor: func(string) (Price, string, bool) {
+			return Price{Input: 5, Output: 0}, "m", true
+		},
+		PoolRateFor: func(poolID string) float64 {
+			called++
+			if poolID != "p" {
+				t.Errorf("PoolRateFor poolID = %q, want p", poolID)
+			}
+			return 2
+		},
+	})
+	serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+		`{"model":"p/chat","messages":[{"role":"user","content":"hi"}]}`))
+	row := logs.wait(t, 1)[0]
+	if called != 1 {
+		t.Fatalf("PoolRateFor called %d times, want 1 (pool context must reach pricing)", called)
+	}
+	if row.CostUSD == nil {
+		t.Fatal("no cost recorded")
+	}
+	// 模型价 5，池倍率 2：模型级已设价格不被池倍率覆盖 → cost = 5/M × prompt。
+	want := 1000000.0 * 5 / 1000000.0
+	if math.Abs(*row.CostUSD-want) > 1e-9 {
+		t.Fatalf("cost = %v, want %v (pool rate 2 must not cover the model price)", *row.CostUSD, want)
+	}
+}
+
+func TestPoolRateForAppliedWithoutModelPrice(t *testing.T) {
+	srv, _ := newUpstreamServer(t, jsonResponder(http.StatusOK,
+		`{"model":"m","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":1000000,"completion_tokens":0,"total_tokens":1000000}}`))
+	logs := &fakeLogSink{}
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	called := 0
+	g := newTestGateway(t, Options{
+		Plugins: reg,
+		Log:     logs,
+		PriceFor: func(string) (Price, string, bool) {
+			// no model price: the pool rate multiplies the (zero) base
+			return Price{}, "m", true
+		},
+		PoolRateFor: func(string) float64 {
+			called++
+			return 2
+		},
+	})
+	serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+		`{"model":"p/chat","messages":[{"role":"user","content":"hi"}]}`))
+	row := logs.wait(t, 1)[0]
+	if called != 1 {
+		t.Fatalf("PoolRateFor called %d times, want 1", called)
+	}
+	if row.CostUSD == nil || *row.CostUSD != 0 {
+		t.Fatalf("cost = %v, want 0 (base price 0 × pool rate 2)", row.CostUSD)
+	}
+}
+
+func TestPoolRateForNotCalledWithoutPluginSource(t *testing.T) {
+	srv, _ := newUpstreamServer(t, jsonResponder(http.StatusOK,
+		`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	logs := &fakeLogSink{}
+	reg := newFakeRegistry().add(pluginStatus("p", true, model.ModelInfo{ID: "chat"}), srv.URL, "tok")
+	called := 0
+	g := newTestGateway(t, Options{
+		Plugins: reg,
+		Log:     logs,
+		PriceFor: func(string) (Price, string, bool) {
+			return Price{Input: 1}, "m", true
+		},
+		PoolRateFor: func(string) float64 { called++; return 2 },
+	})
+	// a scheduled-source request has no "plugin:" prefix in rec.source:
+	// the pool rate must not be looked up (no pool id to ask for).
+	serve(g, newGetRequest(t, "/v1/models", clientKey))
+	if called != 0 {
+		t.Fatalf("PoolRateFor called %d times for a non-plugin source, want 0", called)
+	}
+}
+
 // D-30③: with no model-level price, the pool rate multiplies the (zero) base.
 func TestPoolRateMultipliesUnpricedModel(t *testing.T) {
 	srv, _ := newUpstreamServer(t, jsonResponder(http.StatusOK,

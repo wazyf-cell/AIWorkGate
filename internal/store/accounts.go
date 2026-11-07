@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,7 +30,7 @@ func getAccountMetaTx(ctx context.Context, tx *sql.Tx, pluginID, accountID strin
 const accountMetaColumns = `COALESCE(alias, ''), COALESCE(group_id, ''),
 	enabled_override, priority, weight, rpm, COALESCE(note, ''), COALESCE(updated_at, 0),
 	COALESCE(status_kind, ''), COALESCE(cooldown_until, 0), COALESCE(cooldown_reason, ''),
-	COALESCE(failure_count, 0)`
+	COALESCE(failure_count, 0), COALESCE(last_used_at, 0)`
 
 // scanAccountMeta reads one overlay row in accountMetaColumns order. The last
 // four columns are the check-in health tuple; the overlay writers never touch
@@ -44,7 +45,7 @@ func scanAccountMeta(scan func(dest ...any) error, meta *model.AccountMeta) erro
 	)
 	if err := scan(&meta.PluginID, &meta.AccountID, &meta.Alias, &meta.GroupID,
 		&enabled, &prio, &weight, &rpm, &meta.Note, &meta.UpdatedAt,
-		&meta.StatusKind, &meta.CooldownUntil, &meta.CooldownReason, &failures); err != nil {
+		&meta.StatusKind, &meta.CooldownUntil, &meta.CooldownReason, &failures, &meta.LastUsedAt); err != nil {
 		return err
 	}
 	if failures.Valid {
@@ -130,6 +131,62 @@ func (s *Store) GetAccountMeta(pluginID, accountID string) (model.AccountMeta, b
 // ListAccountMeta returns every overlay row ordered by plugin and account.
 func (s *Store) ListAccountMeta() ([]model.AccountMeta, error) {
 	return s.listAccountMeta("", "")
+}
+
+// accountLastUsedThrottle bounds how often one channel's last_used_at is
+// rewritten: the exact second is an audit detail, not a billing signal, so
+// bursts of requests must not turn into bursts of writes (client_keys uses
+// the same window).
+const accountLastUsedThrottle = 30
+
+// TouchAccountLastUsed records the last use of one account channel
+// (plugin_id + account_id) at `at`. Rows without a meta row are left alone:
+// the channel list is the plugin's own; account_meta only mirrors channels
+// that were overlaid. The touch is best-effort at the call site.
+func (s *Store) TouchAccountLastUsed(pluginID, accountID string, at int64) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store: touch account last used: store is not open")
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	accountID = strings.TrimSpace(accountID)
+	if pluginID == "" || accountID == "" || at <= 0 {
+		return fmt.Errorf("store: touch account last used: %w: plugin_id, account_id and at are required", ErrInvalidArgument)
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, `UPDATE account_meta SET last_used_at = ?
+		WHERE plugin_id = ? AND account_id = ?
+		  AND COALESCE(last_used_at, 0) < ?`,
+		at, pluginID, accountID, at-accountLastUsedThrottle); err != nil {
+		return fmt.Errorf("store: touch account last used: %w", err)
+	}
+	return nil
+}
+
+// AccountLastUsed reports one channel's last usage time and whether the row
+// exists. found=false means "no account_meta row" (never recorded here), not
+// "never used": the channel's credentials live in the plugin, not this table.
+func (s *Store) AccountLastUsed(pluginID, accountID string) (lastUsed int64, found bool, err error) {
+	if s == nil || s.db == nil {
+		return 0, false, fmt.Errorf("store: account last used: store is not open")
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	accountID = strings.TrimSpace(accountID)
+	if pluginID == "" || accountID == "" {
+		return 0, false, fmt.Errorf("store: account last used: %w: plugin_id and account_id are required", ErrInvalidArgument)
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(last_used_at, 0) FROM account_meta WHERE plugin_id = ? AND account_id = ?`,
+		pluginID, accountID).Scan(&lastUsed)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, fmt.Errorf("store: account last used: %w", err)
+	}
+	return lastUsed, true, nil
 }
 
 // ListAccountMetaForPlugin returns the overlay rows of one plugin.

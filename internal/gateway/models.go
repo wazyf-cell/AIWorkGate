@@ -66,6 +66,17 @@ func CanonicalModelID(id string) string {
 	return strings.ToLower(strings.TrimSpace(id))
 }
 
+// pluginIDOfSource extracts the pool id from a request's source: sources
+// recorded as "plugin:<id>" carry the pool; scheduled-source names carry none
+// (the pool of a scheduled request is not expressible in source alone).
+func pluginIDOfSource(source string) (string, bool) {
+	rest, ok := strings.CutPrefix(source, "plugin:")
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(rest), true
+}
+
 // catalogMultiplier exposes a published rate; 0 means "not published".
 func catalogMultiplier(v float64) *float64 {
 	if v <= 0 {

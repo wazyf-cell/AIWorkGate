@@ -116,6 +116,11 @@ type Options struct {
 	// PriceFor returns the configured price of one model and the pricing key
 	// that matched (D-31③). Nil disables cost calculation.
 	PriceFor func(model string) (Price, string, bool)
+	// PoolRateFor returns the D-30③ pool (supplier) rate of the pool a request
+	// was served from; the pool id comes from the request's source pool
+	// ("plugin:<id>" in rec.source). A rate <= 0 means "no pool rate". It is
+	// applied only where the model has no price of its own (pricing.go).
+	PoolRateFor func(poolID string) float64
 
 	// CustomModels supplies the user-defined OpenAI-compatible upstreams
 	// (Settings → 自定义模型). CustomModelKey returns the DPAPI-stored upstream
@@ -240,6 +245,7 @@ type Gateway struct {
 	limiter           *rateLimiter
 	decisionUpstreams func() []DecisionUpstream
 	priceFor          func(model string) (Price, string, bool)
+	poolRateFor       func(poolID string) float64
 	defaultPlugin     string
 	now               func() time.Time
 	// sleep waits for one retry backoff and reports whether the request may
@@ -355,6 +361,7 @@ func newGateway(opts Options) *Gateway {
 		limiter:           newRateLimiter(),
 		decisionUpstreams: opts.DecisionUpstreams,
 		priceFor:          opts.PriceFor,
+		poolRateFor:       opts.PoolRateFor,
 		pCache:            make(map[string]pluginModels),
 		intentTimeout:     defaultIntentTimeout,
 		intentTTL:         defaultIntentTTL,
@@ -1823,6 +1830,15 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 		row.FirstTokenAt = rec.firstTokenAt.Format(time.RFC3339)
 	}
 	if price, key, ok := g.priceForModel(rec.modelServed, rec.modelUpstream, rec.modelRequested, rec.model); ok {
+		// D-30③ 收官：池级倍率来自池上下文（rec.source 的 "plugin:<id>"）。
+		// 模型级已设价格不被池倍率覆盖的判定在 price.cost 里。
+		if g.poolRateFor != nil {
+			if poolID, ok := pluginIDOfSource(rec.source); ok && poolID != "" {
+				if rate := g.poolRateFor(poolID); rate > 0 {
+					price.PoolRate = rate
+				}
+			}
+		}
 		cost := price.cost(rec.prompt, rec.cached, rec.completion)
 		row.CostUSD = &cost
 		row.PricingModel = key

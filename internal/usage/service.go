@@ -452,12 +452,21 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 	}
 	cw := csv.NewWriter(w)
 	write := func(record []string) error { return cw.Write(record) }
+	// The request-log block below filters by unix time on the RFC3339 ts
+	// column, so the day range is converted to inclusive unix bounds here.
+	fromUnix, toUnix := requestWindowUnix(q.FromDay, q.ToDay)
 	if err := write([]string{"section", "day", "plugin_id", "account_id", "display_name",
 		"requests", "prompt_tokens", "completion_tokens", "credits",
 		"remaining", "total", "expires_at", "plan", "daily_credits", "days_left",
 		"granularity", "cache_write", "cache_write_1h", "cache_unknown", "reasoning_tokens",
 		"cost_usd", "pricing_model", "purpose", "model_requested", "model_upstream", "model_served",
-		"cleared_at", "clear_note", "key_id", "key_name", "cache_read"}); err != nil {
+		"cleared_at", "clear_note", "key_id", "key_name", "cache_read",
+		// P13-2 request-level columns (docs/p13/01): data lives in api_logs,
+		// they are only filled by the section=request rows below; every
+		// aggregate row leaves them empty.
+		"time", "duration_ms", "ttft_ms", "status", "error", "session",
+		"request_id", "endpoint", "provider", "model", "swapped", "source",
+		"attempt", "usage_known"}); err != nil {
 		return "", err
 	}
 	for _, row := range summary.Series {
@@ -470,6 +479,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			"", "", "", "", "", "",
 			"", "", "", "", "", "", "", "", "", "", "",
 			"", "", "", "", "",
+			"", "", "", "", "", "", "", "", "", "", "", "", "", "",
 		}); err != nil {
 			return "", err
 		}
@@ -491,6 +501,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			"", "", "", "", "",
 			"", "", "", "",
 			strconv.FormatInt(row.CacheRead, 10),
+			"", "", "", "", "", "", "", "", "", "", "", "", "", "",
 		}); err != nil {
 			return "", err
 		}
@@ -511,6 +522,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			"", "", "", "", row.Model,
 			"", "", "", "",
 			strconv.FormatInt(row.CacheRead, 10),
+			"", "", "", "", "", "", "", "", "", "", "", "", "", "",
 		}); err != nil {
 			return "", err
 		}
@@ -531,6 +543,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			"", "", "", "", "",
 			"", "", row.KeyID, row.KeyName,
 			strconv.FormatInt(row.CacheRead, 10),
+			"", "", "", "", "", "", "", "", "", "", "", "", "", "",
 		}); err != nil {
 			return "", err
 		}
@@ -549,6 +562,7 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			local.Format(time.RFC3339), item.Note,
 			"", "",
 			"",
+			"", "", "", "", "", "", "", "", "", "", "", "", "", "",
 		}); err != nil {
 			return "", err
 		}
@@ -569,6 +583,47 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 			days,
 			"", "", "", "", "", "", "", "", "", "", "",
 			"", "", "", "", "",
+			"", "", "", "", "", "", "", "", "", "", "", "", "", "",
+		}); err != nil {
+			return "", err
+		}
+	}
+
+	// P13-2: a section=request block carrying the per-request columns from
+	// api_logs (time, duration_ms, ttft_ms, status, error, session,
+	// request_id, endpoint, provider, model, swapped, source, attempt,
+	// usage_known). The aggregate rows above never touch a request, so they
+	// leave these cells empty.
+	requests, _, err := s.Store.ExportAPIRequestLogs(store.Filter{From: fromUnix, To: toUnix}, 0)
+	if err != nil {
+		return "", err
+	}
+	for _, rec := range requests {
+		provider := deriveProvider(rec.Source)
+		swapped := "false"
+		if rec.ModelRequested != "" && rec.ModelServed != "" &&
+			!strings.EqualFold(strings.TrimSpace(rec.ModelRequested), strings.TrimSpace(rec.ModelServed)) {
+			swapped = "true"
+		}
+		usageKnown := "0"
+		if rec.UsageKnown {
+			usageKnown = "1"
+		}
+		cost := ""
+		if rec.CostUSD != nil {
+			cost = strconv.FormatFloat(*rec.CostUSD, 'f', -1, 64)
+		}
+		if err := write([]string{
+			"request", requestDay(rec.TS), requestPlugin(rec.Source), rec.Account, "",
+			"", "", "", "",
+			"", "", "", "", "", "", "", "", "", "", "",
+			cost, "",
+			rec.Purpose, rec.ModelRequested, rec.ModelUpstream, rec.ModelServed,
+			"", "", rec.KeyID, rec.KeyName, "",
+			rec.TS, strconv.FormatInt(rec.LatencyMS, 10), strconv.FormatInt(rec.TTFBMS, 10),
+			strconv.Itoa(rec.Status), rec.Error, rec.ConversationID, rec.ReqID,
+			rec.Purpose, provider, rec.Model, swapped, rec.Source,
+			strconv.Itoa(rec.Attempt), usageKnown,
 		}); err != nil {
 			return "", err
 		}
@@ -578,4 +633,55 @@ func (s *Service) Export(w io.Writer, q Query) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("usage-%s-%s.csv", q.FromDay, q.ToDay), nil
+}
+
+// requestWindowUnix converts the export's inclusive YYYY-MM-DD range into
+// unix seconds on the request log's RFC3339 ts column. Unparsable bounds mean
+// "no filter" (0, 0).
+func requestWindowUnix(fromDay, toDay string) (int64, int64) {
+	loc := time.Local
+	from, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(fromDay), loc)
+	if err != nil {
+		return 0, 0
+	}
+	to, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(toDay), loc)
+	if err != nil {
+		return 0, 0
+	}
+	return from.Unix(), to.Add(24*time.Hour).Unix() - 1
+}
+
+// requestDay extracts the YYYY-MM-DD day of an RFC3339 timestamp; an
+// unparsable timestamp yields an empty cell rather than a broken row.
+func requestDay(ts string) string {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(ts))
+	if err != nil {
+		return ""
+	}
+	return t.Format("2006-01-02")
+}
+
+// deriveProvider maps the log's source prefix to the P13 provider column:
+// plugin:<id> -> <id>, custom:<id> -> "custom", "a" stays "a".
+func deriveProvider(source string) string {
+	s := strings.TrimSpace(source)
+	switch {
+	case strings.HasPrefix(s, "plugin:"):
+		return strings.TrimSpace(strings.TrimPrefix(s, "plugin:"))
+	case strings.HasPrefix(s, "custom:"):
+		return "custom"
+	default:
+		return s
+	}
+}
+
+// requestPlugin resolves the plugin_id cell of a request row: plugin:<id>
+// yields the id, anything else leaves the cell empty (custom connections have
+// no plugin row in the aggregate sections either).
+func requestPlugin(source string) string {
+	s := strings.TrimSpace(source)
+	if strings.HasPrefix(s, "plugin:") {
+		return strings.TrimSpace(strings.TrimPrefix(s, "plugin:"))
+	}
+	return ""
 }

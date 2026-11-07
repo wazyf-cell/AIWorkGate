@@ -413,7 +413,7 @@ func TestExportCSVBlocks(t *testing.T) {
 		t.Fatalf("filename = %q", filename)
 	}
 	text := buf.String()
-	if !strings.HasPrefix(text, "section,day,plugin_id,account_id,display_name,requests,prompt_tokens,completion_tokens,credits,remaining,total,expires_at,plan,daily_credits,days_left,granularity,cache_write,cache_write_1h,cache_unknown,reasoning_tokens,cost_usd,pricing_model,purpose,model_requested,model_upstream,model_served,cleared_at,clear_note,key_id,key_name,cache_read\n") {
+	if !strings.HasPrefix(text, "section,day,plugin_id,account_id,display_name,requests,prompt_tokens,completion_tokens,credits,remaining,total,expires_at,plan,daily_credits,days_left,granularity,cache_write,cache_write_1h,cache_unknown,reasoning_tokens,cost_usd,pricing_model,purpose,model_requested,model_upstream,model_served,cleared_at,clear_note,key_id,key_name,cache_read,time,duration_ms,ttft_ms,status,error,session,request_id,endpoint,provider,model,swapped,source,attempt,usage_known\n") {
 		t.Fatalf("header missing: %q", text)
 	}
 	if !strings.Contains(text, "account,,mock,acc_1,主号") {
@@ -506,8 +506,8 @@ func TestExportClearSectionKeepsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse CSV: %v", err)
 	}
-	if got := len(records[0]); got != 31 {
-		t.Fatalf("columns = %d, want 31", got)
+	if got := len(records[0]); got != 45 {
+		t.Fatalf("columns = %d, want 45", got)
 	}
 	var clearRow []string
 	series := 0
@@ -616,8 +616,8 @@ func TestExportKeySection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse CSV: %v", err)
 	}
-	if got := len(records[0]); got != 31 {
-		t.Fatalf("columns = %d, want 31", got)
+	if got := len(records[0]); got != 45 {
+		t.Fatalf("columns = %d, want 45", got)
 	}
 	keys := map[string][]string{}
 	for _, row := range records[1:] {
@@ -634,6 +634,26 @@ func TestExportKeySection(t *testing.T) {
 	}
 	if ci := keys["ck_2"]; ci == nil || ci[5] != "1" {
 		t.Fatalf("ck_2 row = %v", keys["ck_2"])
+	}
+
+	// P13-2: the per-request section carries the 14 new columns.
+	var reqRows [][]string
+	for _, row := range records[1:] {
+		if row[0] == "request" {
+			reqRows = append(reqRows, row)
+		}
+	}
+	if len(reqRows) != 3 {
+		t.Fatalf("request rows = %d, want 3", len(reqRows))
+	}
+	if got := reqRows[0]; got[1] != "2026-10-20" || got[28] != "ck_2" || got[29] != "ci" ||
+		got[31] == "" || got[32] != "0" || got[33] != "0" || got[34] != "200" ||
+		got[37] != "r3" || got[39] != "p" || got[42] != "plugin:p" ||
+		got[43] != "0" || got[44] != "0" {
+		t.Fatalf("request row 1 = %v", got)
+	}
+	if reqRows[0][41] != "false" {
+		t.Fatalf("swapped = %q, want false", reqRows[0][41])
 	}
 }
 

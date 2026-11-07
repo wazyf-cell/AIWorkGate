@@ -578,8 +578,8 @@ func (s *Store) ReplaceModelCatalog(pluginID string, entries []model.ModelCatalo
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO model_catalog
 			(plugin_id, model_id, display_name, vendor, multiplier, thinking,
-			 context_length, vision, free, enabled, synced_at, upstream_name, removed_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+			 context_length, vision, free, enabled, synced_at, upstream_name, removed_at, source)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
 			ON CONFLICT(plugin_id, model_id) DO UPDATE SET
 				display_name = excluded.display_name,
 				vendor = excluded.vendor,
@@ -591,17 +591,55 @@ func (s *Store) ReplaceModelCatalog(pluginID string, entries []model.ModelCatalo
 				enabled = excluded.enabled,
 				synced_at = excluded.synced_at,
 				upstream_name = excluded.upstream_name,
-				removed_at = NULL`,
+				removed_at = NULL,
+				source = COALESCE(NULLIF(excluded.source, ''), source)`,
 			pluginID, modelID, nullStr(strings.TrimSpace(entry.DisplayName)),
 			nullStr(strings.TrimSpace(entry.Vendor)), entry.Multiplier, nullStr(thinking),
 			entry.ContextLength, boolInt(entry.Vision), boolInt(entry.Free), boolInt(exposed), syncedAt,
-			nullStr(strings.TrimSpace(entry.UpstreamName))); err != nil {
+			nullStr(strings.TrimSpace(entry.UpstreamName)), catalogSourceOf(entry)); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("store: replace model catalog: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: replace model catalog: commit: %w", err)
+	}
+	return nil
+}
+
+// catalogSourceOf resolves the D-49 source layer for one entry. An empty
+// Source defaults to plugin — the catalog sync (ReplaceModelCatalog) is the
+// ordinary write point. Other layers stamp their rows via
+// SetModelCatalogSource (vendor/models.dev/snapshot paths).
+func catalogSourceOf(entry model.ModelCatalogEntry) string {
+	source := strings.TrimSpace(entry.Source)
+	if source == "" {
+		return model.ModelCatalogSourcePlugin
+	}
+	return source
+}
+
+// SetModelCatalogSource stamps the D-49 source layer on every catalog row of
+// one plugin. Layers come from the fallback chain: vendor, models_dev, plugin,
+// snapshot. Invalid layers are rejected with ErrInvalidArgument so the column
+// can only ever hold a real layer name.
+func (s *Store) SetModelCatalogSource(pluginID, source string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store: set catalog source: store is not open")
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	source = strings.TrimSpace(source)
+	if pluginID == "" {
+		return fmt.Errorf("store: set catalog source: %w: plugin_id is required", ErrInvalidArgument)
+	}
+	if !model.IsModelCatalogSource(source) {
+		return fmt.Errorf("store: set catalog source: %w: source must be vendor, models_dev, plugin or snapshot", ErrInvalidArgument)
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE model_catalog SET source = ? WHERE plugin_id = ?`, source, pluginID); err != nil {
+		return fmt.Errorf("store: set catalog source: %w", err)
 	}
 	return nil
 }
@@ -624,7 +662,7 @@ func (s *Store) ListModelCatalog(pluginID string) ([]model.ModelCatalogEntry, er
 		COALESCE(vendor, ''), COALESCE(multiplier, 0), COALESCE(thinking, ''),
 		COALESCE(context_length, 0), COALESCE(vision, 0), COALESCE(free, 0),
 		COALESCE(enabled, 1), COALESCE(synced_at, 0),
-		COALESCE(upstream_name, ''), COALESCE(removed_at, 0)
+		COALESCE(upstream_name, ''), COALESCE(removed_at, 0), COALESCE(source, '')
 		FROM model_catalog WHERE plugin_id = ?
 		  AND (removed_at IS NULL OR removed_at > ?)
 		ORDER BY model_id`, pluginID, nowUnix()-int64(ModelCatalogGracePeriod/time.Second))
@@ -642,7 +680,7 @@ func (s *Store) ListModelCatalog(pluginID string) ([]model.ModelCatalogEntry, er
 		)
 		if err := rows.Scan(&entry.PluginID, &entry.ModelID, &entry.DisplayName, &entry.Vendor,
 			&entry.Multiplier, &thinking, &entry.ContextLength, &vision, &free, &exposed, &entry.SyncedAt,
-			&entry.UpstreamName, &entry.RemovedAt); err != nil {
+			&entry.UpstreamName, &entry.RemovedAt, &entry.Source); err != nil {
 			return nil, fmt.Errorf("store: list model catalog: scan: %w", err)
 		}
 		entry.Vision = vision != 0

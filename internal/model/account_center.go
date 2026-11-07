@@ -39,6 +39,10 @@ type AccountMeta struct {
 	CooldownUntil  int64  `json:"cooldown_until,omitempty"`
 	CooldownReason string `json:"cooldown_reason,omitempty"`
 	FailureCount   int    `json:"failure_count,omitempty"`
+	// LastUsedAt is the D-09 "每个渠道记最后使用时间" (unix seconds of the
+	// last request this account channel served). 0 means "never used" or
+	// "unknown" (pre-v29 rows).
+	LastUsedAt int64 `json:"last_used_at,omitempty"`
 }
 
 // DefaultAccountPriority and DefaultAccountWeight are the overlay defaults used
@@ -172,6 +176,11 @@ type ModelCatalogEntry struct {
 	// missing from the table means "not synced yet" (everything is exposed).
 	Enabled  bool  `json:"enabled"`
 	SyncedAt int64 `json:"synced_at,omitempty"`
+	// Source is the D-49 fallback layer this row came from: vendor,
+	// models_dev, plugin (a plugin /v1/models sync) or snapshot (restored
+	// from the local catalog snapshot). Empty = unknown layer (pre-v29
+	// rows).
+	Source string `json:"source,omitempty"`
 }
 
 // Sticky binding scopes.
@@ -179,6 +188,25 @@ const (
 	StickyScopeConversation = "conv"
 	StickyScopePool         = "pool"
 )
+
+// D-49 catalog fallback layers persisted in model_catalog.source (v29).
+const (
+	ModelCatalogSourceVendor    = "vendor"
+	ModelCatalogSourceModelsDev = "models_dev"
+	ModelCatalogSourcePlugin    = "plugin"
+	ModelCatalogSourceSnapshot  = "snapshot"
+)
+
+// IsModelCatalogSource reports whether s is one of the four persisted
+// fallback layers.
+func IsModelCatalogSource(s string) bool {
+	switch s {
+	case ModelCatalogSourceVendor, ModelCatalogSourceModelsDev,
+		ModelCatalogSourcePlugin, ModelCatalogSourceSnapshot:
+		return true
+	}
+	return false
+}
 
 // StickyBinding pins a conversation or pool key to one account until it
 // expires. It is persisted so a host restart does not reshuffle sessions.
@@ -444,6 +472,9 @@ type LoginState struct {
 	Source          string   `json:"source"`
 	Notes           string   `json:"notes,omitempty"`
 	CheckedAt       int64    `json:"checked_at"`
+	// LastUsedAt is the D-09 per-channel last usage (unix seconds of the last
+	// request this plugin account served); 0 = never used or unknown.
+	LastUsedAt int64 `json:"last_used_at,omitempty"`
 }
 
 // Login state sources.

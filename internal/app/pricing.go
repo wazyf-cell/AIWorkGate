@@ -39,3 +39,21 @@ func toGatewayPrice(p config.Price) gateway.Price {
 		CacheWrite: p.CacheWrite, Multiplier: p.Multiplier,
 	}
 }
+
+// poolRateFor returns the D-30③ pool rate of one pool (the scheduler's
+// pool-level multiplier), read through the pool settings row with the global
+// defaults applied the same way the snapshot does. <= 0 means "no rate".
+func (a *App) poolRateFor(poolID string) float64 {
+	poolID = strings.TrimSpace(poolID)
+	if poolID == "" {
+		return 1
+	}
+	settings, err := a.effectiveSettings(poolID)
+	if err != nil {
+		return 1
+	}
+	if settings.PriceRate <= 0 {
+		return 1
+	}
+	return settings.PriceRate
+}

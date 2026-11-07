@@ -143,16 +143,45 @@ function multiplierLabel(value?: number): string {
   return `×${value.toFixed(2).replace(/\.?0+$/, '') || '0'}`
 }
 
-/* D-27⑤/P12-6 目录来源标注（池级）：目录条目落库层只有两态——插件清单同步
- * 与快照兜底；vendor/models.dev 两层在发布面运行时合并、不落 model_catalog，
- * 因此不出现在目录行上（进程重启后未重新同步时为未知）。 */
+/* D-30/task-37 目录来源（行级持久值）：model_catalog 的 source 列记录该模型来自
+ * 哪一层——plugin（插件清单同步）、snapshot（本地快照兜底）、vendor（供应商价表）、
+ * models_dev（models.dev 合并）；空 = 未同步（进程重启后尚未重新拉取）。
+ * 此前是池级两态标注，task-37 落列后改为逐行持久值。 */
 const CATALOG_SOURCE_LABELS: Record<string, string> = {
   plugin: '插件清单',
   snapshot: '本地快照',
+  vendor: '供应商价表',
+  models_dev: 'models.dev',
 }
 
 function catalogSourceLabel(source?: string): string {
-  return CATALOG_SOURCE_LABELS[source ?? ''] ?? '—'
+  const key = String(source ?? '').trim()
+  if (!key) return '未同步'
+  return CATALOG_SOURCE_LABELS[key] ?? key
+}
+
+function catalogSourceClass(source?: string): string {
+  switch (String(source ?? '').trim()) {
+    case 'plugin':
+      return 'ok'
+    case 'snapshot':
+      return 'warn'
+    case 'vendor':
+    case 'models_dev':
+      return 'accent'
+    default:
+      return 'muted'
+  }
+}
+
+function catalogSourceTitle(source?: string): string {
+  const key = String(source ?? '').trim()
+  if (!key) return '未同步：进程重启后尚未重新拉取目录（空 = 未同步）'
+  if (key === 'plugin') return '目录元数据来自插件上报的模型清单（本轮同步成功）'
+  if (key === 'snapshot') return '同步失败或返回空列表，目录由本地快照兜底恢复（D-27⑤ 底层）'
+  if (key === 'vendor') return '来源：供应商价表（vendor）合并'
+  if (key === 'models_dev') return '来源：models.dev 合并'
+  return `来源：${key}`
 }
 
 const settingsDirty = computed(() => {
@@ -629,6 +658,8 @@ const catalogRows = computed<CatalogRow[]>(() =>
       override,
       displayName: override?.display_name ?? model.display_name ?? model.model_id,
       vendor: override?.vendor ?? model.vendor ?? '',
+      // D-30/task-37：来源取行级持久值；后端未落列时为空 → 显示「未同步」。
+      source: model.source ?? '',
       contextLength: override?.context_length ?? model.context_length ?? 0,
       vision: override?.vision ?? Boolean(model.vision),
       thinking: override?.thinking ?? model.thinking ?? [],
@@ -1470,14 +1501,8 @@ onBeforeUnmount(() => {
                   <td>
                     <span
                       class="badge plain"
-                      :class="row.source === 'plugin' ? 'ok' : row.source === 'snapshot' ? 'warn' : 'muted'"
-                      :title="
-                        row.source === 'plugin'
-                          ? '本轮同步成功，目录元数据来自插件上报的模型清单'
-                          : row.source === 'snapshot'
-                            ? '同步失败或返回空列表，目录由本地快照兜底恢复（D-27⑤ 底层）'
-                            : '未知：进程重启后尚未重新同步'
-                      "
+                      :class="catalogSourceClass(row.source)"
+                      :title="catalogSourceTitle(row.source)"
                     >
                       {{ catalogSourceLabel(row.source) }}
                     </span>

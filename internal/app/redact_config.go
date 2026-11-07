@@ -235,6 +235,8 @@ func (a *App) gatewayOptions(cfg config.Config, logger hostLogger) gateway.Optio
 		KeyUsage:          a.recordKeyUsage,
 		DecisionUpstreams: a.decisionUpstreams,
 		PriceFor:          a.priceFor,
+		// D-30③ 收官：池级倍率接线（pool price_rate → 计价链）。
+		PoolRateFor:       a.poolRateFor,
 		// User-defined custom models route straight to their own upstream
 		// (Settings → 自定义模型); the key is read from the DPAPI store.
 		CustomModels:   a.gatewayCustomModels,
