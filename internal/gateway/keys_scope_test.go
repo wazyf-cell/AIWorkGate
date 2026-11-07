@@ -206,7 +206,8 @@ func TestKeyQuotaRejectsWithRetryAfter(t *testing.T) {
 		t.Fatalf("under quota = %d (body %s)", rr.Code, rr.Body.String())
 	}
 
-	// Accounting trouble fails open instead of blocking traffic.
+	// F-09 (P5-2): accounting trouble fails CLOSED instead of suspending the
+	// quota gate.
 	broken := newTestGateway(t, Options{
 		Plugins:       reg,
 		KeyRecord:     staticKeyRecord(KeyRecord{Enabled: true, DailyQuota: 1}),
@@ -214,8 +215,8 @@ func TestKeyQuotaRejectsWithRetryAfter(t *testing.T) {
 	})
 	rr = serve(broken, newChatRequest(t, "/v1/chat/completions", clientKey,
 		`{"model":"p1/alpha","messages":[]}`))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("fail-open status = %d", rr.Code)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("fail-closed status = %d (body %s)", rr.Code, rr.Body.String())
 	}
 }
 
@@ -457,7 +458,9 @@ func TestKeyQuotaReservationReleaseOnScopeRejection(t *testing.T) {
 	}
 }
 
-func TestKeyQuotaReservationErrorFailsOpen(t *testing.T) {
+// F-09 (P5-2): a reservation/store error must refuse the request (503) instead
+// of letting it through without a quota check.
+func TestKeyQuotaReservationErrorFailsClosed(t *testing.T) {
 	reg, calls1, _ := chatPluginServers(t, scopedChatReply)
 	reserver := &countingReserver{err: errors.New("db locked")}
 	useReserver(t, reserver)
@@ -472,12 +475,42 @@ func TestKeyQuotaReservationErrorFailsOpen(t *testing.T) {
 
 	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
 		`{"model":"p1/alpha","messages":[]}`))
-	if rr.Code != http.StatusOK || calls1.count() != 1 {
-		t.Fatalf("fail-open status = %d, plugin calls = %d", rr.Code, calls1.count())
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("fail-closed status = %d (body %s)", rr.Code, rr.Body.String())
 	}
-	// Nothing was reserved, so the legacy counter still counts the request.
-	if len(calls) != 1 || calls[0].requests != 1 {
-		t.Fatalf("completion = %+v, want requests=1", calls)
+	if calls1.count() != 0 {
+		t.Fatalf("quota-read failure reached the plugin (%d calls)", calls1.count())
+	}
+	// The refused request still counts as one request against the legacy
+	// counter (successes and failures both count); no tokens were recorded.
+	if len(calls) != 1 || calls[0].requests != 1 || calls[0].prompt != 0 || calls[0].completion != 0 {
+		t.Fatalf("completion = %+v, want requests=1 with no tokens", calls)
+	}
+}
+
+// F-09 (P5-2): an authenticated key whose scope row cannot be read (error, or
+// no row at all) is refused instead of served with unrestricted scope.
+func TestKeyScopeReadErrorFailsClosed(t *testing.T) {
+	for name, record := range map[string]func(string) (KeyRecord, bool, error){
+		"read error": func(string) (KeyRecord, bool, error) {
+			return KeyRecord{}, false, errors.New("db closed")
+		},
+		"row missing": func(string) (KeyRecord, bool, error) {
+			return KeyRecord{}, false, nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg, calls1, _ := chatPluginServers(t, scopedChatReply)
+			g := newTestGateway(t, Options{Plugins: reg, KeyRecord: record})
+			rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+				`{"model":"p1/alpha","messages":[]}`))
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503 (body %s)", rr.Code, rr.Body.String())
+			}
+			if calls1.count() != 0 {
+				t.Fatalf("scope-read failure reached the plugin (%d calls)", calls1.count())
+			}
+		})
 	}
 }
 

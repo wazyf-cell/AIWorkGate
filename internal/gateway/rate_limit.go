@@ -98,6 +98,30 @@ func (g *Gateway) keyRateAllowed(keyID string) (bool, int) {
 	return g.limiter.allow("key:"+keyID, limit, g.now().Unix())
 }
 
+// authFailLimit is D-42's per-IP threshold of failed authentications inside
+// one rateWindow. Past it the gateway answers 429 + Retry-After instead of
+// another 401, so /v1 stops being a 401 oracle for credential brute forcing.
+// Valid keys are unaffected: only the failure path consults this bucket.
+const authFailLimit = 10
+
+// authFailure records one failed authentication from the request's source IP
+// and reports the Retry-After seconds once that IP crossed the threshold
+// (0 = still answering with the regular 401).
+func (g *Gateway) authFailure(r *http.Request) int {
+	if g == nil || g.limiter == nil {
+		return 0
+	}
+	ip := g.clientIP(r)
+	if ip == nil {
+		return 0
+	}
+	allowed, wait := g.limiter.allow("authfail:"+ip.String(), authFailLimit, g.now().Unix())
+	if allowed {
+		return 0
+	}
+	return wait
+}
+
 func writeRateLimited(w http.ResponseWriter, retryAfter int) {
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 }

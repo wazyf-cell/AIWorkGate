@@ -1814,17 +1814,19 @@ func TestCorsAllowedOrigin(t *testing.T) {
 	}
 }
 
-func TestCorsWildcardOrigin(t *testing.T) {
+// D-41: a wildcard entry grants nothing, even when it reaches the gateway
+// directly (config validation rejects it first; this pins the runtime side).
+func TestCorsWildcardOriginRejected(t *testing.T) {
 	g := newTestGateway(t, Options{Plugins: newFakeRegistry()})
 	g.SetCorsOrigins([]string{" * "})
 
 	for _, origin := range []string{"http://anywhere.test", "https://elsewhere.test"} {
 		rr := serve(g, originRequest(http.MethodOptions, "/v1/chat/completions", origin))
-		if rr.Code != http.StatusNoContent {
-			t.Fatalf("%s status = %d, want 204", origin, rr.Code)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s status = %d, want 405 (wildcard must not grant)", origin, rr.Code)
 		}
-		if got := rr.Header().Get("Access-Control-Allow-Origin"); got != origin {
-			t.Fatalf("Allow-Origin = %q, want the request origin %q echoed", got, origin)
+		if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("Allow-Origin = %q, want empty", got)
 		}
 	}
 

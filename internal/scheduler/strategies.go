@@ -9,8 +9,10 @@ package scheduler
 // give an unmeasured account a probe slot every probeEvery picks instead of
 // starving it forever.
 //
-// cheap is NOT implemented yet: it needs the D-31③ price engine (per-model
-// price), and the account has no price field to rank by today.
+// cheap IS implemented, as the inter-pool mode InterPoolCheap in scheduler.go:
+// candidate pools are ordered by the configured per-model token price from the
+// D-31③ price engine, falling back to smart ordering when a price is unknown
+// or equal. This file keeps only the free/pace account comparators.
 
 import "strings"
 

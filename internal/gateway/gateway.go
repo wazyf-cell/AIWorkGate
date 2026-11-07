@@ -612,6 +612,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	keyID, keyName, keyReason, ok := g.authenticate(r)
 	if !ok {
+		// D-42: past the per-IP failure threshold the answer becomes 429 +
+		// Retry-After instead of another 401 (no 401 oracle for brute forcing).
+		if wait := g.authFailure(r); wait > 0 {
+			writeRateLimited(w, wait)
+			rec.errText = "rate limited (auth failures)"
+			g.fail(w, rec, http.StatusTooManyRequests, "rate_limited", "auth_rate_limited",
+				"认证失败次数过多：该来源 IP 已被临时限速，请稍后重试")
+			return
+		}
 		msg := "missing or invalid API key"
 		if keyReason != "" {
 			msg = keyReason
@@ -630,8 +639,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The scope snapshot travels with the request context (plan 2026-10-21 §1)
-	// so the routing helpers never touch the store themselves.
-	if kr, found := g.keyRecordFor(keyID); found {
+	// so the routing helpers never touch the store themselves. A wired scope
+	// source that cannot answer fails closed (plan F-09 / P5-2).
+	kr, found, scopeErr := g.keyRecordFor(keyID)
+	if scopeErr != nil {
+		rec.errText = fmt.Sprintf("key scope unavailable: %v", scopeErr)
+		g.fail(w, rec, http.StatusServiceUnavailable, "service_unavailable", "key_scope_unavailable",
+			"客户端 Key 的限制信息暂时无法读取（存储异常）。为避免绕过配额与白名单已拒绝本次请求，请稍后重试。")
+		return
+	}
+	if found {
 		if !kr.Enabled {
 			rec.errText = "client key disabled"
 			g.fail(w, rec, http.StatusUnauthorized, "authentication_error", "invalid_api_key",
@@ -684,23 +701,26 @@ var (
 )
 
 // corsFor decides whether an Origin may read gateway responses. Only origins
-// explicitly listed in config (or "*" when the operator asked for it) are
-// granted; a loopback gateway is still reachable by any local page, so CORS is
-// opt-in rather than on by default.
+// explicitly listed in config are granted; a loopback gateway is still
+// reachable by any local page, so CORS is opt-in rather than on by default.
+// D-41 hardening: a configured "*" is rejected at config validation, and an
+// "Origin: null" request (sandboxed frame, redirected cross-origin read) is
+// never echoed. Same-origin /me reads carry no Origin, so the D-59 page is
+// unaffected by the null refusal.
 func (g *Gateway) corsFor(origin string) (allowed bool, echo string) {
-	if strings.TrimSpace(origin) == "" {
+	trimmed := strings.TrimSpace(origin)
+	if trimmed == "" || strings.EqualFold(trimmed, "null") {
 		return false, ""
 	}
 	for _, candidate := range g.corsList() {
 		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
+		if candidate == "" || candidate == "*" {
+			// "*" cannot appear through validated config; ignore a stray one
+			// instead of widening the answer.
 			continue
 		}
-		if candidate == "*" {
-			return true, origin
-		}
-		if strings.EqualFold(strings.TrimRight(candidate, "/"), strings.TrimRight(origin, "/")) {
-			return true, origin
+		if strings.EqualFold(strings.TrimRight(candidate, "/"), strings.TrimRight(trimmed, "/")) {
+			return true, trimmed
 		}
 	}
 	return false, ""

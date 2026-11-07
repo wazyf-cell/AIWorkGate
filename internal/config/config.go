@@ -1045,12 +1045,15 @@ func (c Config) Validate() error {
 		}
 	}
 	for _, origin := range c.Gateway.CorsAllowOrigins {
+		// D-41: a wildcard origin hands every page — including attacker pages
+		// that can reach a loopback gateway — read access. Operators must list
+		// explicit http(s) origins instead.
 		if origin == "*" {
-			continue
+			return fmt.Errorf("config: gateway.cors_allow_origins \"*\" is rejected (D-41); list explicit http(s) origins instead")
 		}
 		u, err := url.Parse(origin)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("config: gateway.cors_allow_origins %q must be \"*\" or an http(s) origin with a host", origin)
+			return fmt.Errorf("config: gateway.cors_allow_origins %q must be an http(s) origin with a host", origin)
 		}
 	}
 	// An empty default plugin is valid (no default); a non-empty one only has to

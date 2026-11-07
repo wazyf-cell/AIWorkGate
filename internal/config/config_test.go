@@ -302,8 +302,9 @@ func TestCorsOriginsWireKey(t *testing.T) {
 		t.Fatalf("round trip = %+v (%v)", got, err)
 	}
 
-	// A hand-written list is trimmed and de-duplicated on load.
-	manual := `{"gateway":{"cors_allow_origins":[" https://app.test/ ","https://app.test","*"]}}`
+	// A hand-written list is trimmed and de-duplicated on load; a wildcard
+	// entry is rejected (D-41) instead of silently honoured.
+	manual := `{"gateway":{"cors_allow_origins":[" https://app.test/ ","https://app.test"]}}`
 	if err := os.WriteFile(ConfigPath(dir), []byte(manual), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -311,8 +312,15 @@ func TestCorsOriginsWireKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if want := []string{"https://app.test/", "*"}; !reflect.DeepEqual(got.Gateway.CorsAllowOrigins, want) {
+	if want := []string{"https://app.test/"}; !reflect.DeepEqual(got.Gateway.CorsAllowOrigins, want) {
 		t.Fatalf("origins = %q, want %q", got.Gateway.CorsAllowOrigins, want)
+	}
+	wildcard := `{"gateway":{"cors_allow_origins":["https://app.test","*"]}}`
+	if err := os.WriteFile(ConfigPath(dir), []byte(wildcard), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), "D-41") {
+		t.Fatalf("Load() with wildcard = %v, want a D-41 rejection", err)
 	}
 }
 
@@ -425,7 +433,10 @@ func TestValidate(t *testing.T) {
 		{name: "retry count negative", mutate: func(c *Config) { c.Checkin.RetryCount = -1 }, wantErr: true},
 		{name: "retention zero", mutate: func(c *Config) { c.Retention.BodyPreviewDays = 0 }, wantErr: true},
 		{name: "version zero", mutate: func(c *Config) { c.Version = 0 }, wantErr: true},
-		{name: "cors wildcard", mutate: func(c *Config) { c.Gateway.CorsAllowOrigins = []string{"*"} }},
+		{name: "cors wildcard rejected", mutate: func(c *Config) { c.Gateway.CorsAllowOrigins = []string{"*"} }, wantErr: true},
+		{name: "cors wildcard in list rejected", mutate: func(c *Config) {
+			c.Gateway.CorsAllowOrigins = []string{"https://app.test", "*"}
+		}, wantErr: true},
 		{
 			name: "cors origin list",
 			mutate: func(c *Config) {
@@ -467,12 +478,14 @@ func TestNormalizeCorsOrigins(t *testing.T) {
 		"  https://App.Example  ", "https://app.example/", "", "http://localhost:3000", "*",
 	}
 	cfg.Normalize()
+	// Normalize only trims/dedups; policy (D-41: wildcard rejected) is
+	// Validate's job, so the raw entry survives normalization.
 	want := []string{"https://App.Example", "http://localhost:3000", "*"}
 	if !reflect.DeepEqual(cfg.Gateway.CorsAllowOrigins, want) {
 		t.Fatalf("origins = %q, want %q", cfg.Gateway.CorsAllowOrigins, want)
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "D-41") {
+		t.Fatalf("Validate() = %v, want a D-41 wildcard rejection", err)
 	}
 
 	empty := Default()

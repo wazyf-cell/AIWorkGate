@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,19 +67,29 @@ func keyRecordFrom(ctx context.Context) (KeyRecord, bool) {
 	return kr, ok
 }
 
-// keyRecordFor loads the snapshot. Errors and a missing row degrade to
-// "unrestricted": authentication already succeeded against the secret store, so
-// a database hiccup must not reject an otherwise valid key.
-func (g *Gateway) keyRecordFor(keyID string) (KeyRecord, bool) {
+// keyRecordFor loads the snapshot. A wired scope source that cannot answer —
+// a read error, or no row for an already-authenticated key — fails CLOSED
+// (plan F-09 / P5-2): silently skipping the enabled/IP/whitelist/cap gates
+// would let a storage hiccup turn into an unrestricted key. A host that did
+// not wire a record source at all keeps the pre-scope behaviour
+// (authentication is still required; there is simply nothing finer to check).
+func (g *Gateway) keyRecordFor(keyID string) (KeyRecord, bool, error) {
 	if g == nil || g.keyRecord == nil || keyID == "" {
-		return KeyRecord{}, false
+		return KeyRecord{}, false, nil
 	}
 	kr, ok, err := g.keyRecord(keyID)
-	if err != nil || !ok {
-		return KeyRecord{}, false
+	if err != nil {
+		return KeyRecord{}, false, err
 	}
-	return kr, true
+	if !ok {
+		return KeyRecord{}, false, errKeyScopeMissing
+	}
+	return kr, true, nil
 }
+
+// errKeyScopeMissing marks an authenticated key without a client_keys row:
+// the scope gates cannot be evaluated, so the request is refused.
+var errKeyScopeMissing = errors.New("key scope row missing")
 
 // isInferencePath lists the endpoints that consume a key's daily quota. The
 // passthrough endpoints (embeddings/images) are billable inference too: they
@@ -137,8 +148,9 @@ func (g *Gateway) keyQuotaAllows(w http.ResponseWriter, r *http.Request, rec *re
 	if reserver := currentKeyUsageReserver(); reserver != nil {
 		reserved, used, err := reserver.ReserveKeyUsage(kr.ID, day, kr.DailyQuota)
 		if err != nil {
-			// Fail open: accounting trouble must not take the gateway down.
-			return true
+			// F-09 (P5-2): the quota gate fails closed on storage errors —
+			// failing open here would let a database hiccup suspend the quota.
+			return g.rejectKeyReadUnavailable(w, rec, "key quota check", err)
 		}
 		if reserved {
 			keyQuotaReservations.Store(rec, keyQuotaReservation{keyID: kr.ID, day: day})
@@ -147,11 +159,23 @@ func (g *Gateway) keyQuotaAllows(w http.ResponseWriter, r *http.Request, rec *re
 		return g.rejectKeyQuota(w, rec, used, kr.DailyQuota)
 	}
 	used, err := g.keyUsageToday(kr.ID, day)
-	if err != nil || used < kr.DailyQuota {
-		// Fail open: accounting trouble must not take the gateway down.
+	if err != nil {
+		return g.rejectKeyReadUnavailable(w, rec, "key quota check", err)
+	}
+	if used < kr.DailyQuota {
 		return true
 	}
 	return g.rejectKeyQuota(w, rec, used, kr.DailyQuota)
+}
+
+// rejectKeyReadUnavailable refuses a request whose admission gate could not be
+// evaluated because the store was unreadable. The cause goes to the log record
+// only; the response stays generic (F-09, P5-2 fail-closed).
+func (g *Gateway) rejectKeyReadUnavailable(w http.ResponseWriter, rec *reqRecord, what string, cause error) bool {
+	rec.errText = fmt.Sprintf("%s unavailable: %v", what, cause)
+	g.fail(w, rec, http.StatusServiceUnavailable, "service_unavailable", "key_quota_unavailable",
+		"客户端 Key 的配额校验暂时不可用（存储异常）。为避免绕过配额限制已拒绝本次请求，请稍后重试。")
+	return false
 }
 
 // rejectKeyQuota writes the 429 of an exhausted daily quota.
