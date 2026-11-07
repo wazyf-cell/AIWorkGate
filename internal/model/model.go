@@ -149,6 +149,11 @@ type ModelInfo struct {
 	DefaultEffort       string   `json:"default_effort,omitempty"`       // effort when none is asked
 	SupportedParameters []string `json:"supported_parameters,omitempty"` // OpenAI-style capability list
 	Temperature         *bool    `json:"temperature,omitempty"`          // false = refuses temperature/top_p
+	// D-34: the maximum output tokens the source reported. 0 = the source did
+	// not say. Metadata only: /v1/models publishes it and the override layer
+	// can edit it; routing never rewrites a request with it (the custom-model
+	// side caps max_tokens, the plugin side deliberately does not, 2026-11-07).
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 	// Structured marks a decision model: /v1/chat/completions must not accept
 	// it, clients should call /v1/systemone or /v1/decision instead (D-18④).
 	Structured bool `json:"structured,omitempty"`

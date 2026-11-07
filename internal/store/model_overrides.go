@@ -50,6 +50,13 @@ type ModelOverride struct {
 	Thinking      *[]string `json:"thinking"`
 	Multiplier    *float64  `json:"multiplier"`
 	Free          *bool     `json:"free"`
+	// D-34: the plugin-model output cap. Metadata only — /v1/models publishes
+	// it, routing never rewrites a request with it (the custom-model side
+	// caps max_tokens; the plugin side deliberately does not, 2026-11-07).
+	MaxOutputTokens *int `json:"max_output_tokens"`
+	// D-38: the upstream-name mapping this row carries (may hold the vendor/*
+	// / * expansion patterns). Matching/metadata only.
+	UpstreamName *string `json:"upstream_name"`
 	// UpdatedAt is the last write time. It is set by the store and ignored on
 	// write, so clients cannot fake the timestamp.
 	UpdatedAt int64 `json:"updated_at,omitempty"`
@@ -58,7 +65,7 @@ type ModelOverride struct {
 // Fields lists the overridden field names in the order the admin UI shows
 // them. The result is what `overridden` carries to the browser.
 func (o ModelOverride) Fields() []string {
-	out := make([]string, 0, 7)
+	out := make([]string, 0, 9)
 	if o.DisplayName != nil {
 		out = append(out, "display_name")
 	}
@@ -80,6 +87,12 @@ func (o ModelOverride) Fields() []string {
 	if o.Free != nil {
 		out = append(out, "free")
 	}
+	if o.MaxOutputTokens != nil {
+		out = append(out, "max_output_tokens")
+	}
+	if o.UpstreamName != nil {
+		out = append(out, "upstream_name")
+	}
 	return out
 }
 
@@ -88,7 +101,8 @@ func (o ModelOverride) Empty() bool { return len(o.Fields()) == 0 }
 
 // ApplyInfo replaces every overridden field of a plugin-reported ModelInfo.
 // Fields without an override keep the reported value, which is the L1 -> L2
-// step of A's resolution chain.
+// step of A's resolution chain. UpstreamName is catalog-side only (D-38): the
+// published ModelInfo carries no upstream mapping, so ApplyInfo skips it.
 func (o ModelOverride) ApplyInfo(info model.ModelInfo) model.ModelInfo {
 	if o.DisplayName != nil {
 		info.Name = *o.DisplayName
@@ -110,6 +124,9 @@ func (o ModelOverride) ApplyInfo(info model.ModelInfo) model.ModelInfo {
 	}
 	if o.Free != nil {
 		info.Free = *o.Free
+	}
+	if o.MaxOutputTokens != nil {
+		info.MaxOutputTokens = *o.MaxOutputTokens
 	}
 	return info
 }
@@ -138,6 +155,12 @@ func (o ModelOverride) ApplyEntry(entry model.ModelCatalogEntry) model.ModelCata
 	}
 	if o.Free != nil {
 		entry.Free = *o.Free
+	}
+	if o.MaxOutputTokens != nil {
+		entry.MaxOutputTokens = *o.MaxOutputTokens
+	}
+	if o.UpstreamName != nil {
+		entry.UpstreamName = *o.UpstreamName
 	}
 	return entry
 }
@@ -176,6 +199,18 @@ func (o ModelOverride) normalize() (ModelOverride, error) {
 	if out.ContextLength != nil && *out.ContextLength <= 0 {
 		return ModelOverride{}, fmt.Errorf("store: model override: %w: context_length must be positive",
 			ErrInvalidArgument)
+	}
+	if out.MaxOutputTokens != nil && *out.MaxOutputTokens <= 0 {
+		return ModelOverride{}, fmt.Errorf("store: model override: %w: max_output_tokens must be positive",
+			ErrInvalidArgument)
+	}
+	if out.UpstreamName != nil {
+		value := strings.TrimSpace(*out.UpstreamName)
+		if value == "" {
+			out.UpstreamName = nil
+		} else {
+			out.UpstreamName = &value
+		}
 	}
 	if out.Multiplier != nil {
 		value := *out.Multiplier
@@ -219,7 +254,7 @@ func (s *Store) GetModelOverrides(pluginID string) (map[string]ModelOverride, er
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT model,
 		display_name, vendor, context_length, vision, thinking, multiplier, free,
-		COALESCE(updated_at, 0)
+		max_output_tokens, upstream_name, COALESCE(updated_at, 0)
 		FROM model_overrides WHERE plugin_id = ? ORDER BY model`, pluginID)
 	if err != nil {
 		return nil, fmt.Errorf("store: get model overrides: %w", err)
@@ -228,18 +263,20 @@ func (s *Store) GetModelOverrides(pluginID string) (map[string]ModelOverride, er
 
 	for rows.Next() {
 		var (
-			modelID  string
-			entry    ModelOverride
-			name     sql.NullString
-			vendor   sql.NullString
-			ctxLen   sql.NullInt64
-			vision   sql.NullInt64
-			thinking sql.NullString
-			mult     sql.NullFloat64
-			free     sql.NullInt64
+			modelID     string
+			entry       ModelOverride
+			name        sql.NullString
+			vendor      sql.NullString
+			ctxLen      sql.NullInt64
+			vision      sql.NullInt64
+			thinking    sql.NullString
+			mult        sql.NullFloat64
+			free        sql.NullInt64
+			maxOut      sql.NullInt64
+			upstream    sql.NullString
 		)
 		if err := rows.Scan(&modelID, &name, &vendor, &ctxLen, &vision, &thinking, &mult, &free,
-			&entry.UpdatedAt); err != nil {
+			&maxOut, &upstream, &entry.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("store: get model overrides: scan: %w", err)
 		}
 		if name.Valid {
@@ -272,6 +309,14 @@ func (s *Store) GetModelOverrides(pluginID string) (map[string]ModelOverride, er
 		if free.Valid {
 			value := free.Int64 != 0
 			entry.Free = &value
+		}
+		if maxOut.Valid {
+			value := int(maxOut.Int64)
+			entry.MaxOutputTokens = &value
+		}
+		if upstream.Valid {
+			value := upstream.String
+			entry.UpstreamName = &value
 		}
 		out[modelID] = entry
 	}
@@ -313,8 +358,9 @@ func (s *Store) PutModelOverride(pluginID, modelID string, o ModelOverride) erro
 	ctx, cancel := s.ctx()
 	defer cancel()
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO model_overrides
-		(plugin_id, model, display_name, vendor, context_length, vision, thinking, multiplier, free, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(plugin_id, model, display_name, vendor, context_length, vision, thinking, multiplier, free,
+		 max_output_tokens, upstream_name, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(plugin_id, model) DO UPDATE SET
 			display_name = excluded.display_name,
 			vendor = excluded.vendor,
@@ -323,10 +369,13 @@ func (s *Store) PutModelOverride(pluginID, modelID string, o ModelOverride) erro
 			thinking = excluded.thinking,
 			multiplier = excluded.multiplier,
 			free = excluded.free,
+			max_output_tokens = excluded.max_output_tokens,
+			upstream_name = excluded.upstream_name,
 			updated_at = excluded.updated_at`,
 		pluginID, modelID, nullStr(derefString(entry.DisplayName)), nullStr(derefString(entry.Vendor)),
 		optInt(entry.ContextLength), optBool(entry.Vision), nullStr(thinking),
-		optFloat(entry.Multiplier), optBool(entry.Free), nowUnix()); err != nil {
+		optFloat(entry.Multiplier), optBool(entry.Free),
+		optInt(entry.MaxOutputTokens), nullStr(derefString(entry.UpstreamName)), nowUnix()); err != nil {
 		return fmt.Errorf("store: put model override: %w", err)
 	}
 	return nil

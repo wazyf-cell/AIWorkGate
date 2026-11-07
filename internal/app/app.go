@@ -483,6 +483,8 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		SchedLog:          logger,
 		Overrides:         a.store.GetModelOverrides,
 		Prefs:             a.store.GetModelPrefs,
+		// D-33 disabled-model classification (400 model_disabled vs 404).
+		ModelCatalogState: a.store.ModelCatalogState,
 		KeyRecord:         a.keyRecord,
 		KeyUsageToday:     a.keyUsageToday,
 		KeyUsageTotal:     a.totalKeyUsage,

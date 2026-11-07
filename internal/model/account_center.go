@@ -150,6 +150,18 @@ type ModelCatalogEntry struct {
 	ContextLength int      `json:"context_length,omitempty"`
 	Vision        bool     `json:"vision"`
 	Free          bool     `json:"free"`
+	// D-38: the upstream model name this row maps to. May hold the vendor/* /
+	// * expansion patterns (D-38 上游名展开; unlike the D-28① routing-group
+	// patterns this names the upstream side). Empty = no mapping published.
+	UpstreamName string `json:"upstream_name,omitempty"`
+	// D-38 soft deprecation: the unix time a catalog sync first reported this
+	// row missing. 0 = active. A marked row stays visible and schedulable for
+	// ModelCatalogGracePeriod (48h) and is then deleted by the next sync.
+	RemovedAt int64 `json:"removed_at,omitempty"`
+	// D-34: override-layer merge target only. The model_catalog table stores no
+	// such column (the reported value lives in model_overrides, v24), so a
+	// freshly synced entry carries 0 and ModelOverride.ApplyEntry fills it.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 	// Enabled controls whether the gateway exposes this model. A catalog row
 	// missing from the table means "not synced yet" (everything is exposed).
 	Enabled  bool  `json:"enabled"`

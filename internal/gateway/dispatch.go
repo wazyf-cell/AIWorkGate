@@ -563,12 +563,31 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 			g.writeUnknownModel(w, rec, rec.model, id)
 			return
 		}
-		// The resource page's "接入" switch removes a model from the pool's
-		// catalog; the pool then no longer serves it.
-		if catalogPool := snap.Pools[id]; catalogPool != nil && len(catalogPool.Models) > 0 {
+		// D-33 model classification (2026-11-07 拍板). The resource page's
+		// "接入" switch removes a disabled model from the pool's catalog; the
+		// old len(pool.Models) > 0 premise is gone because disabling the LAST
+		// model of a pool empties pool.Models and would have let disabled
+		// models through unfiltered. A miss is classified against the catalog
+		// (disabled rows included):
+		//   - catalog knows the id but enabled=false → 400
+		//     invalid_request_error/model_disabled, "该模型已被管理员禁用";
+		//   - catalog has no row at all → 404 model_not_found, the D-60 caliber
+		//     (unknown stays unknown; overrides cannot resurrect an id the
+		//     catalog lacks and custom models route before scheduling);
+		//   - enabled row missing from the pool view (stale snapshot, or the
+		//     plugin's live list failed while the catalog is fine) → keep
+		//     serving instead of dropping a live model.
+		if catalogPool := snap.Pools[id]; catalogPool != nil {
 			if _, ok := catalogPool.Models[decision.Model]; !ok {
-				g.writeUnknownModel(w, rec, rec.model, id, exposedPluginModels(snap))
-				return
+				if found, enabled := g.catalogModelState(id, decision.Model); found {
+					if !enabled {
+						g.writeModelDisabled(w, rec, rec.model, id)
+						return
+					}
+				} else {
+					g.writeUnknownModel(w, rec, rec.model, id, exposedPluginModels(snap))
+					return
+				}
 			}
 		}
 
@@ -1003,9 +1022,18 @@ func (g *Gateway) prepareHedge(r *http.Request, rec *reqRecord, rawBody []byte, 
 	if err := g.validateModel(r.Context(), id, decision.Model, strings.Contains(rec.model, "/")); err != nil {
 		return nil, nil, err
 	}
-	if catalogPool := snap.Pools[id]; catalogPool != nil && len(catalogPool.Models) > 0 {
+	// Same D-33 classification as the main path. The hedge caller only aborts
+	// hedging on an error here — the client-facing answer (400 disabled /
+	// 404 unknown) was already produced by the first attempt's guard.
+	if catalogPool := snap.Pools[id]; catalogPool != nil {
 		if _, ok := catalogPool.Models[decision.Model]; !ok {
-			return nil, nil, errUnknownModel
+			if found, enabled := g.catalogModelState(id, decision.Model); found {
+				if !enabled {
+					return nil, nil, errModelDisabled
+				}
+			} else {
+				return nil, nil, errUnknownModel
+			}
 		}
 	}
 	prepared, physical, downgraded, err := prepareBody(rawBody, decision.Model, snap, decision)
@@ -1078,7 +1106,29 @@ func (g *Gateway) validateModel(ctx context.Context, pluginID, physical string, 
 	return errUnknownModel
 }
 
-var errUnknownModel = errors.New("unknown model")
+var (
+	errUnknownModel  = errors.New("unknown model")
+	errModelDisabled = errors.New("model disabled by administrator")
+)
+
+// catalogModelState maps the ModelCatalogState hook onto the D-33
+// classification (found / enabled). Two degradations keep the gateway from
+// ever getting stricter than the data really is:
+//   - a missing hook (tests, standalone) has no catalog to consult, so every
+//     pool miss falls to the unknown path — the answer the old guard gave for
+//     filtered pools;
+//   - a store error fails open (D-46 选路层 fail-open): a database hiccup
+//     reports the model as known-and-enabled instead of rejecting traffic.
+func (g *Gateway) catalogModelState(pluginID, modelID string) (found, enabled bool) {
+	if g.catalogState == nil {
+		return false, false
+	}
+	found, enabled, err := g.catalogState(pluginID, modelID)
+	if err != nil {
+		return true, true
+	}
+	return found, enabled
+}
 
 // exposedPluginModels mirrors the GET /v1/models exposure rule: a pool with
 // catalog models only exposes those; a pool without any has no filter.

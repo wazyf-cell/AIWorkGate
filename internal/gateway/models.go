@@ -42,6 +42,10 @@ type modelEntry struct {
 	DefaultEffort       string   `json:"default_effort,omitempty"`
 	SupportedParameters []string `json:"supported_parameters,omitempty"`
 	Temperature         *bool    `json:"temperature,omitempty"`
+	// D-34: the plugin-model output cap. Pointer so "the source did not say"
+	// (nil, field absent) stays distinguishable from a value; metadata only,
+	// routing never rewrites a request with it.
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
 	// Structured marks a decision model (D-18④): clients must call
 	// /v1/systemone instead of /v1/chat/completions.
 	Structured bool `json:"structured,omitempty"`
@@ -64,6 +68,15 @@ func CanonicalModelID(id string) string {
 
 // catalogMultiplier exposes a published rate; 0 means "not published".
 func catalogMultiplier(v float64) *float64 {
+	if v <= 0 {
+		return nil
+	}
+	return &v
+}
+
+// publishedMaxOutput exposes the D-34 output cap; 0 means the source did not
+// say, so the field stays absent from /v1/models.
+func publishedMaxOutput(v int) *int {
 	if v <= 0 {
 		return nil
 	}
@@ -174,6 +187,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 					DefaultEffort:       m.DefaultEffort,
 					SupportedParameters: supportedParameters(m),
 					Temperature:         m.Temperature,
+					MaxOutputTokens:     publishedMaxOutput(m.MaxOutputTokens),
 					Structured:          m.Structured,
 					Overridden:          overridden,
 				})
@@ -498,4 +512,17 @@ func (g *Gateway) writeUnknownModel(w http.ResponseWriter, rec *reqRecord, name,
 		msg += "; available models: " + strings.Join(avail, ", ")
 	}
 	g.fail(w, rec, http.StatusNotFound, "invalid_request_error", "model_not_found", msg)
+}
+
+// writeModelDisabled sends the D-33 400 for a catalog model the administrator
+// has disabled (2026-11-07 拍板): the id is spelled correctly and was served
+// before, so unlike an unknown model this is a client error the admin can
+// undo, not a 404. Same error family as the 404 (invalid_request_error), the
+// code distinguishes the two.
+func (g *Gateway) writeModelDisabled(w http.ResponseWriter, rec *reqRecord, name, pluginID string) {
+	msg := fmt.Sprintf("该模型已被管理员禁用: %q", name)
+	if pluginID != "" {
+		msg += " (plugin " + pluginID + ")"
+	}
+	g.fail(w, rec, http.StatusBadRequest, "invalid_request_error", "model_disabled", msg)
 }

@@ -7,17 +7,22 @@ package app
 // keys' rows or admin capabilities.
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"aiworkgate/internal/gateway"
 	"aiworkgate/internal/model"
+	"aiworkgate/internal/scheduler"
 	"aiworkgate/internal/store"
 )
 
@@ -29,7 +34,20 @@ const (
 	meMaxLogs      = 200
 	meModelTopN    = 12
 	meWeekDays     = 7
+	// meModelsBudget bounds one GET /me/api/models: the universe read walks the
+	// same scheduling snapshot /v1/models is built from, whose per-plugin reads
+	// already carry their own budgets.
+	meModelsBudget = 30 * time.Second
+	// meModelCheckBodyCap bounds the POST /me/api/models/check body: one model
+	// name is all it needs (the check is a scope test, never an upstream call).
+	meModelCheckBodyCap = 4 << 10
 )
+
+// meSnapshotFor is the seam the /me model selector reads the availability
+// universe through; tests inject a hand-built snapshot so no plugin runs.
+var meSnapshotFor = func(a *App, ctx context.Context) (*scheduler.Snapshot, error) {
+	return a.schedulerSnapshot(ctx)
+}
 
 type meSession struct {
 	keyID   string
@@ -107,6 +125,18 @@ func (h *meHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.logs(w, r)
+	case path == "/me/api/models":
+		if r.Method != http.MethodGet {
+			h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.models(w, r)
+	case path == "/me/api/models/check":
+		if r.Method != http.MethodPost {
+			h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.modelCheck(w, r)
 	default:
 		h.writeError(w, http.StatusNotFound, "not found")
 	}
@@ -254,6 +284,228 @@ func (h *meHandler) logs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeMeJSON(w, http.StatusOK, map[string]any{"logs": logs})
+}
+
+// meModelInScope is the /me side of the client-key model scope admission. It
+// mirrors gateway.modelInScope (internal/gateway/keys_scope.go) exactly:
+//   - an empty scope allows every model;
+//   - an entry is either an exact model id or a "plugin/*" prefix wildcard;
+//   - ids compare canonicalised (trim + lower) through gateway.CanonicalModelID,
+//     the same comparison key the catalog merge uses.
+//
+// The gateway keeps that matcher unexported and the /me page must not lean on
+// the gateway's internal surface, so the semantics are reimplemented here;
+// me_models_test.go pins the shared vectors so the two sides cannot drift.
+func meModelInScope(scope []string, names ...string) bool {
+	if len(scope) == 0 {
+		return true
+	}
+	for _, raw := range scope {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		if strings.HasSuffix(entry, "/*") {
+			// Keeps the trailing "/" so "p1/*" never matches the bare "p1".
+			prefix := strings.TrimSuffix(gateway.CanonicalModelID(entry), "*")
+			for _, name := range names {
+				canonical := gateway.CanonicalModelID(name)
+				if strings.HasPrefix(canonical, prefix) && len(canonical) > len(prefix) {
+					return true
+				}
+			}
+			continue
+		}
+		for _, name := range names {
+			if gateway.CanonicalModelID(entry) == gateway.CanonicalModelID(name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// meFilterModelsForScope keeps the universe ids one key may see, mirroring the
+// gateway's per-key /v1/models filter (handleModelsForKey): a key bound to one
+// pool only sees that pool's ids (bare logical names are rewritten to
+// "pool/<model>" at dispatch, so advertising the rest would just 404), and
+// model_scope filters what remains. Sorted so the selector is stable.
+func meFilterModelsForScope(key model.ClientKey, ids []string) []string {
+	poolPrefix := ""
+	if pool := strings.TrimSpace(key.BindPool); pool != "" {
+		poolPrefix = gateway.CanonicalModelID(pool) + "/"
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if poolPrefix != "" && !strings.HasPrefix(gateway.CanonicalModelID(id), poolPrefix) {
+			continue
+		}
+		if !meModelInScope(key.ModelScope, id) {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// meModelIDsFor computes the /me model selector list: model_scope ∩ the models
+// the gateway currently publishes. Availability follows the /v1/models rules,
+// read from the same sources:
+//
+//   - every scheduling pool with UpstreamEnabled contributes its models as
+//     "<plugin>/<model>"; pool.Models already excludes the models the resource
+//     page switched off, and UpstreamEnabled folds in the plugin's own enable
+//     flag (snapshotFrom);
+//   - a pool whose live model list is empty falls back to the persisted
+//     enabled catalog rows (the gateway skips its catalog filter in that case;
+//     the store query also drops models past the D-38 delisting grace window);
+//   - logical bindings are published as bare names;
+//   - when the snapshot cannot be built at all the persisted enabled catalog
+//     is the whole (degraded) universe: plugin enablement is then unknown, so
+//     the selector may over-list — the gateway's own admission check remains
+//     the authoritative gate. Structured decision models stay out of the
+//     selector (they are not chat models).
+func meModelIDsFor(a *App, key model.ClientKey) ([]string, bool) {
+	raw := make([]string, 0, 32)
+	// Dedupe by canonical id keeping the first spelling, the way handleModels
+	// merges the published catalog (a plugin reporting "Kimi-K2" twice stays
+	// one entry).
+	seen := make(map[string]bool, 32)
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		canon := gateway.CanonicalModelID(id)
+		if seen[canon] {
+			return
+		}
+		seen[canon] = true
+		raw = append(raw, id)
+	}
+	degraded := false
+	ctx, cancel := context.WithTimeout(context.Background(), meModelsBudget)
+	defer cancel()
+	snap, err := meSnapshotFor(a, ctx)
+	if err != nil || snap == nil {
+		degraded = true
+	} else {
+		for id, pool := range snap.Pools {
+			if pool == nil || !pool.UpstreamEnabled {
+				continue
+			}
+			if len(pool.Models) == 0 {
+				continue // covered by the catalog fallback below
+			}
+			for modelID := range pool.Models {
+				add(id + "/" + modelID)
+			}
+		}
+		for name := range snap.Bindings {
+			add(name)
+		}
+	}
+	if catalog, catErr := a.store.MeEnabledCatalogModels(); catErr == nil {
+		for _, row := range catalog {
+			if degraded {
+				add(row.PluginID + "/" + row.ModelID)
+				continue
+			}
+			if pool, ok := snap.Pools[row.PluginID]; ok && pool != nil &&
+				pool.UpstreamEnabled && len(pool.Models) == 0 {
+				add(row.PluginID + "/" + row.ModelID)
+			}
+		}
+	}
+	return meFilterModelsForScope(key, raw), degraded
+}
+
+// models serves GET /me/api/models: the model ids this key may select, for the
+// self-service model picker and the copyable request example.
+func (h *meHandler) models(w http.ResponseWriter, r *http.Request) {
+	key, ok := h.sessionKey(w, r)
+	if !ok {
+		return
+	}
+	ids, degraded := meModelIDsFor(h.app, key)
+	if ids == nil {
+		ids = []string{}
+	}
+	payload := map[string]any{"models": ids}
+	if degraded {
+		payload["degraded"] = true
+	}
+	writeMeJSON(w, http.StatusOK, payload)
+}
+
+// meKeyModelAdmission mirrors the gateway's per-request admission
+// (keyRouteModel + modelInScope) for the /me check operation: a bound pool
+// rewrites bare names to "<pool>/<model>" and forbids foreign prefixes, and
+// the model must sit inside the key's model_scope. The second return is the
+// routed id on success or the human reason on refusal.
+//
+// P14-4 acceptance ("模型选择器只列 model_scope ∩ 启用模型，越权 403") needs a
+// minimal really callable operation that can be refused; this check is it. It
+// is a scope test only — it never touches an upstream — so a pass proves the
+// key's reach, not that the model answered.
+func meKeyModelAdmission(key model.ClientKey, requested string) (string, string) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return "", "请提供模型名"
+	}
+	pool := strings.TrimSpace(key.BindPool)
+	routed := requested
+	if pool != "" {
+		id, inner, prefixed := strings.Cut(requested, "/")
+		prefixed = prefixed && strings.TrimSpace(id) != "" && strings.TrimSpace(inner) != ""
+		switch {
+		case prefixed && id != pool:
+			return "", fmt.Sprintf("该 Key 只绑定插件 %s，不能使用 %s 前缀的模型", pool, id)
+		case !prefixed:
+			routed = pool + "/" + requested
+		}
+	}
+	if !meModelInScope(key.ModelScope, requested, routed) {
+		return "", fmt.Sprintf("模型 %q 不在该 Key 的模型范围内", requested)
+	}
+	return routed, ""
+}
+
+// modelCheck serves POST /me/api/models/check {"model": "..."}: inside the
+// key's scope -> 200 {"allowed":true,"model":"<routed>"}; outside -> 403 with
+// code "model_not_allowed". The 403 (not the gateway's 404) is deliberate: the
+// /me page is a human self-service surface, so "the key may not use this" is
+// an authorisation answer, not an unknown-model answer.
+func (h *meHandler) modelCheck(w http.ResponseWriter, r *http.Request) {
+	key, ok := h.sessionKey(w, r)
+	if !ok {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, meModelCheckBodyCap+1))
+	if err != nil || len(body) > meModelCheckBodyCap {
+		h.writeError(w, http.StatusBadRequest, "请求体无效")
+		return
+	}
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &payload) != nil || strings.TrimSpace(payload.Model) == "" {
+		h.writeError(w, http.StatusBadRequest, "请提供要校验的模型名")
+		return
+	}
+	routed, reason := meKeyModelAdmission(key, payload.Model)
+	if reason != "" {
+		writeMeJSON(w, http.StatusForbidden, map[string]any{
+			"error": map[string]any{"message": reason, "code": "model_not_allowed"},
+		})
+		return
+	}
+	writeMeJSON(w, http.StatusOK, map[string]any{"allowed": true, "model": routed})
 }
 
 func todayUsageJSON(u store.ClientKeyUsage) map[string]any {

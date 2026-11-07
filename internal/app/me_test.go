@@ -49,6 +49,10 @@ func newMeTestApp(t *testing.T) (*App, *meHandler, string, string) {
 	}); err != nil {
 		t.Fatalf("InsertAPIRequestLog: %v", err)
 	}
+	// The /me model tests reuse this fixture key; its plain secret is kept in a
+	// package variable (no parallel test uses it, and each test builds a fresh
+	// app anyway).
+	meFixturePlain = plain
 	return app, app.me, plain, id
 }
 

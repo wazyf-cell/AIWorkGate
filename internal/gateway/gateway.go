@@ -87,6 +87,14 @@ type Options struct {
 	// kept efforts) for one plugin, keyed by model id. Nil means "none".
 	Prefs func(pluginID string) (map[string]ModelPrefs, error)
 
+	// ModelCatalogState classifies one plugin model against the plugin's
+	// catalog with disabled rows included (D-33, 2026-11-07 拍板): found=true
+	// with enabled=false is a "接入 off" row and gets 400 model_disabled;
+	// found=false keeps the D-60 404. A store error fails open (D-46). Nil
+	// means "no catalog to consult" (tests, standalone): every pool miss falls
+	// to the unknown path.
+	ModelCatalogState func(pluginID, modelID string) (found, enabled bool, err error)
+
 	// AllowIPs is the D-40 source-address allowlist for /v1, checked before
 	// authentication. Nil means "no restriction" (tests, standalone); an empty
 	// non-nil list fails safe to loopback only.
@@ -195,6 +203,7 @@ type Gateway struct {
 	schedLog       SchedLogger
 	overrides      func(pluginID string) (map[string]ModelOverride, error)
 	prefs          func(pluginID string) (map[string]ModelPrefs, error)
+	catalogState   func(pluginID, modelID string) (found, enabled bool, err error)
 	customModels   func() ([]CustomModel, error)
 	customModelKey func(id string) (string, bool)
 	keyRecord      func(keyID string) (KeyRecord, bool, error)
@@ -313,6 +322,7 @@ func newGateway(opts Options) *Gateway {
 		schedLog:          opts.SchedLog,
 		overrides:         opts.Overrides,
 		prefs:             opts.Prefs,
+		catalogState:      opts.ModelCatalogState,
 		customModels:      opts.CustomModels,
 		customModelKey:    opts.CustomModelKey,
 		keyRecord:         opts.KeyRecord,

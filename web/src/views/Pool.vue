@@ -13,6 +13,8 @@ import {
   POOL_STRATEGY_LABELS,
   type ModelOverridePatch,
   type ModelOverrideRecord,
+  type ModelTestResult,
+  type ModelTestItem,
   type PluginStatus,
   type PoolCatalogModel,
   type PoolDetail,
@@ -396,6 +398,91 @@ async function probeCatalogModel(model: PoolCatalogModel) {
     })
   } finally {
     probingModel.value = ''
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Batch model test (POST /api/models/test, P12-1 / D-27 / D-39)       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The host picks the tier per model (app.selectModelTestTier): reasoning
+ * models get the 2min streamed tier, small/free models the 20s light tier,
+ * everything else the 60s standard one. The response does not carry the tier,
+ * so the legend below is derived from the same catalog metadata (thinking
+ * tiers, free flag, context length, telltale name markers).
+ */
+type ModelTestTier = 'light' | 'standard' | 'reasoning'
+
+const MODEL_TEST_TIER_LABELS: Record<ModelTestTier, string> = {
+  light: '轻量 20s',
+  standard: '标准 60s',
+  reasoning: '推理 2min',
+}
+
+const MODEL_TEST_REASONING_MARKERS = ['thinking', 'think', 'reason', 'o1-', '-o1', 'o3-', '-o3', 'r1', 'qwq', 'deepseek-r']
+const MODEL_TEST_LIGHT_MARKERS = ['mini', 'flash', 'nano', 'lite', 'air', 'haiku', 'small', 'tiny']
+
+function modelTestTier(row: CatalogRow): ModelTestTier {
+  const text = `${row.model.model_id} ${row.displayName}`.toLowerCase()
+  if (row.thinking.length > 0 || MODEL_TEST_REASONING_MARKERS.some((marker) => text.includes(marker))) {
+    return 'reasoning'
+  }
+  if (
+    row.free ||
+    (row.contextLength > 0 && row.contextLength <= 8192) ||
+    MODEL_TEST_LIGHT_MARKERS.some((marker) => text.includes(marker))
+  ) {
+    return 'light'
+  }
+  return 'standard'
+}
+
+interface BatchTestRow {
+  modelId: string
+  tier: ModelTestTier
+  result?: ModelTestResult
+}
+
+const batchTesting = ref(false)
+const batchResults = ref<BatchTestRow[]>([])
+
+function clearBatchResults() {
+  batchResults.value = []
+}
+
+async function batchTestModels() {
+  if (batchTesting.value) return
+  const rows = catalogRows.value.filter((row) => row.model.enabled !== false)
+  if (!rows.length) {
+    toast('没有已接入的模型可测试，先在「接入」列勾选模型。', 'warn')
+    return
+  }
+  // The batch endpoint caps one call at 50 items (D-39); extra models wait
+  // for another click.
+  const tested = rows.slice(0, 50)
+  const items: ModelTestItem[] = tested.map((row) => ({ provider: pluginId.value, model: row.model.model_id }))
+  batchResults.value = tested.map((row) => ({ modelId: row.model.model_id, tier: modelTestTier(row) }))
+  batchTesting.value = true
+  try {
+    const { results } = await api.models.testBatch(items)
+    const byModel = new Map(results.map((row) => [row.model, row]))
+    batchResults.value = batchResults.value.map((row) => ({
+      ...row,
+      result:
+        byModel.get(`${pluginId.value}/${row.modelId}`) ?? byModel.get(row.modelId),
+    }))
+    const passed = batchResults.value.filter((row) => row.result?.ok).length
+    const failed = batchResults.value.length - passed
+    toast(`批量测试完成：${passed} 通过 / ${failed} 失败`, failed === 0 ? 'ok' : 'warn')
+    if (rows.length > tested.length) {
+      toast(`已接入模型共 ${rows.length} 个，单次最多测试 50 个，其余未测。`, 'warn')
+    }
+  } catch (e) {
+    clearBatchResults()
+    toast(errorMessage(e), 'error')
+  } finally {
+    batchTesting.value = false
   }
 }
 
@@ -1025,6 +1112,15 @@ onBeforeUnmount(() => {
             <div class="row">
               <span class="small muted">人工覆盖优先于插件上报，同步不会覆盖人工值</span>
               <span class="badge plain muted">{{ enabledCount }} / {{ detail.catalog.length }} 已接入</span>
+              <button
+                type="button"
+                class="btn sm"
+                :disabled="batchTesting || detail.catalog.length === 0"
+                title="对已接入模型逐个发送最小 chat 请求；档位：轻量 20s / 标准 60s / 推理 2min（流式）"
+                @click="batchTestModels"
+              >
+                {{ batchTesting ? '测试中…' : '批量测试' }}
+              </button>
               <button type="button" class="btn sm" :disabled="syncing" @click="syncCatalog">
                 {{ syncing ? '同步中…' : '同步官网模型' }}
               </button>
@@ -1126,6 +1222,41 @@ onBeforeUnmount(() => {
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <!-- 批量真发测试结果（P12-1/D-39）：每模型档位、状态、耗时、错误、otherAPI -->
+          <div v-if="batchResults.length" class="batch-results">
+            <div class="batch-results-head">
+              <strong>真发测试结果</strong>
+              <span class="small muted">
+                档位按模型元数据自动选择：轻量 ≤20s · 标准 ≤60s · 推理 ≤2min（流式）
+              </span>
+              <button type="button" class="btn sm ghost" @click="clearBatchResults">清除</button>
+            </div>
+            <ul class="batch-results-list">
+              <li v-for="row in batchResults" :key="row.modelId">
+                <span class="mono batch-model">{{ row.modelId }}</span>
+                <span class="badge plain muted" :title="`按 D-39 分档：${MODEL_TEST_TIER_LABELS[row.tier]}`">
+                  {{ MODEL_TEST_TIER_LABELS[row.tier] }}
+                </span>
+                <template v-if="row.result">
+                  <span class="badge plain" :class="row.result.ok ? 'ok' : 'danger'">
+                    {{ row.result.ok ? `通过 · ${row.result.ms} ms` : `失败 · HTTP ${row.result.status || '—'}` }}
+                  </span>
+                  <span
+                    v-if="row.result.otherAPI"
+                    class="badge warn"
+                    :title="row.result.error"
+                  >
+                    厂商说该模型不在此 API，建议换端点
+                  </span>
+                  <span v-else-if="!row.result.ok && row.result.error" class="small muted batch-error">
+                    {{ row.result.error }}
+                  </span>
+                </template>
+                <span v-else class="small muted">无结果</span>
+              </li>
+            </ul>
           </div>
         </section>
       </template>
@@ -1284,5 +1415,46 @@ onBeforeUnmount(() => {
 
 .probe-inline.danger {
   color: var(--danger);
+}
+
+/* Batch model-test results (P12-1/D-39), rendered under the catalog table. */
+.batch-results {
+  margin-top: var(--space-3);
+}
+
+.batch-results-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.batch-results-list {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.batch-results-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.batch-model {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-error {
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

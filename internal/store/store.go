@@ -663,6 +663,32 @@ var migrations = []migrationStep{
 			{"api_logs", "usage_known", "INTEGER NOT NULL DEFAULT 0"},
 		},
 	},
+	{ // version 24: D-34 plugin-model max_output_tokens on the override layer
+		columns: []columnMigration{
+			// The custom-model side already carries max_output_tokens
+			// (custom_models, v8); the plugin side had no place for it. Like
+			// every model_overrides column, NULL means "not overridden" and the
+			// plugin report stays in force. Metadata only: /v1/models publishes
+			// it, routing never rewrites a request with it (2026-11-07 口径).
+			{"model_overrides", "max_output_tokens", "INTEGER"},
+		},
+	},
+	{ // version 25: D-38 soft deprecation + upstream_name mapping
+		columns: []columnMigration{
+			// Soft deprecation: the unix time a catalog row was first reported
+			// missing by a sync. NULL = the model is still in the vendor list.
+			// A marked row stays visible/schedulable for ModelCatalogGracePeriod
+			// (48h, D-38 宽限期) and the next ReplaceModelCatalog deletes rows
+			// past the deadline for good.
+			{"model_catalog", "removed_at", "INTEGER"},
+			// D-38 upstream-name mapping: the upstream model name the row maps
+			// to. May hold the vendor/* / * expansion patterns; unlike the
+			// routing-group patterns (D-28①) this names the upstream side.
+			// Metadata/matching only.
+			{"model_catalog", "upstream_name", "TEXT"},
+			{"model_overrides", "upstream_name", "TEXT"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

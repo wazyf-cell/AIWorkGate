@@ -279,3 +279,67 @@ func TestModelOverridesSurviveCatalogSync(t *testing.T) {
 		t.Fatalf("fallback display_name = %q, want 新名", fallback.DisplayName)
 	}
 }
+
+// D-34 (max_output_tokens) + D-38 (upstream_name): the two new override
+// columns round-trip like the original seven, feed the Apply* merge chain and
+// count as real overridden fields.
+func TestModelOverrideMaxOutputAndUpstreamRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+
+	full := ModelOverride{
+		MaxOutputTokens: intPtr(32768),
+		UpstreamName:    strPtr("  vendor/glm-5.3-turbo  "),
+	}
+	if err := s.PutModelOverride("p1", " glm-5 ", full); err != nil {
+		t.Fatalf("PutModelOverride: %v", err)
+	}
+	got, err := s.GetModelOverrides("p1")
+	if err != nil {
+		t.Fatalf("GetModelOverrides: %v", err)
+	}
+	entry, ok := got["glm-5"]
+	if !ok {
+		t.Fatalf("overrides = %v, want glm-5", got)
+	}
+	if entry.MaxOutputTokens == nil || *entry.MaxOutputTokens != 32768 {
+		t.Fatalf("max_output_tokens = %v, want 32768", entry.MaxOutputTokens)
+	}
+	if entry.UpstreamName == nil || *entry.UpstreamName != "vendor/glm-5.3-turbo" {
+		t.Fatalf("upstream_name = %v, want trimmed vendor/glm-5.3-turbo", entry.UpstreamName)
+	}
+	wantFields := []string{"max_output_tokens", "upstream_name"}
+	if fields := entry.Fields(); !reflect.DeepEqual(fields, wantFields) {
+		t.Fatalf("Fields() = %v, want %v", fields, wantFields)
+	}
+
+	// The merge chain carries both: the plugin-report side gets the output cap
+	// (published by /v1/models), the catalog-row side also gets the mapping.
+	info := entry.ApplyInfo(model.ModelInfo{ID: "glm-5"})
+	if info.MaxOutputTokens != 32768 {
+		t.Fatalf("ApplyInfo max_output_tokens = %d, want 32768", info.MaxOutputTokens)
+	}
+	catalogEntry := entry.ApplyEntry(model.ModelCatalogEntry{ModelID: "glm-5"})
+	if catalogEntry.MaxOutputTokens != 32768 || catalogEntry.UpstreamName != "vendor/glm-5.3-turbo" {
+		t.Fatalf("ApplyEntry = %+v", catalogEntry)
+	}
+
+	// Validation follows context_length: non-positive is rejected, a blank
+	// upstream name means "not overridden" (stored as NULL, never as "").
+	if err := s.PutModelOverride("p2", "m", ModelOverride{MaxOutputTokens: intPtr(0)}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("zero max_output_tokens error = %v, want ErrInvalidArgument", err)
+	}
+	if err := s.PutModelOverride("p2", "m", ModelOverride{UpstreamName: strPtr("   ")}); err != nil {
+		t.Fatalf("blank upstream_name error = %v, want nil (cleared)", err)
+	}
+	if got2, _ := s.GetModelOverrides("p2"); len(got2) != 0 {
+		t.Fatalf("blank-only override stored a row: %v", got2)
+	}
+
+	// An upstream_name with the D-38 vendor/* wildcard survives verbatim.
+	if err := s.PutModelOverride("p2", "m", ModelOverride{UpstreamName: strPtr("vendor/*")}); err != nil {
+		t.Fatalf("wildcard upstream_name: %v", err)
+	}
+	if got3, _ := s.GetModelOverrides("p2"); got3["m"].UpstreamName == nil || *got3["m"].UpstreamName != "vendor/*" {
+		t.Fatalf("wildcard upstream_name = %+v", got3["m"])
+	}
+}

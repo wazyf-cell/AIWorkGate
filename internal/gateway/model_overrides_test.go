@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"net/http"
 	"reflect"
 	"testing"
 
@@ -123,5 +124,49 @@ func TestModelsOverrideSurvivesPluginModelRefetch(t *testing.T) {
 		if entry.Name != "人工名" {
 			t.Fatalf("list %d name = %q, want 人工名", i+1, entry.Name)
 		}
+	}
+}
+
+// D-34: max_output_tokens publishes on /v1/models — the plugin report carries
+// it, the override layer wins, and a model whose source said nothing leaves
+// the field absent. Metadata only: the forwarding path never rewrites a
+// request with it (2026-11-07 口径).
+func TestModelsPublishesMaxOutputTokens(t *testing.T) {
+	st := newOverrideStore(t)
+	overrideCap := 9999
+	if err := st.PutModelOverride("p1", "overridden", store.ModelOverride{
+		MaxOutputTokens: &overrideCap,
+	}); err != nil {
+		t.Fatalf("PutModelOverride: %v", err)
+	}
+
+	reg := newFakeRegistry().add(pluginStatus("p1", true,
+		model.ModelInfo{ID: "capped", Name: "Cap", MaxOutputTokens: 32768},
+		model.ModelInfo{ID: "overridden", Name: "Ov", MaxOutputTokens: 128},
+		model.ModelInfo{ID: "uncapped", Name: "No cap"},
+	), "", "")
+	g := newTestGateway(t, Options{Plugins: reg, Overrides: st.GetModelOverrides})
+
+	rr := serve(g, newGetRequest(t, "/v1/models", clientKey))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
+	}
+	payload := decodeModels(t, rr)
+
+	capped := modelByID(t, payload, "p1/capped")
+	if capped.MaxOutputTokens == nil || *capped.MaxOutputTokens != 32768 {
+		t.Fatalf("capped max_output_tokens = %v, want 32768", capped.MaxOutputTokens)
+	}
+	overridden := modelByID(t, payload, "p1/overridden")
+	if overridden.MaxOutputTokens == nil || *overridden.MaxOutputTokens != 9999 {
+		t.Fatalf("overridden max_output_tokens = %v, want the override 9999", overridden.MaxOutputTokens)
+	}
+	wantOverridden := []string{"max_output_tokens"}
+	if !reflect.DeepEqual(overridden.Overridden, wantOverridden) {
+		t.Fatalf("overridden marker = %v, want %v", overridden.Overridden, wantOverridden)
+	}
+	uncapped := modelByID(t, payload, "p1/uncapped")
+	if uncapped.MaxOutputTokens != nil {
+		t.Fatalf("uncapped max_output_tokens = %v, want absent", uncapped.MaxOutputTokens)
 	}
 }

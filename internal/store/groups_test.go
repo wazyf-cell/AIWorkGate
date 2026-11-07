@@ -339,8 +339,23 @@ func TestPoolTables(t *testing.T) {
 	if err := s.ReplaceModelCatalog("codearts", catalog[:1]); err != nil {
 		t.Fatal(err)
 	}
-	if entries, _ := s.ListModelCatalog("codearts"); len(entries) != 1 {
-		t.Fatalf("catalog after replace = %+v", entries)
+	// D-38 soft deprecation: the dropped model survives its 48h grace period
+	// with a removal stamp instead of vanishing from the listing right away.
+	entries, _ = s.ListModelCatalog("codearts")
+	if len(entries) != 2 {
+		t.Fatalf("catalog after replace = %+v, want glm-5.3 + grace-period free-model", entries)
+	}
+	for _, entry := range entries {
+		switch entry.ModelID {
+		case "glm-5.3":
+			if entry.RemovedAt != 0 {
+				t.Fatalf("kept model stamped removed_at=%d", entry.RemovedAt)
+			}
+		case "free-model":
+			if entry.RemovedAt == 0 {
+				t.Fatalf("dropped model not stamped: %+v", entry)
+			}
+		}
 	}
 	if err := s.DeleteModelCatalog("codearts"); err != nil {
 		t.Fatal(err)

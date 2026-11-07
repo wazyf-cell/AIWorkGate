@@ -32,6 +32,11 @@ const mePageHTML = `<!doctype html>
   th { font-size: 12px; font-weight: 500; color: #667085; }
   .muted { opacity: .6; }
   .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(128,128,128,.35); }
+  .hint { font-size: 12px; opacity: .65; margin: 6px 0 0; }
+  select { padding: 8px 10px; border: 1px solid #c9ced6; border-radius: 8px; font: inherit; background: transparent; color: inherit; max-width: 100%; }
+  pre { background: rgba(127,127,127,.09); border-radius: 8px; padding: 12px; margin: 12px 0 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; font: 12px/1.7 ui-monospace, Consolas, monospace; }
+  .ok-text { color: #1e8e4e; }
+  @media (prefers-color-scheme: dark) { .ok-text { color: #6cc98a; } }
 </style>
 </head>
 <body>
@@ -54,6 +59,18 @@ const mePageHTML = `<!doctype html>
     </div>
 
     <div class="card"><h3 style="margin:0 0 10px;font-size:15px">用量</h3><div id="usage" class="grid"></div></div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:15px">模型</h3>
+      <p class="hint" id="modelsNote" hidden></p>
+      <div class="row" style="flex-wrap:wrap">
+        <select id="modelSel" aria-label="选择模型" hidden></select>
+        <button id="modelCheckBtn" class="ghost" hidden>校验</button>
+        <button id="copyBtn" hidden>复制配置</button>
+      </div>
+      <p class="hint" id="modelCheckOut" hidden></p>
+      <pre id="modelExample" hidden></pre>
+    </div>
 
     <div class="card"><h3 style="margin:0 0 10px;font-size:15px">按模型（近 7 天）</h3><table><thead><tr><th>模型</th><th>请求</th><th>输入 token</th><th>输出 token</th></tr></thead><tbody id="models"></tbody></table></div>
 
@@ -132,8 +149,59 @@ const mePageHTML = `<!doctype html>
     }
   }
 
+  /* P14-4: model selector + copyable config example. GET /me/api/models lists
+     this key's model_scope ∩ the gateway's published models; the 校验 button
+     calls POST /me/api/models/check, which answers 403 model_not_allowed for a
+     model outside the key's scope. The example never contains the real key:
+     "<你的Key>" is a placeholder the user replaces. */
+  function modelExample(model) {
+    return 'POST ' + location.origin + '/v1/chat/completions\n' +
+      'Authorization: Bearer <你的Key>\n' +
+      'Content-Type: application/json\n\n' +
+      '{"model": "' + model + '", "messages": [{"role": "user", "content": "你好"}]}';
+  }
+  function updateModelUI() {
+    var model = $('modelSel').value;
+    $('modelExample').textContent = modelExample(model || '<模型>');
+    $('modelCheckOut').hidden = true;
+  }
+  async function loadModels() {
+    var note = $('modelsNote');
+    var sel = $('modelSel');
+    var empty = $('modelCheckBtn');
+    try {
+      var data = await api('/me/api/models');
+      var ids = Array.isArray(data.models) ? data.models : [];
+      sel.replaceChildren();
+      ids.forEach(function (id) {
+        var opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = id;
+        sel.append(opt);
+      });
+      var has = ids.length > 0;
+      sel.hidden = !has;
+      empty.hidden = !has;
+      $('copyBtn').hidden = !has;
+      $('modelExample').hidden = !has;
+      if (!has) {
+        note.textContent = data.degraded
+          ? '暂时读不到模型目录（插件未就绪），稍后刷新重试。'
+          : '该 Key 当前没有可选模型：模型范围可能为空，或插件模型目录尚未同步。';
+        note.hidden = false;
+      } else {
+        note.hidden = true;
+        updateModelUI();
+      }
+    } catch (e) {
+      sel.hidden = true; empty.hidden = true; $('copyBtn').hidden = true; $('modelExample').hidden = true;
+      note.textContent = '读取模型列表失败：' + e.message;
+      note.hidden = false;
+    }
+  }
+
   async function load() {
-    try { render(await api('/me/api/me')); }
+    try { render(await api('/me/api/me')); await loadModels(); }
     catch (e) { if (e.status === 401) { $('panel').hidden = true; $('login').hidden = false; } else { text(err, e.message); } }
   }
 
@@ -148,6 +216,49 @@ const mePageHTML = `<!doctype html>
   $('logout').addEventListener('click', async () => {
     try { await api('/me/api/session', { method: 'DELETE' }); } catch (_) {}
     $('panel').hidden = true; $('login').hidden = false;
+  });
+  $('modelSel').addEventListener('change', updateModelUI);
+  $('modelCheckBtn').addEventListener('click', async () => {
+    var out = $('modelCheckOut');
+    out.hidden = true;
+    try {
+      var data = await api('/me/api/models/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: $('modelSel').value }) });
+      text(out, '校验通过：' + (data.model || $('modelSel').value) + ' 在该 Key 的模型范围内');
+      out.className = 'hint ok-text';
+      out.hidden = false;
+    } catch (e) {
+      text(out, '校验未通过：' + e.message);
+      out.className = 'hint';
+      out.hidden = false;
+    }
+  });
+  $('copyBtn').addEventListener('click', async () => {
+    var out = $('modelCheckOut');
+    var value = $('modelExample').textContent;
+    var done = function (ok) {
+      text(out, ok ? '已复制配置示例。Key 位置是 <你的Key> 占位符，替换后即可使用。' : '复制失败，请手动选择示例文本复制。');
+      out.className = 'hint' + (ok ? ' ok-text' : '');
+      out.hidden = false;
+    };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value);
+        done(true);
+        return;
+      }
+    } catch (_) { /* fall through to the selection copy */ }
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = value;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.append(ta);
+      ta.focus();
+      ta.select();
+      var ok = document.execCommand('copy');
+      ta.remove();
+      done(ok);
+    } catch (_) { done(false); }
   });
   load();
 })();

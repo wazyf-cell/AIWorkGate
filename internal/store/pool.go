@@ -3,8 +3,11 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"aiworkgate/internal/model"
 )
@@ -464,8 +467,18 @@ func (s *Store) DeleteModelBinding(logical string) error {
 
 // ---------------------------------------------------------------- model catalog
 
-// ReplaceModelCatalog stores the full catalog of one plugin; entries missing
-// from the new slice disappear.
+// ModelCatalogGracePeriod bounds the D-38 soft-deprecation window. A model a
+// sync dropped from the vendor list stays visible and schedulable for this
+// long (宽限期仍可调度); the next ReplaceModelCatalog deletes rows whose
+// removal is older than the window for good (到期真删).
+const ModelCatalogGracePeriod = 48 * time.Hour
+
+// ReplaceModelCatalog stores the full catalog of one plugin. D-38: entries
+// missing from the new slice are no longer deleted outright — their row keeps
+// its enabled flag and is marked removed_at = now, so the model survives the
+// 48h grace period (still schedulable, still listed with a removal stamp) and
+// the NEXT sync physically deletes rows whose stamp has expired. A model that
+// reappears before the deadline is unmarked as if it had never left.
 func (s *Store) ReplaceModelCatalog(pluginID string, entries []model.ModelCatalogEntry) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store: replace model catalog: store is not open")
@@ -505,10 +518,41 @@ func (s *Store) ReplaceModelCatalog(pluginID string, entries []model.ModelCatalo
 		return fmt.Errorf("store: replace model catalog: iterate enabled flags: %w", err)
 	}
 	_ = rows.Close()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM model_catalog WHERE plugin_id = ?`, pluginID); err != nil {
+
+	now := nowUnix()
+	// D-38 cleanup pass: rows whose grace period ran out are deleted now, so
+	// every sync doubles as the expiry sweep and the table never accumulates
+	// dead rows beyond one grace period.
+	cutoff := now - int64(ModelCatalogGracePeriod/time.Second)
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM model_catalog WHERE plugin_id = ? AND removed_at IS NOT NULL AND removed_at <= ?`,
+		pluginID, cutoff); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("store: replace model catalog: clear: %w", err)
+		return fmt.Errorf("store: replace model catalog: prune expired grace rows: %w", err)
 	}
+
+	// D-38 soft removal: models absent from the new list are stamped, not
+	// deleted. Only the first disappearance stamps the row, so repeated syncs
+	// cannot stretch the grace period; re-listed models are unmarked by the
+	// upsert below (removed_at = NULL).
+	incoming := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if id := strings.TrimSpace(entry.ModelID); id != "" {
+			incoming[id] = true
+		}
+	}
+	for id := range enabled {
+		if incoming[id] {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE model_catalog SET removed_at = ? WHERE plugin_id = ? AND model_id = ? AND removed_at IS NULL`,
+			now, pluginID, id); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("store: replace model catalog: mark removed %q: %w", id, err)
+		}
+	}
+
 	for _, entry := range entries {
 		modelID := strings.TrimSpace(entry.ModelID)
 		if modelID == "" {
@@ -526,7 +570,7 @@ func (s *Store) ReplaceModelCatalog(pluginID string, entries []model.ModelCatalo
 		}
 		syncedAt := entry.SyncedAt
 		if syncedAt == 0 {
-			syncedAt = nowUnix()
+			syncedAt = now
 		}
 		exposed := true
 		if previous, ok := enabled[modelID]; ok {
@@ -534,11 +578,24 @@ func (s *Store) ReplaceModelCatalog(pluginID string, entries []model.ModelCatalo
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO model_catalog
 			(plugin_id, model_id, display_name, vendor, multiplier, thinking,
-			 context_length, vision, free, enabled, synced_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 context_length, vision, free, enabled, synced_at, upstream_name, removed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+			ON CONFLICT(plugin_id, model_id) DO UPDATE SET
+				display_name = excluded.display_name,
+				vendor = excluded.vendor,
+				multiplier = excluded.multiplier,
+				thinking = excluded.thinking,
+				context_length = excluded.context_length,
+				vision = excluded.vision,
+				free = excluded.free,
+				enabled = excluded.enabled,
+				synced_at = excluded.synced_at,
+				upstream_name = excluded.upstream_name,
+				removed_at = NULL`,
 			pluginID, modelID, nullStr(strings.TrimSpace(entry.DisplayName)),
 			nullStr(strings.TrimSpace(entry.Vendor)), entry.Multiplier, nullStr(thinking),
-			entry.ContextLength, boolInt(entry.Vision), boolInt(entry.Free), boolInt(exposed), syncedAt); err != nil {
+			entry.ContextLength, boolInt(entry.Vision), boolInt(entry.Free), boolInt(exposed), syncedAt,
+			nullStr(strings.TrimSpace(entry.UpstreamName))); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("store: replace model catalog: %w", err)
 		}
@@ -549,7 +606,11 @@ func (s *Store) ReplaceModelCatalog(pluginID string, entries []model.ModelCatalo
 	return nil
 }
 
-// ListModelCatalog returns one plugin's catalog ordered by model id.
+// ListModelCatalog returns one plugin's catalog ordered by model id. D-38:
+// rows whose grace period expired are hidden as if deleted (到期真删 semantics
+// before the next sync's cleanup pass physically removes them); rows still
+// inside the grace window are listed with RemovedAt set so callers can tell a
+// soft-removed model from an active one.
 func (s *Store) ListModelCatalog(pluginID string) ([]model.ModelCatalogEntry, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store: list model catalog: store is not open")
@@ -562,8 +623,11 @@ func (s *Store) ListModelCatalog(pluginID string) ([]model.ModelCatalogEntry, er
 	rows, err := s.db.QueryContext(ctx, `SELECT plugin_id, model_id, COALESCE(display_name, ''),
 		COALESCE(vendor, ''), COALESCE(multiplier, 0), COALESCE(thinking, ''),
 		COALESCE(context_length, 0), COALESCE(vision, 0), COALESCE(free, 0),
-		COALESCE(enabled, 1), COALESCE(synced_at, 0)
-		FROM model_catalog WHERE plugin_id = ? ORDER BY model_id`, pluginID)
+		COALESCE(enabled, 1), COALESCE(synced_at, 0),
+		COALESCE(upstream_name, ''), COALESCE(removed_at, 0)
+		FROM model_catalog WHERE plugin_id = ?
+		  AND (removed_at IS NULL OR removed_at > ?)
+		ORDER BY model_id`, pluginID, nowUnix()-int64(ModelCatalogGracePeriod/time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("store: list model catalog: %w", err)
 	}
@@ -577,7 +641,8 @@ func (s *Store) ListModelCatalog(pluginID string) ([]model.ModelCatalogEntry, er
 			vision, free, exposed int64
 		)
 		if err := rows.Scan(&entry.PluginID, &entry.ModelID, &entry.DisplayName, &entry.Vendor,
-			&entry.Multiplier, &thinking, &entry.ContextLength, &vision, &free, &exposed, &entry.SyncedAt); err != nil {
+			&entry.Multiplier, &thinking, &entry.ContextLength, &vision, &free, &exposed, &entry.SyncedAt,
+			&entry.UpstreamName, &entry.RemovedAt); err != nil {
 			return nil, fmt.Errorf("store: list model catalog: scan: %w", err)
 		}
 		entry.Vision = vision != 0
@@ -598,6 +663,8 @@ func (s *Store) ListModelCatalog(pluginID string) ([]model.ModelCatalogEntry, er
 // publishes a context window. Callers spell the same model "gpt-4o",
 // "openai/gpt-4o" or "plugin/openai/gpt-4o"; an exact id wins, then a
 // slash-suffix match either way. Unknown models return zero, not an error.
+// D-38: rows past their grace period never match — a fully removed model has
+// no context window to publish.
 func (s *Store) FindModelContextLength(model string) (pluginID, modelID string, contextLength int) {
 	model = strings.TrimSpace(model)
 	if s == nil || s.db == nil || model == "" {
@@ -607,7 +674,9 @@ func (s *Store) FindModelContextLength(model string) (pluginID, modelID string, 
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT plugin_id, model_id, context_length
 		FROM model_catalog WHERE COALESCE(context_length, 0) > 0
-		ORDER BY plugin_id, model_id`)
+		  AND (removed_at IS NULL OR removed_at > ?)
+		ORDER BY plugin_id, model_id`,
+		nowUnix()-int64(ModelCatalogGracePeriod/time.Second))
 	if err != nil {
 		return "", "", 0
 	}
@@ -679,4 +748,138 @@ func (s *Store) DeleteModelCatalog(pluginID string) error {
 		return fmt.Errorf("store: delete model catalog: %w", err)
 	}
 	return nil
+}
+
+// ModelCatalogState reports one model's catalog membership with disabled rows
+// included — the store-side half of the D-33 classification (2026-11-07 拍板):
+//
+//   - found=false: the catalog has no row for the id → the gateway answers
+//     404 model_not_found (D-60 caliber unchanged; unknown stays unknown);
+//   - found=true, enabled=false: the row exists with 接入 off → the gateway
+//     answers 400 invalid_request_error/model_disabled;
+//   - found=true, enabled=true: enabled row missing from the caller's pool
+//     view (stale snapshot) → the request stays alive.
+//
+// D-38: rows past their grace period count as absent, matching the "到期真删"
+// semantics of ListModelCatalog.
+func (s *Store) ModelCatalogState(pluginID, modelID string) (found, enabled bool, err error) {
+	if s == nil || s.db == nil {
+		return false, false, fmt.Errorf("store: model catalog state: store is not open")
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	modelID = strings.TrimSpace(modelID)
+	if pluginID == "" || modelID == "" {
+		return false, false, fmt.Errorf("store: model catalog state: %w: plugin_id and model_id are required", ErrInvalidArgument)
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	var on int64
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(enabled, 1) FROM model_catalog
+		 WHERE plugin_id = ? AND model_id = ? AND (removed_at IS NULL OR removed_at > ?)`,
+		pluginID, modelID, nowUnix()-int64(ModelCatalogGracePeriod/time.Second)).Scan(&on)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("store: model catalog state: %w", err)
+	}
+	return true, on != 0, nil
+}
+
+// SetModelCatalogEnabledGlob flips the "接入" switch of every catalog row of
+// one plugin whose model id matches pattern, and returns the number of rows
+// changed (D-33 批量禁用). pattern supports the `*`/`?` globs of the routing
+// groups (D-28①): `*` spans any run including `/`, `?` matches exactly one
+// character; a pattern without wildcards is an exact id. Case-sensitive, like
+// model ids. Matching nothing returns (0, nil) — the count is the contract —
+// while a blank pattern is rejected outright so a stray empty field cannot
+// disable a whole catalog.
+func (s *Store) SetModelCatalogEnabledGlob(pluginID, pattern string, enabled bool) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store: set model enabled glob: store is not open")
+	}
+	pluginID = strings.TrimSpace(pluginID)
+	pattern = strings.TrimSpace(pattern)
+	if pluginID == "" {
+		return 0, fmt.Errorf("store: set model enabled glob: %w: plugin_id is required", ErrInvalidArgument)
+	}
+	if pattern == "" {
+		return 0, fmt.Errorf("store: set model enabled glob: %w: pattern is required", ErrInvalidArgument)
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT model_id FROM model_catalog WHERE plugin_id = ?`, pluginID)
+	if err != nil {
+		return 0, fmt.Errorf("store: set model enabled glob: %w", err)
+	}
+	var matched []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("store: set model enabled glob: scan: %w", err)
+		}
+		if catalogGlobMatch(pattern, id) {
+			matched = append(matched, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("store: set model enabled glob: iterate: %w", err)
+	}
+	_ = rows.Close()
+	if len(matched) == 0 {
+		return 0, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(matched)), ", ")
+	args := make([]any, 0, len(matched)+2)
+	args = append(args, boolInt(enabled), pluginID)
+	for _, id := range matched {
+		args = append(args, id)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE model_catalog SET enabled = ? WHERE plugin_id = ? AND model_id IN (`+placeholders+`)`,
+		args...)
+	if err != nil {
+		return 0, fmt.Errorf("store: set model enabled glob: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: set model enabled glob: rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
+// catalogGlobMatch is the store-local copy of the routing-group glob
+// (app/routing_groups.go globMatch): `*` spans any run including `/` and `?`
+// matches exactly one character, anchored both ends. Model ids contain
+// slashes, which rules out path.Match. Case-sensitive, like model ids.
+func catalogGlobMatch(pattern, id string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return false
+	}
+	if pattern == "*" {
+		return true
+	}
+	if !strings.ContainsAny(pattern, "*?") {
+		return pattern == id
+	}
+	var b strings.Builder
+	b.WriteString("^")
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	b.WriteString("$")
+	re, err := regexp.Compile(b.String())
+	return err == nil && re.MatchString(id)
 }

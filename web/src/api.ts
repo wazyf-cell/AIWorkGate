@@ -1840,6 +1840,41 @@ export interface CustomModelTestResult {
 }
 
 /* ------------------------------------------------------------------ */
+/* Model test (P12-1, D-27/D-39)                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One row of POST /api/models/test (magpie Result shape). `status` is the HTTP
+ * status the plugin answered (0 for a transport failure); `error` carries a
+ * redacted human reason; `otherAPI` marks "the vendor says this model does not
+ * live on this API" — the UI should suggest another endpoint, not declare the
+ * model dead. The tier (light 20s / standard 60s / reasoning 2min streamed,
+ * D-39) is chosen by the host and not part of the payload.
+ */
+export interface ModelTestResult {
+  ok: boolean
+  status: number
+  ms: number
+  model: string
+  error?: string
+  otherAPI: boolean
+}
+
+export interface ModelTestItem {
+  provider: string
+  model: string
+}
+
+/**
+ * POST /api/models/test: providers run in parallel (same-provider models run
+ * sequentially), results keep the request order, and one provider failing
+ * never affects the others. At most 50 items per call (server cap).
+ */
+export interface ModelTestBatchResponse {
+  results: ModelTestResult[]
+}
+
+/* ------------------------------------------------------------------ */
 /* Connectivity diagnostics                                            */
 /* ------------------------------------------------------------------ */
 
@@ -2641,6 +2676,16 @@ export const api = {
       return request<CustomModelTestResult>(`/custom-models/${encodeURIComponent(id)}/test`, {
         method: 'POST',
         body: '{}',
+      })
+    },
+  },
+
+  /** 模型真发测试（P12-1/D-39）：对插件模型逐个发送最小 chat 请求。 */
+  models: {
+    testBatch(items: ModelTestItem[]): Promise<ModelTestBatchResponse> {
+      return request<ModelTestBatchResponse>('/models/test', {
+        method: 'POST',
+        body: JSON.stringify({ items }),
       })
     },
   },

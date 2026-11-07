@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // KeyUsageRange sums a key's day buckets in [fromDay, toDay] (inclusive).
@@ -124,6 +125,51 @@ func (s *Store) RecentKeyLogs(keyID string, limit int) ([]MeLogRow, error) {
 			return nil, fmt.Errorf("store: recent key logs: scan: %w", err)
 		}
 		row.UsageKnown = usageKnown != 0
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// MeEnabledCatalogModel is one enabled ("接入") catalog row of one plugin.
+type MeEnabledCatalogModel struct {
+	PluginID string
+	ModelID  string
+}
+
+// MeEnabledCatalogModels lists every enabled model_catalog row across plugins,
+// ordered for a stable listing (P14-4 /me model selector).
+//
+// "启用" here is the /v1/models availability rule: the resource page's 接入
+// flag (ReplaceModelCatalog keeps the user's choices across syncs) AND not
+// past the D-38 delisting grace window. The removed_at predicate mirrors
+// ListModelCatalog/FindModelContextLength exactly: a row removed by a sync is
+// still available during the 48h grace window and disappears once it runs out
+// (到期真删). The /me selector uses this list only as the persisted fallback
+// universe — when the live scheduling snapshot cannot answer for a pool (or at
+// all), a plugin enablement or pool 上游 toggle the snapshot would normally
+// hide is not visible here, so the gateway's own scope/admission check stays
+// the authoritative gate.
+func (s *Store) MeEnabledCatalogModels() ([]MeEnabledCatalogModel, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store: me enabled catalog models: store is not open")
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT plugin_id, model_id
+		FROM model_catalog
+		WHERE COALESCE(enabled, 1) = 1 AND (removed_at IS NULL OR removed_at > ?)
+		ORDER BY plugin_id, model_id`,
+		nowUnix()-int64(ModelCatalogGracePeriod/time.Second))
+	if err != nil {
+		return nil, fmt.Errorf("store: me enabled catalog models: %w", err)
+	}
+	defer rows.Close()
+	out := make([]MeEnabledCatalogModel, 0, 32)
+	for rows.Next() {
+		var row MeEnabledCatalogModel
+		if err := rows.Scan(&row.PluginID, &row.ModelID); err != nil {
+			return nil, fmt.Errorf("store: me enabled catalog models: scan: %w", err)
+		}
 		out = append(out, row)
 	}
 	return out, rows.Err()
