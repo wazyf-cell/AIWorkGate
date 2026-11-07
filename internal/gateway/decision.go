@@ -97,6 +97,20 @@ func (g *Gateway) handleDecision(w http.ResponseWriter, r *http.Request, rec *re
 			"请求体必须是 JSON 对象")
 		return
 	}
+	// D-18⑧/F-12: an image-bearing request is single-question, plain-text
+	// requests carry at most 16 questions. Reject locally instead of letting
+	// the upstream refuse after the upload.
+	hasImage, questions, probeOK := decisionImageDetection(body)
+	if probeOK && questions > decisionMaxTextQuestions {
+		g.fail(w, rec, http.StatusBadRequest, "invalid_request_error", "too_many_questions",
+			fmt.Sprintf("决策请求最多 %d 题（当前 %d 题）", decisionMaxTextQuestions, questions))
+		return
+	}
+	if probeOK && hasImage && questions > 1 {
+		g.fail(w, rec, http.StatusBadRequest, "invalid_request_error", "image_single_question",
+			"带图决策请求只支持单题：请把图片题单独发送")
+		return
+	}
 	payload["model"], _ = json.Marshal(upstream.ModelID)
 	forwarded, err := json.Marshal(payload)
 	if err != nil {
@@ -148,6 +162,40 @@ func (g *Gateway) handleDecision(w http.ResponseWriter, r *http.Request, rec *re
 	h.Set(sourceHeader, rec.source)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
+}
+
+// decisionQuestionLimits mirrors the JEV upstream contract (plan F-12):
+// plain-text requests carry 1..16 questions, an image-bearing request carries
+// exactly one. Enforcing them locally (D-18⑧ spirit: reject, never forward a
+// doomed request) saves a pointless upstream round trip.
+const decisionMaxTextQuestions = 16
+
+// decisionImageDetection reports whether the request carries an image and how
+// many questions it asks. Images may ride top-level (`image`) or per question
+// (`questions[i].image`); the upstream accepts both shapes.
+func decisionImageDetection(body []byte) (hasImage bool, questions int, ok bool) {
+	var probe struct {
+		Image     json.RawMessage   `json:"image"`
+		Questions []json.RawMessage `json:"questions"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return false, 0, false
+	}
+	hasImage = hasImageField(probe.Image)
+	for _, q := range probe.Questions {
+		var qProbe struct {
+			Image json.RawMessage `json:"image"`
+		}
+		if json.Unmarshal(q, &qProbe) == nil && hasImageField(qProbe.Image) {
+			hasImage = true
+		}
+	}
+	return hasImage, len(probe.Questions), true
+}
+
+func hasImageField(raw json.RawMessage) bool {
+	image := strings.TrimSpace(string(raw))
+	return image != "" && image != "null" && image != `""`
 }
 
 // readDecisionBody enforces the local size limits before anything leaves the

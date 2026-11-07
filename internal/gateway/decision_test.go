@@ -143,3 +143,43 @@ func TestDecisionErrorPassthroughNoRetry(t *testing.T) {
 		t.Fatalf("decision upstream called %d times, want exactly 1 (no retry)", calls)
 	}
 }
+
+// D-18⑧/F-12 本地预判回归：带图只收单题、纯文本最多 16 题，超限在本地拒而
+// 不发上游；合法形状照常转发。
+func TestDecisionLocalQuestionLimits(t *testing.T) {
+	srv, rec := newUpstreamServer(t, jsonResponder(http.StatusOK, `{"answers":[]}`))
+	g := decisionGateway(t, srv.URL, "systemone", "m")
+
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"image single question ok", `{"image":"iVBOR","questions":[{"type":"choice","image":"x"}]}`, http.StatusOK},
+		{"top-level image two questions rejected", `{"image":"iVBOR","questions":[{"type":"choice"},{"type":"noul"}]}`, http.StatusBadRequest},
+		{"per-question image two questions rejected", `{"questions":[{"type":"choice","image":"x"},{"type":"noul"}]}`, http.StatusBadRequest},
+		{"image empty string is plain text", `{"image":"","questions":[{"type":"noul"},{"type":"noul"}]}`, http.StatusOK},
+		{"image null is plain text", `{"image":null,"questions":[{"type":"noul"},{"type":"noul"}]}`, http.StatusOK},
+		{"sixteen text questions ok", multiQuestions(16), http.StatusOK},
+		{"seventeen text questions rejected", multiQuestions(17), http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := serve(g, decisionRequest(t, "/v1/systemone", tc.body))
+			if rr.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", rr.Code, tc.want, rr.Body.String())
+			}
+		})
+	}
+	if got := rec.count(); got != 4 {
+		t.Fatalf("upstream calls = %d, want 4 (rejected shapes never forwarded)", got)
+	}
+}
+
+func multiQuestions(n int) string {
+	qs := make([]string, n)
+	for i := range qs {
+		qs[i] = `{"type":"noul"}`
+	}
+	return `{"questions":[` + strings.Join(qs, ",") + `]}`
+}
