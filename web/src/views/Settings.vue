@@ -12,6 +12,8 @@ import {
   type NotifyEventKind,
   type NotifyStatus,
   type NotifyUpdate,
+  type RedactStatus,
+  type RedactUpdate,
 } from '../api'
 import { formatLatency, formatTimestamp } from '../format'
 import CustomModelsPanel from '../components/CustomModelsPanel.vue'
@@ -142,6 +144,8 @@ const NOTIFY_EVENTS: { value: NotifyEventKind; label: string }[] = [
   { value: 'quota_low', label: '额度不足' },
   { value: 'quota_expiring', label: '额度即将失效' },
   { value: 'quota_resetting', label: '重置前未用完' },
+  { value: 'auth_spike', label: '认证失败激增（S5-4）' },
+  { value: 'usage_spike', label: 'Key 用量异常（S7-5）' },
 ]
 
 const notifyForm = reactive({
@@ -203,6 +207,74 @@ async function loadNotify() {
     applyNotifyStatus(await api.notify.get())
   } catch (e) {
     error.value = errorMessage(e)
+  }
+}
+
+/** 日志脱敏（P10 收尾）：走独立的 /api/redact，保存即热更新生效。 */
+const redactForm = reactive({
+  enabled: false,
+  route_aware: true,
+  kinds_text: '',
+  categories_text: '',
+})
+const redactSaving = ref(false)
+
+/** "SECRET, EMAIL" / 换行 → 去重去空后的数组。 */
+function redactListFromText(text: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of text.split(/[,，\s]+/)) {
+    const value = part.trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    out.push(value)
+  }
+  return out
+}
+
+function applyRedactStatus(status: RedactStatus) {
+  redactForm.enabled = Boolean(status?.enabled)
+  redactForm.route_aware = status?.route_aware !== false
+  redactForm.kinds_text = Array.isArray(status?.kinds) ? status.kinds.join(', ') : ''
+  redactForm.categories_text = Array.isArray(status?.categories) ? status.categories.join(', ') : ''
+}
+
+async function loadRedact() {
+  try {
+    applyRedactStatus(await api.redact.get())
+  } catch (e) {
+    error.value = errorMessage(e)
+  }
+}
+
+async function saveRedact() {
+  redactSaving.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const update: RedactUpdate = {
+      enabled: redactForm.enabled,
+      route_aware: redactForm.route_aware,
+      kinds: redactListFromText(redactForm.kinds_text),
+      categories: redactListFromText(redactForm.categories_text),
+    }
+    applyRedactStatus(await api.redact.update(update))
+    // 同步整页保存的基准，防止「保存设置」把旧的 redact 段写回 config.json。
+    loaded.value = {
+      ...loaded.value,
+      redact: {
+        ...(loaded.value.redact as Record<string, unknown> | undefined),
+        enabled: redactForm.enabled,
+        route_aware: redactForm.route_aware,
+        kinds: redactListFromText(redactForm.kinds_text),
+        categories: redactListFromText(redactForm.categories_text),
+      },
+    }
+    message.value = '日志脱敏已保存并即时生效（网关按新配置重建，限速窗口随之清零）。'
+  } catch (e) {
+    error.value = errorMessage(e)
+  } finally {
+    redactSaving.value = false
   }
 }
 
@@ -724,6 +796,7 @@ onMounted(async () => {
     loadClientKeys(),
     loadPluginIDs(),
     loadNotify(),
+    loadRedact(),
     loadProbes(),
   ])
   try {
@@ -1546,6 +1619,62 @@ async function saveLanPassword() {
         </div>
 
         <span class="help">本页所有分区共用一个「保存设置」，入口在顶部模块栏右侧。</span>
+      </div>
+    </section>
+
+    <!-- P10 收尾：日志脱敏。独立保存（PUT /api/redact），保存即热更新生效。 -->
+    <section v-show="activeTab === 'ops'" class="card">
+      <div class="card-head">
+        <h2>日志脱敏</h2>
+        <button type="button" class="btn primary" :disabled="redactSaving" @click="saveRedact">
+          {{ redactSaving ? '保存中…' : '保存脱敏' }}
+        </button>
+      </div>
+      <div class="card-body stack">
+        <div class="field">
+          <label class="switch">
+            <input v-model="redactForm.enabled" type="checkbox" />
+            <span class="switch-track"></span>
+            启用请求脱敏
+          </label>
+          <span class="help">发给上游前把邮箱、密钥、证件号等替换为占位符，回程自动还原（上游与日志都看不到原值）。关闭时转发链路零改动。</span>
+        </div>
+        <div class="field">
+          <label class="switch">
+            <input v-model="redactForm.route_aware" type="checkbox" />
+            <span class="switch-track"></span>
+            Route 感知
+          </label>
+          <span class="help">同一个值在不同插件间脱成不同指纹，保护上游的提示词缓存。</span>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="redact-kinds">脱敏类型（可留空）</label>
+            <textarea
+              id="redact-kinds"
+              v-model="redactForm.kinds_text"
+              class="input"
+              rows="3"
+              placeholder="SECRET, EMAIL, PHONE, API_KEY, TOKEN, PASSWORD, ID_CARD …"
+            ></textarea>
+            <span class="help">逗号或空格分隔；留空用规则默认表。类型词由脱敏规则表解释，未知的会被忽略。</span>
+          </div>
+          <div class="field">
+            <label for="redact-categories">规则类别（可留空）</label>
+            <textarea
+              id="redact-categories"
+              v-model="redactForm.categories_text"
+              class="input"
+              rows="3"
+              placeholder="ssn, passport, iban, birthday, mac, serial, ip …"
+            ></textarea>
+            <span class="help">逗号或空格分隔；留空用默认类别。只接受规则表里的类别 id，保存时校验。</span>
+          </div>
+        </div>
+        <span class="help">
+          指纹密钥默认存放在数据目录的 redact.key（如需更换路径请直接编辑 config.json 的 redact.key_file）。
+          保存后立即生效，无需重启宿主。
+        </span>
       </div>
     </section>
 

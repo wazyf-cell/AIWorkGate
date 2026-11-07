@@ -1,5 +1,5 @@
 // Package market is the P2 plugin-market base: three package sources (npm, a
-// GitHub spec that fails loudly, a local directory), an npm search wrapper, an
+// GitHub branch-archive source, a local directory), an npm search wrapper, an
 // install pipeline that ends in a prepared directory plus an install record, and
 // an update check that reports from→to version diffs.
 //
@@ -23,9 +23,14 @@
 //     resolves through the registry metadata, downloads the version's tarball,
 //     records its SHA256 and extracts it.
 //   - GitHub: github:owner/repo (or gh:, or a github.com URL) parses into a
-//     GitHub spec, and every operation on it fails with ErrGitHubUnreachable
-//     instead of hanging or failing silently: the box currently has no reachable
-//     proxy for github.com, and the error text says so (configure a proxy).
+//     GitHub spec and installs the branch archive tarball
+//     (github.com/<owner>/<repo>/archive/refs/heads/<branch>.tar.gz, D-04).
+//     github:owner/repo@branch selects the branch; without one main is tried
+//     first and master second. Transport failures wrap ErrGitHubUnreachable
+//     (with the "configure a proxy" hint), a 404 on every tried branch wraps
+//     ErrGitHubNotFound, and a corrupt archive fails at extraction with the
+//     tarball error. The default transport honours the environment proxy, so
+//     the same proxy rule that reaches the npm registry reaches github.com.
 //   - local: an existing directory (or file:…/…). No network: the payload is
 //     copied into the prepared root and a bridge manifest is generated when the
 //     directory ships no manifest.json.

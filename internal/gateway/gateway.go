@@ -806,6 +806,10 @@ func requestPurpose(r *http.Request) string {
 		return "responses"
 	case path == "/v1/messages":
 		return "messages"
+	case path == "/v1/messages/count_tokens":
+		// D-51: logged as its own purpose so operators can tell the estimate
+		// reads from real inference traffic (it is not billable either way).
+		return "count_tokens"
 	case path == "/v1/systemone":
 		return "systemone"
 	case path == "/v1/decision":
@@ -864,6 +868,11 @@ func (g *Gateway) route(w http.ResponseWriter, r *http.Request, rec *reqRecord) 
 		g.handleEnvelope(w, r, rec, envelopeCompletions)
 	case r.Method == http.MethodPost && path == "/v1/responses":
 		g.handleEnvelope(w, r, rec, envelopeResponses)
+	case r.Method == http.MethodPost && path == "/v1/messages/count_tokens":
+		// D-51: the local token estimate. Deliberately answered before the
+		// custom/scheduler paths — nothing upstream is called and the endpoint
+		// is not in isInferencePath, so it never consumes a key's daily quota.
+		g.handleCountTokens(w, r, rec)
 	case r.Method == http.MethodPost && path == "/v1/messages":
 		// handleMessages owns its body parsing (anthropic.go), so the key's
 		// scope/binding rules are applied here on the buffered body.

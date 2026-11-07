@@ -528,11 +528,14 @@ type Scheduler struct {
 	// coalesces them by key and flushes after cooldownPersistDelay.
 	cooldownStore CooldownStore
 	cooldownLog   func(msg string, fields map[string]any)
-	cooldownCh    chan cooldownWrite
-	cooldownStop  chan struct{}
-	cooldownDone  chan struct{}
-	cooldownOnce  sync.Once // stop is idempotent
-	restoreOnce   sync.Once
+	// eventLog receives operational scheduler events (D-46② strategy panic
+	// fallback). Nil disables the logging.
+	eventLog     func(msg string, fields map[string]any)
+	cooldownCh   chan cooldownWrite
+	cooldownStop chan struct{}
+	cooldownDone chan struct{}
+	cooldownOnce sync.Once // stop is idempotent
+	restoreOnce  sync.Once
 }
 
 type cooldownRow struct {
@@ -617,6 +620,7 @@ func New(opts Options) *Scheduler {
 		stickyStore:   opts.Sticky,
 		cooldownStore: opts.Cooldowns,
 		cooldownLog:   opts.Log,
+		eventLog:      opts.Log,
 		nowFn:         now,
 		sleepFn:       sleep,
 		randFn:        random,
@@ -887,6 +891,14 @@ func (s *Scheduler) applyReportLocked(key AccountKey, model string, cause Failur
 	// D-24: attribute the failure before picking the tier. An empty class
 	// keeps the legacy "unclassified failures do not cool down" behavior (a
 	// request-shaped 4xx such as 400 must not park the account).
+	// D-46①: a NoPenalty report (duplicate error signature inside one dispatch
+	// round, i.e. the failure follows the request/IP, not the account) records
+	// nothing: no strike counter, no cooldown, no circuit evidence. Returning
+	// before any state write keeps the report free of side effects except the
+	// credit accumulation above.
+	if cause.NoPenalty {
+		return
+	}
 	why := ClassifyCooldown(status, cause.Message)
 	if why == "" {
 		// A non-5xx answer proves the pool is alive.
@@ -2050,6 +2062,36 @@ func (s *Scheduler) evaluateAccountsLocked(pool *Pool, modelID string, req Reque
 // selectAccountLocked applies the pool strategy to the selectable accounts.
 func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []float64) {
 	scores := s.compositeScores(pc.pool, pc.selectable, now)
+	return s.strategyIndexLocked(pc, now, scores), scores
+}
+
+// strategyIndexLocked runs the in-pool strategy over the selectable accounts
+// (kept in pool.Accounts order) and returns the winning index. It is the
+// D-46② fail-open boundary: a panic inside a strategy comparison (a future
+// strategy, a bad numeric edge in a less function, a panicking rand hook) is
+// contained here, logged once, and answered with the unweighted original
+// order — selectable[0] — instead of crashing the request goroutine. The
+// selection layer must not turn a scheduling bug into a dead request; the
+// panic is a routing-quality bug, and serving in configured order is the
+// closest safe answer.
+func (s *Scheduler) strategyIndexLocked(pc *poolCandidate, now int64, scores []float64) (idx int) {
+	defer func() {
+		if r := recover(); r != nil {
+			idx = 0
+			if s != nil && s.eventLog != nil {
+				plugin, strategy := "", ""
+				if pc != nil && pc.pool != nil {
+					plugin = pc.pool.PluginID
+					strategy = pc.pool.Strategy
+				}
+				s.eventLog("scheduler strategy panic fallback", map[string]any{
+					"plugin":   plugin,
+					"strategy": strategy,
+					"panic":    fmt.Sprintf("%v", r),
+				})
+			}
+		}
+	}()
 	accounts := pc.selectable
 	strategy := pc.pool.Strategy
 	if !ValidStrategy(strategy) {
@@ -2057,32 +2099,32 @@ func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []fl
 	}
 	switch strategy {
 	case StrategyRandom:
-		return uniformIndex(s.randFloat(), len(accounts)), scores
+		return uniformIndex(s.randFloat(), len(accounts))
 	case StrategyWeighted3:
-		return weightedIndex(scores, s.randFloat()), scores
+		return weightedIndex(scores, s.randFloat())
 	case StrategyP2C:
-		return p2cIndex(scores, s.randFloat(), s.randFloat()), scores
+		return p2cIndex(scores, s.randFloat(), s.randFloat())
 	case StrategyRemainingFirst:
 		return indexByLess(accounts, func(a, b Account) bool {
 			if a.Remaining != b.Remaining {
 				return a.Remaining > b.Remaining
 			}
 			return expiryLess(a.ExpiresAt, b.ExpiresAt)
-		}), scores
+		})
 	case StrategyExpiringFirst:
-		return indexByLess(accounts, expiringFirstLess), scores
+		return indexByLess(accounts, expiringFirstLess)
 	case StrategyFree:
 		if idx, ok := s.probePickLocked(accounts); ok {
-			return idx, scores
+			return idx
 		}
-		return indexByLess(accounts, freeFirstLess), scores
+		return indexByLess(accounts, freeFirstLess)
 	case StrategyPace:
 		if idx, ok := s.probePickLocked(accounts); ok {
-			return idx, scores
+			return idx
 		}
 		return indexByLess(accounts, func(a, b Account) bool {
 			return paceLess(a, b, now)
-		}), scores
+		})
 	case StrategyFixed:
 		return indexByLess(accounts, func(a, b Account) bool {
 			if a.Priority != b.Priority {
@@ -2094,7 +2136,7 @@ func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []fl
 				return wa > wb
 			}
 			return a.ID < b.ID
-		}), scores
+		})
 	default: // credit_first
 		return indexByLess(accounts, func(a, b Account) bool {
 			sa, ka := expiryOf(a.ExpiresAt)
@@ -2116,7 +2158,7 @@ func (s *Scheduler) selectAccountLocked(pc *poolCandidate, now int64) (int, []fl
 				return wa > wb
 			}
 			return a.ID < b.ID
-		}), scores
+		})
 	}
 }
 

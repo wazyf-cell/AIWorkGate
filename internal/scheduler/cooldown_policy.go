@@ -67,6 +67,14 @@ type FailureCause struct {
 	// ResetAt, when positive, is the upstream window reset unix time. Only
 	// the quota_exhausted tier consumes it, capped at 30 minutes.
 	ResetAt int64
+	// NoPenalty (D-46①) marks a failure whose cause is not attributable to the
+	// account: the same error signature (status + normalized error text) was
+	// already reported for another account inside one dispatch round, which
+	// means the block follows the request/IP/upstream and not the credential.
+	// Such a report records no strikes, no cooldowns and no pool circuit
+	// evidence — punishing every candidate with the identical error would park
+	// a whole pool for one shared fault. Credits bookkeeping is unaffected.
+	NoPenalty bool
 }
 
 // quotaMarkers are the error-text markers of an upstream quota/credit

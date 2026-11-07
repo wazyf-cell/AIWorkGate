@@ -189,6 +189,9 @@ func (a *App) webOptions() webui.Options {
 		GetNotify:  a.notifyStatus,
 		SaveNotify: a.saveNotifySettings,
 		TestNotify: a.testNotify,
+
+		GetRedact:  a.redactStatus,
+		SaveRedact: a.saveRedactConfig,
 	}
 }
 
@@ -372,30 +375,34 @@ func (a *App) saveSettings(raw json.RawMessage) error {
 	if a.apiLog != nil {
 		a.apiLog.SetDebug(next.Logging.DebugBody)
 	}
-	if g, ok := a.gatewayHandler.(interface{ SetDebug(bool) }); ok {
+	gw := a.currentGateway()
+	if g, ok := gw.(interface{ SetDebug(bool) }); ok {
 		g.SetDebug(next.Logging.DebugBody)
 	}
-	if g, ok := a.gatewayHandler.(interface{ SetCorsOrigins([]string) }); ok {
+	if g, ok := gw.(interface{ SetCorsOrigins([]string) }); ok {
 		g.SetCorsOrigins(next.Gateway.CorsAllowOrigins)
 	}
-	if g, ok := a.gatewayHandler.(interface{ SetAllowIPs([]string) }); ok {
+	if g, ok := gw.(interface{ SetAllowIPs([]string) }); ok {
 		g.SetAllowIPs(next.Gateway.AllowIPs)
 	}
-	if g, ok := a.gatewayHandler.(interface{ SetTrustedProxies([]string) }); ok {
+	if g, ok := gw.(interface{ SetTrustedProxies([]string) }); ok {
 		g.SetTrustedProxies(next.Gateway.TrustedProxies)
 	}
-	if g, ok := a.gatewayHandler.(interface{ SetServiceMode(string) }); ok {
+	if g, ok := gw.(interface{ SetServiceMode(string) }); ok {
 		g.SetServiceMode(next.Gateway.ServiceMode)
 	}
-	if g, ok := a.gatewayHandler.(interface{ SetRateLimits(int, int) }); ok {
+	if g, ok := gw.(interface{ SetRateLimits(int, int) }); ok {
 		g.SetRateLimits(next.Gateway.RateLimitPerMinute, next.Gateway.RateLimitPerIPPerMinute)
 	}
 	// The P5 排队 pair is read per request, so a save takes effect immediately.
-	if g, ok := a.gatewayHandler.(interface {
+	if g, ok := gw.(interface {
 		SetQueueLimits(time.Duration, int)
 	}); ok {
 		g.SetQueueLimits(queueTimeoutOption(next.Gateway.QueueTimeoutSeconds), next.Gateway.QueueMaxDepth)
 	}
+	// P10 收尾：redact 段没有运行期 setter，变化时整体重建网关（见
+	// applyRedactLive）。值未变的保存不重建，缓存与限速窗口保持温热。
+	a.applyRedactLive(old, next)
 	// Direct egress accounting is a listener decision, not a plugin one: apply
 	// it before the files are rewritten, so switching it on puts the listener URL
 	// into egress.json right away. Running children keep the environment they
@@ -2571,7 +2578,7 @@ func (a *App) listCustomModels() ([]store.CustomModel, error) {
 		names = append(names, row.Name)
 	}
 	conflicts := map[string]bool{}
-	if gw, ok := a.gatewayHandler.(*gateway.Gateway); ok && len(names) > 0 {
+	if gw, ok := a.currentGateway().(*gateway.Gateway); ok && len(names) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		conflicts = gw.CustomModelConflicts(ctx, names)
 		cancel()

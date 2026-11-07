@@ -94,7 +94,10 @@ var errKeyScopeMissing = errors.New("key scope row missing")
 // isInferencePath lists the endpoints that consume a key's daily quota. The
 // passthrough endpoints (embeddings/images) are billable inference too: they
 // reach A with the operator's credential, so they must be admitted like chat.
-// /v1/models stays outside it (it is a catalogue read, not inference).
+// /v1/models stays outside it (it is a catalogue read, not inference), and so
+// does /v1/messages/count_tokens (D-51): the local estimate calls no upstream
+// and costs nothing, so counting it against the daily quota would burn budget
+// on a client-side preflight read.
 func isInferencePath(path string) bool {
 	switch path {
 	case "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages",

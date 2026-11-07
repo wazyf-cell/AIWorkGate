@@ -2020,6 +2020,10 @@ export type NotifyEventKind =
   | 'quota_low'
   | 'quota_expiring'
   | 'quota_resetting'
+  /** S5-4：同一来源 IP 短窗认证失败激增（缺省不订阅）。 */
+  | 'auth_spike'
+  /** S7-5：单 Key 小时用量越过阈值（缺省不订阅）。 */
+  | 'usage_spike'
 
 /** Non-secret half of the notification policy (config.json `notify`). */
 export interface NotifyConfig {
@@ -2049,6 +2053,28 @@ export interface NotifyUpdate {
   url?: string
   events?: NotifyEventKind[]
   min_interval_seconds?: number
+}
+
+/**
+ * P10 收尾：日志脱敏开关（config.json `redact`）。kinds/categories 为空数组
+ * 表示「用规则默认表」。key_file 不进这个端点：它是指纹密钥路径，仍走
+ * config.json 的高级路径。
+ */
+export interface RedactStatus {
+  enabled: boolean
+  route_aware: boolean
+  /** 脱敏类型（SECRET/EMAIL/…）；空 = 默认表。 */
+  kinds: string[]
+  /** 类别 id（ssn/iban/…）；空 = 默认表。 */
+  categories: string[]
+}
+
+/** 部分更新：缺省字段保持原值。 */
+export interface RedactUpdate {
+  enabled?: boolean
+  route_aware?: boolean
+  kinds?: string[]
+  categories?: string[]
 }
 
 export interface Settings {
@@ -2588,6 +2614,16 @@ export const api = {
     },
     test(): Promise<{ ok: boolean }> {
       return request<{ ok: boolean }>('/notify/test', { method: 'POST', body: '{}' })
+    },
+  },
+
+  /** P10 收尾：日志脱敏开关。保存即热更新生效（宿主重建网关）。 */
+  redact: {
+    get(): Promise<RedactStatus> {
+      return request<RedactStatus>('/redact')
+    },
+    update(update: RedactUpdate): Promise<RedactStatus> {
+      return request<RedactStatus>('/redact', { method: 'PUT', body: JSON.stringify(update) })
     },
   },
 

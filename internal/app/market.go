@@ -75,6 +75,9 @@ func (a *App) marketInstall(spec, source, localPath string) (any, error) {
 	switch sp.Kind {
 	case market.KindNPM:
 		pluginID, err = market.PluginIDFor(sp.Name)
+	case market.KindGitHub:
+		// D-04: GitHub specs install the branch archive tarball.
+		pluginID, err = market.PluginIDFor(sp.Repo)
 	case market.KindLocal:
 		pluginID, err = market.PluginIDFor(strings.ToLower(filepath.Base(filepath.Clean(sp.Dir))))
 	default:
@@ -137,7 +140,14 @@ func (a *App) marketUpdates() (any, error) {
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		info, err := market.CheckUpdate(context.Background(), reg, row.Package, row.Version, market.UpdatePolicyPrompt)
+		// Only npm-shaped packages are update-checkable: a GitHub install
+		// (owner/repo, D-04) or a local directory (no package) has no registry
+		// entry, and asking would 404 the whole endpoint.
+		pkg := strings.TrimSpace(row.Package)
+		if pkg == "" || (strings.Contains(pkg, "/") && !strings.HasPrefix(pkg, "@")) {
+			continue
+		}
+		info, err := market.CheckUpdate(context.Background(), reg, pkg, row.Version, market.UpdatePolicyPrompt)
 		if err != nil {
 			return nil, err
 		}

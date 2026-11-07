@@ -93,6 +93,12 @@ var notifyEvents = map[string]bool{
 	"checkin_fail": true, "checkin_done": true, "account_dead": true, "quota_low": true,
 	// P9-2: the two new quota alert kinds.
 	"quota_expiring": true, "quota_resetting": true,
+	// S5-4/S7-5: the two app-side alert rules (notify/rules.go). They are
+	// subscribable but deliberately NOT in DefaultNotifyEvents: a brute-force
+	// attempt already trips the gateway's own D-42 throttle, and a usage spike
+	// is operational noise for most hosts — the user opts in, the default
+	// subscription stays quiet (任务口径：默认不含，避免噪音，文档注明可订阅).
+	"auth_spike": true, "usage_spike": true,
 }
 
 var defaultRetryBackoff = []int{5, 20}

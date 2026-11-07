@@ -335,6 +335,13 @@ type Options struct {
 	SaveNotify func(update NotifyUpdate) (NotifyStatus, error)
 	TestNotify func(ctx context.Context) error
 
+	// Request redaction (P10 收尾). The host validates the category ids against
+	// the rule table and applies the change live (gateway rebuild); a nil
+	// callback answers 501. key_file never crosses this endpoint: the UI does
+	// not move the fingerprint key, config.json stays the power-user path.
+	GetRedact  func() (RedactStatus, error)
+	SaveRedact func(update RedactUpdate) (RedactStatus, error)
+
 	// RecordAction persists one user action (a state-changing admin API call)
 	// into the audit log. Nil disables the action log, which keeps the package
 	// usable on its own in tests.
@@ -371,6 +378,7 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/notify", s.handleNotify)
 	mux.HandleFunc("/api/notify/test", s.handleNotifyTest)
+	mux.HandleFunc("/api/redact", s.handleRedact)
 	mux.HandleFunc("/api/secrets/lan-password", s.handleLANPassword)
 	mux.HandleFunc("/api/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/plugins/install", s.handlePluginInstall)

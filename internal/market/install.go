@@ -25,6 +25,9 @@ const (
 type Options struct {
 	// Registry is the injected npm client; nil uses the installer's default.
 	Registry *Registry
+	// GitHub is the injected GitHub archive client; nil uses the installer's
+	// default (D-04).
+	GitHub *GitHubSource
 	// ScratchDir is the base for staging directories; empty uses os.TempDir().
 	ScratchDir string
 
@@ -77,6 +80,7 @@ type Prepared struct {
 // registry and temp staging; NewInstaller fixes a registry and a scratch base.
 type Installer struct {
 	registry *Registry
+	github   *GitHubSource
 	scratch  string
 	now      func() time.Time
 }
@@ -104,7 +108,7 @@ func (in *Installer) Prepare(ctx context.Context, rawSpec string, opts Options) 
 	}
 	switch spec.Kind {
 	case KindGitHub:
-		return nil, fmt.Errorf("%w: spec %q", ErrGitHubUnreachable, rawSpec)
+		return in.prepareGitHub(ctx, spec, opts)
 	case KindLocal:
 		return in.prepareLocal(ctx, spec, opts)
 	case KindNPM:
@@ -124,6 +128,18 @@ func (in *Installer) registryOf(opts Options) (*Registry, error) {
 		return in.registry, nil
 	}
 	return NewRegistry("", nil)
+}
+
+// githubSourceOf returns opts.GitHub, else the installer default, else the
+// stock default GitHub source.
+func (in *Installer) githubSourceOf(opts Options) (*GitHubSource, error) {
+	if opts.GitHub != nil {
+		return opts.GitHub, nil
+	}
+	if in.github != nil {
+		return in.github, nil
+	}
+	return NewGitHubSource("", nil)
 }
 
 func (in *Installer) stagingBase(opts Options) string {

@@ -467,6 +467,11 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 	exclude := map[scheduler.AccountKey]bool{}
 	// refreshed remembers the single 401/403 self-heal spent per account.
 	refreshed := map[scheduler.AccountKey]bool{}
+	// D-46①: failure signatures already reported in this dispatch round. When
+	// a second candidate account fails with the same signature (status +
+	// normalized error text), the block follows the request/IP/upstream rather
+	// than the credential, so the report carries NoPenalty and parks nobody.
+	seenFailures := map[string]bool{}
 	var buffered *upstreamAttemptResult
 	var lastErr error
 	// activeRelease releases the concurrency slot and scheduler lease of the
@@ -548,14 +553,14 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 
 		if err := g.plugins.EnsureRunning(r.Context(), id); err != nil {
 			lastErr = fmt.Errorf("插件 %s 无法启动: %w", id, err)
-			g.reportFailure(decision, id, pinned, rec, 0)
+			g.reportFailure(decision, id, pinned, rec, 0, err.Error(), seenFailures)
 			exclude[decisionKey(decision)] = true
 			continue
 		}
 		baseURL, token, ok := g.plugins.Endpoint(id)
 		if !ok || strings.TrimSpace(baseURL) == "" {
 			lastErr = fmt.Errorf("插件 %s 未运行", id)
-			g.reportFailure(decision, id, pinned, rec, 0)
+			g.reportFailure(decision, id, pinned, rec, 0, "插件 "+id+" 未运行", seenFailures)
 			exclude[decisionKey(decision)] = true
 			continue
 		}
@@ -696,7 +701,7 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 		for {
 			if res.streamed {
 				releaseHeld()
-				g.reportAttempt(winDecision, winDecision.PluginID, winPinned, rec, res)
+				g.reportAttempt(winDecision, winDecision.PluginID, winPinned, rec, res, seenFailures)
 				return
 			}
 			if res.clientGone {
@@ -785,7 +790,7 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 				res = g.attempt(w, r, rec, pa.target, pa.headers, pa.body, winPinned)
 				continue
 			}
-			g.reportAttempt(winDecision, winDecision.PluginID, winPinned, rec, res)
+			g.reportAttempt(winDecision, winDecision.PluginID, winPinned, rec, res, seenFailures)
 			stop = plan.action == retryStop
 			break
 		}
@@ -1186,16 +1191,49 @@ func (g *Gateway) failSchedule(w http.ResponseWriter, rec *reqRecord, err error)
 }
 
 // reportFailure records a pre-request failure (cold start / endpoint loss).
-func (g *Gateway) reportFailure(decision scheduler.Decision, pluginID, pinned string, rec *reqRecord, status int) {
+// message is the transport-safe failure text for the D-46① signature dedup.
+func (g *Gateway) reportFailure(decision scheduler.Decision, pluginID, pinned string, rec *reqRecord, status int, message string, seen map[string]bool) {
 	if g.sched == nil || pinned == "" {
 		return
 	}
-	g.sched.Report(scheduler.AccountKey{PluginID: pluginID, AccountID: decision.AccountID},
-		decision.Model, status, 0, 0)
+	cause := scheduler.FailureCause{Status: status}
+	if markFailureSignature(status, message, seen) {
+		// A pre-request failure is account-independent by construction; when it
+		// already cost one account its cooldown this round, stop there.
+		cause.NoPenalty = true
+	}
+	g.sched.ReportCause(scheduler.AccountKey{PluginID: pluginID, AccountID: decision.AccountID},
+		decision.Model, cause, 0, 0)
 }
 
 func decisionKey(decision scheduler.Decision) scheduler.AccountKey {
 	return scheduler.AccountKey{PluginID: decision.PluginID, AccountID: decision.AccountID}
+}
+
+// failureSignature is the D-46① dedup key: the upstream status plus the first
+// 128 characters of the lower-cased, whitespace-collapsed error text. Normal-
+// ization keeps line-wrapped or re-indentated copies of one upstream message
+// deduping to the same key; the 128-character prefix keeps hostile bodies from
+// growing the map.
+func failureSignature(status int, message string) string {
+	normalized := strings.Join(strings.Fields(strings.ToLower(message)), " ")
+	return strconv.Itoa(status) + "|" + truncateUTF8(normalized, 128)
+}
+
+// markFailureSignature records one failure signature and reports whether the
+// same signature was already recorded during this dispatch round. The first
+// occurrence still counts against its account; every later one is unattributed
+// and carries NoPenalty. A nil map disables the dedup.
+func markFailureSignature(status int, message string, seen map[string]bool) bool {
+	if seen == nil {
+		return false
+	}
+	sig := failureSignature(status, message)
+	if seen[sig] {
+		return true
+	}
+	seen[sig] = true
+	return false
 }
 
 // logDecision writes one scheduler event per attempt (design §7).
@@ -1422,7 +1460,7 @@ func (g *Gateway) writeAttempt(w http.ResponseWriter, rec *reqRecord, res *upstr
 	_, _ = w.Write(res.body)
 }
 
-func (g *Gateway) reportAttempt(decision scheduler.Decision, pluginID, pinned string, rec *reqRecord, res *upstreamAttemptResult) {
+func (g *Gateway) reportAttempt(decision scheduler.Decision, pluginID, pinned string, rec *reqRecord, res *upstreamAttemptResult, seen map[string]bool) {
 	if res == nil {
 		return
 	}
@@ -1450,14 +1488,20 @@ func (g *Gateway) reportAttempt(decision scheduler.Decision, pluginID, pinned st
 	// Retry-After hint and the quota markers drive the parked duration instead
 	// of a one-size status table. The message is capped: it is a transport-safe
 	// attribution summary, never a raw body dump.
+	message := truncateUTF8(attemptBodyText(res), 512)
 	cause := scheduler.FailureCause{
 		Status:  status,
-		Message: truncateUTF8(attemptBodyText(res), 512),
+		Message: message,
 	}
 	if raw := res.header.Get("Retry-After"); raw != "" {
 		if wait, ok := parseRetryAfter(raw, g.now()); ok && wait > 0 {
 			cause.RetryAfter = wait
 		}
+	}
+	if markFailureSignature(status, message, seen) {
+		// D-46①: another candidate already reported this exact failure in this
+		// dispatch round — the error follows the request/IP, not the account.
+		cause.NoPenalty = true
 	}
 	g.sched.ReportCause(scheduler.AccountKey{PluginID: pluginID, AccountID: decision.AccountID},
 		decision.Model, cause, rec.ttfb.Milliseconds(), credits)

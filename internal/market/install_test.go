@@ -204,14 +204,53 @@ func TestPrepareNPMVersionConstraint(t *testing.T) {
 	}
 }
 
+// TestPrepareGitHubSpecUnreachableWithoutTransport pins the P2 acceptance
+// "GitHub 源在无代理时报「源不可达（可配代理）」而非静默失败": with a transport
+// that cannot reach the host (dead port), a github spec fails loudly with
+// ErrGitHubUnreachable — it never silently succeeds or hangs. (The happy path
+// is covered in github_test.go since D-04.)
 func TestPrepareGitHubSpecRejected(t *testing.T) {
-	_, err := NewInstaller(nil, "").Prepare(ctx, "github:foo/bar", Options{})
+	dead, err := NewGitHubSource("http://127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatalf("NewGitHubSource: %v", err)
+	}
+	_, err = NewInstaller(nil, "").Prepare(ctx, "github:foo/bar", Options{GitHub: dead})
 	if !errors.Is(err, ErrGitHubUnreachable) {
 		t.Fatalf("github spec error = %v, want ErrGitHubUnreachable", err)
 	}
 	text := err.Error()
 	if !strings.Contains(text, "unreachable") || !strings.Contains(text, "proxy") {
 		t.Fatalf("error text = %q, want an explicit unreachable/proxy message", text)
+	}
+}
+
+// TestParseSpecGitHubBranch pins the D-04 branch suffix parsing.
+func TestParseSpecGitHubBranch(t *testing.T) {
+	cases := []struct {
+		raw    string
+		owner  string
+		repo   string
+		branch string
+	}{
+		{"github:acme/widget", "acme", "widget", ""},
+		{"gh:acme/widget", "acme", "widget", ""},
+		{"github:acme/widget.git", "acme", "widget", ""},
+		{"github:acme/widget@dev", "acme", "widget", "dev"},
+		{"gh:acme/widget@release-1.2", "acme", "widget", "release-1.2"},
+		{"https://github.com/acme/widget", "acme", "widget", ""},
+	}
+	for _, tc := range cases {
+		sp, err := ParseSpec(tc.raw)
+		if err != nil {
+			t.Fatalf("ParseSpec(%q): %v", tc.raw, err)
+		}
+		if sp.Kind != KindGitHub || sp.Owner != tc.owner || sp.Repo != tc.repo || sp.Branch != tc.branch {
+			t.Fatalf("ParseSpec(%q) = %+v, want owner=%s repo=%s branch=%s", tc.raw, sp, tc.owner, tc.repo, tc.branch)
+		}
+	}
+	// 非法分支名在解析层就拒绝。
+	if _, err := ParseSpec("github:acme/widget@../evil"); err == nil {
+		t.Fatal("invalid branch must be rejected at parse time")
 	}
 }
 

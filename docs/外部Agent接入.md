@@ -63,6 +63,7 @@
 | `POST /v1/completions` | ✅ 内部转成 chat 再回译 | ✅ 原样透传 |
 | `POST /v1/responses` | ✅ 内部转成 chat 再回译（含 SSE） | ✅ 原样透传 |
 | `POST /v1/messages` | ✅ 内部转成 chat 再回译（Anthropic 协议，含 SSE） | ✅ 原样透传 |
+| `POST /v1/messages/count_tokens` | ✅ 本地估算（D-51，见下） | ✅ 本地估算 |
 | `/v1/embeddings`、`/v1/images*` | ❌ 501 `unsupported_endpoint` | ✅ 原样透传 |
 
 `GET /health` 返回 `{"status":"ok","running":true}`（HTTP 200，`Cache-Control: no-store`，只表示宿主在监听），不需要客户端 Key，也不受局域网网页密码限制，不检查插件、账号或 A 的状态。`HEAD /health` 同样返回 200（无 body）；其他方法返回 405 并带 `Allow: GET, HEAD`。
@@ -72,6 +73,8 @@
 模型条目除 `id/owned_by` 外还会带目录元数据（上游有才带）：`vendor`、`multiplier`（倍率，未公布则不出现）、`thinking`（支持的思考档位，如 `["off","high"]`）、`free`、`context_length`、`vision`、`tools`；被人工覆盖的字段列在 `overridden` 里。模型 id 在合并时按「去首尾空白 + 忽略大小写」去重，输出保留第一个上报者的拼写。
 
 Anthropic 客户端（Claude Code 等）把 `ANTHROPIC_BASE_URL` 指到本网关即可用插件模型；`/v1/messages` 的 `stop_reason` 映射为 `end_turn / max_tokens / tool_use / refusal`，SSE 序列是 `message_start → content_block_start → …delta → content_block_stop → message_delta → message_stop`，出错时只发 `event: error`，不会伪造成功。`/v1/messages` 的 `usage` 现在带 `cache_read_input_tokens` 与 `cache_creation_input_tokens`（上游没报时为 0），`/v1/responses` 的 `usage` 在插件上报时带 `input_tokens_details.cached_tokens` 与 `output_tokens_details.reasoning_tokens`。
+
+`POST /v1/messages/count_tokens` 返回 `{"input_tokens": N}`（D-51）。默认口径是**本地估算**：按 messages + system + tools 的字符加权估计（与调度规则用同一套 `estimatePromptTokens`），不路由到任何上游、不消耗 Key 的每日配额。估算值与真实 tokenizer 的结果可能有偏差，适合做发送前的预算参考；上游/插件真实计数要等插件契约增加 count_tokens 能力声明后才会接入。
 
 图片输入：`/v1/messages` 的 `image` 块（`base64` 转成 `data:` URL，`url` 原样）和 `/v1/responses` 的 `input_image` 都会转成 chat 的 `image_url` 内容部分转发，是否可用取决于上游模型的视觉能力；识别不了的图片形态保留 `[image_url]` 占位文本。相邻同角色的纯文本消息会合并成一条（带 `tool_calls` 或 tool 结果的消息不合并），避免严格上游因连续同角色返回 400。
 

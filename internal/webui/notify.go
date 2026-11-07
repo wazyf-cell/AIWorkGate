@@ -30,9 +30,13 @@ var notifyChannels = map[string]bool{
 
 // notifyEventKinds is the accepted subscription set. Keeping the list here
 // makes a stale SPA fail loudly with Chinese text instead of silently
-// subscribing to nothing.
+// subscribing to nothing. quota_expiring/quota_resetting (P9-2) and
+// auth_spike/usage_spike (S5-4/S7-5, default-unsubscribed) complete the set
+// the config layer accepts, so the settings page can tick any of them.
 var notifyEventKinds = map[string]bool{
 	"checkin_fail": true, "checkin_done": true, "account_dead": true, "quota_low": true,
+	"quota_expiring": true, "quota_resetting": true,
+	"auth_spike": true, "usage_spike": true,
 }
 
 // notifyMinInterval/Max mirror internal/config (60s .. 24h).
@@ -79,7 +83,7 @@ func validateNotifyUpdate(update *NotifyUpdate) error {
 		for _, raw := range *update.Events {
 			kind := strings.ToLower(strings.TrimSpace(raw))
 			if !notifyEventKinds[kind] {
-				return fmt.Errorf("通知事件无效：%q（可选：checkin_fail、checkin_done、account_dead、quota_low）", raw)
+				return fmt.Errorf("通知事件无效：%q（可选：checkin_fail、checkin_done、account_dead、quota_low、quota_expiring、quota_resetting、auth_spike、usage_spike）", raw)
 			}
 			if seen[kind] {
 				continue

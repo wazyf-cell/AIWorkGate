@@ -59,6 +59,17 @@ const (
 	SourceSnapshot Source = "snapshot"
 )
 
+// PresetRegion is one row of a preset's region/plan sub-table (D-36 供应商
+// Region/套餐子表): the same vendor behind several regional or plan endpoints.
+// An empty BaseURL inherits the preset's own.
+type PresetRegion struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	BaseURL    string `json:"base_url,omitempty"`
+	ModelsPath string `json:"models_path,omitempty"`
+	Notes      string `json:"notes,omitempty"`
+}
+
 // Preset is one provider definition.
 type Preset struct {
 	Kind       Kind   `json:"kind"`
@@ -72,11 +83,31 @@ type Preset struct {
 	// default list" and the chain starts at models.dev.
 	Models []string `json:"models,omitempty"`
 	Notes  string   `json:"notes,omitempty"`
+
+	// D-36 fields (供应商 Region/套餐子表 + Only/NoList/EndpointHint):
+	//   - Region is the region/plan sub-table (see PresetRegion).
+	//   - Only is the vendor model allow-list: when non-empty, only these model
+	//     ids count as vendor-known (a vendor whose /models leaks everything can
+	//     still keep the fallback list honest).
+	//   - NoList marks providers whose list endpoint must not be trusted
+	//     (relays answering with junk /models): the catalog may only come from
+	//     the vendor list, manual entries and the snapshot.
+	//   - EndpointHint is the "换端点" hint shown when a vendor says the model
+	//     is not on this API (D-27 otherAPI semantics), e.g. the Azure
+	//     deployment-name rule.
+	Region       []PresetRegion `json:"region,omitempty"`
+	Only         []string       `json:"only,omitempty"`
+	NoList       bool           `json:"no_list,omitempty"`
+	EndpointHint string         `json:"endpoint_hint,omitempty"`
 }
 
 // Bundle is the embedded preset catalog.
 type Bundle struct {
 	Presets []Preset `json:"presets"`
+	// PresetAliases (D-36 presetAliases 迁移): old/short preset ids keep
+	// resolving to their canonical replacement, so renaming a preset id does
+	// not orphan stored configs. Direct hits always win over aliases.
+	PresetAliases map[string]string `json:"preset_aliases,omitempty"`
 }
 
 // FormatModelName renders the "自定义名 · 供应商" display name (D-27③):
@@ -108,10 +139,13 @@ func Load() (Bundle, error) {
 			return Bundle{}, err
 		}
 	}
+	if err := b.validateAliases(); err != nil {
+		return Bundle{}, err
+	}
 	return b, nil
 }
 
-// Validate checks one preset's invariants.
+// Validate checks one preset's invariants, including the D-36 fields.
 func (p Preset) Validate() error {
 	if !p.Kind.Valid() {
 		return fmt.Errorf("presets: preset %q: unknown kind %q", p.ID, p.Kind)
@@ -121,6 +155,14 @@ func (p Preset) Validate() error {
 	}
 	if strings.TrimSpace(p.Name) == "" {
 		return fmt.Errorf("presets: preset %q: name is required", p.ID)
+	}
+	if err := p.validateRegion(); err != nil {
+		return err
+	}
+	for _, m := range p.Only {
+		if strings.TrimSpace(m) == "" {
+			return fmt.Errorf("presets: preset %q: only contains an empty model id", p.ID)
+		}
 	}
 	if p.Kind == KindRemote {
 		// remote is defined, not connected: no base URL is required.
@@ -135,9 +177,83 @@ func (p Preset) Validate() error {
 	return nil
 }
 
-// Lookup finds a preset by id.
+// validateRegion checks the D-36 region/plan sub-table: ids and names are
+// required and unique inside the preset, and an overridden base URL must still
+// be http(s).
+func (p Preset) validateRegion() error {
+	seen := map[string]bool{}
+	for _, r := range p.Region {
+		id := strings.TrimSpace(r.ID)
+		if id == "" {
+			return fmt.Errorf("presets: preset %q: a region has no id", p.ID)
+		}
+		if strings.TrimSpace(r.Name) == "" {
+			return fmt.Errorf("presets: preset %q: region %q has no name", p.ID, id)
+		}
+		if seen[id] {
+			return fmt.Errorf("presets: preset %q: region %q is declared twice", p.ID, id)
+		}
+		seen[id] = true
+		if u := strings.TrimSpace(r.BaseURL); u != "" && !strings.HasPrefix(u, "http") {
+			return fmt.Errorf("presets: preset %q: region %q base_url %q must start with http(s)", p.ID, id, r.BaseURL)
+		}
+	}
+	return nil
+}
+
+// validateAliases checks the D-36 presetAliases migration map: every alias
+// must point at a real preset id and must not shadow one.
+func (b Bundle) validateAliases() error {
+	real := map[string]bool{}
+	for _, p := range b.Presets {
+		real[p.ID] = true
+	}
+	for alias, target := range b.PresetAliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			return fmt.Errorf("presets: an alias has an empty key")
+		}
+		if real[alias] {
+			return fmt.Errorf("presets: alias %q shadows a real preset id", alias)
+		}
+		if !real[strings.TrimSpace(target)] {
+			return fmt.Errorf("presets: alias %q points at unknown preset %q", alias, target)
+		}
+	}
+	return nil
+}
+
+// ExposesModel applies the D-36 Only allow-list: an empty list admits every
+// model, a set one only its (case-insensitive) members. It guards the vendor
+// source of the fallback chain so a vendor preset cannot vouch for models it
+// explicitly excluded.
+func (p Preset) ExposesModel(modelID string) bool {
+	if len(p.Only) == 0 {
+		return true
+	}
+	id := strings.TrimSpace(modelID)
+	for _, m := range p.Only {
+		if strings.EqualFold(strings.TrimSpace(m), id) {
+			return true
+		}
+	}
+	return false
+}
+
+// Lookup finds a preset by id, resolving presetAliases (D-36) when the direct
+// hit misses.
 func (b Bundle) Lookup(id string) (Preset, bool) {
 	id = strings.TrimSpace(id)
+	if p, ok := b.lookupDirect(id); ok {
+		return p, true
+	}
+	if target, ok := b.PresetAliases[id]; ok {
+		return b.lookupDirect(strings.TrimSpace(target))
+	}
+	return Preset{}, false
+}
+
+func (b Bundle) lookupDirect(id string) (Preset, bool) {
 	for _, p := range b.Presets {
 		if p.ID == id {
 			return p, true

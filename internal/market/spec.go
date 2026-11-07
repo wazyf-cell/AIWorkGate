@@ -19,8 +19,8 @@ const (
 	KindNPM Kind = iota
 	// KindLocal is an existing directory.
 	KindLocal
-	// KindGitHub is a github:owner/repo spec, currently refused with
-	// ErrGitHubUnreachable (see the package doc).
+	// KindGitHub is a github:owner/repo spec, installed from the branch
+	// archive tarball (D-04).
 	KindGitHub
 )
 
@@ -37,10 +37,15 @@ func (k Kind) String() string {
 	}
 }
 
-// ErrGitHubUnreachable is returned for any operation on a GitHub spec. The box
-// currently has no reachable proxy for github.com, and failing loud with a
-// fixable message beats hanging or silently doing nothing.
+// ErrGitHubUnreachable wraps every transport-level failure of the GitHub
+// source (D-04): DNS, connect, TLS and timeout errors. The message keeps the
+// "configure a proxy" hint because a machine without a working proxy is the
+// common cause.
 var ErrGitHubUnreachable = errors.New("market: github source is unreachable (configure a proxy)")
+
+// ErrGitHubNotFound is returned when the repo exists no branch archive the
+// source tried (HTTP 404) — a distinct failure from "cannot reach github.com".
+var ErrGitHubNotFound = errors.New("market: github archive not found")
 
 // pluginIDPattern mirrors the host's plugin id rule (internal/plugins/
 // manifest.go pluginIDPattern): any package a market installs must end up with
@@ -63,6 +68,9 @@ type Spec struct {
 	// github: owner/repo.
 	Owner string
 	Repo  string
+	// github: branch, from the github:owner/repo@branch form. Empty means the
+	// default branch order (main, then master).
+	Branch string
 }
 
 func (s Spec) String() string {
@@ -75,7 +83,11 @@ func (s Spec) String() string {
 	case KindLocal:
 		return s.Dir
 	case KindGitHub:
-		return "github:" + s.Owner + "/" + s.Repo
+		out := "github:" + s.Owner + "/" + s.Repo
+		if s.Branch != "" {
+			out += "@" + s.Branch
+		}
+		return out
 	default:
 		return ""
 	}
@@ -141,15 +153,26 @@ func ParseSpec(raw string) (Spec, error) {
 
 func githubSpec(raw, rest string) (Spec, error) {
 	rest = strings.Trim(strings.TrimSpace(rest), "/")
+	// github:owner/repo@branch selects the branch archive; owner/repo can never
+	// contain "@", so the last "@" is always the branch separator.
+	branch := ""
+	if i := strings.LastIndexByte(rest, '@'); i > 0 {
+		branch = strings.TrimSpace(rest[i+1:])
+		rest = rest[:i]
+	}
 	parts := strings.Split(rest, "/")
 	if len(parts) < 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
 		return Spec{}, fmt.Errorf("market: github spec %q must be github:owner/repo", raw)
 	}
+	if branch != "" && !validGitHubRef(branch) {
+		return Spec{}, fmt.Errorf("market: github spec %q has an invalid branch %q", raw, branch)
+	}
 	return Spec{
-		Raw:   raw,
-		Kind:  KindGitHub,
-		Owner: strings.TrimSpace(parts[0]),
-		Repo:  strings.TrimSuffix(strings.TrimSpace(parts[1]), ".git"),
+		Raw:    raw,
+		Kind:   KindGitHub,
+		Owner:  strings.TrimSpace(parts[0]),
+		Repo:   strings.TrimSuffix(strings.TrimSpace(parts[1]), ".git"),
+		Branch: branch,
 	}, nil
 }
 

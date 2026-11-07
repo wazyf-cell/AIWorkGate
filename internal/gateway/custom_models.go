@@ -73,6 +73,17 @@ type CustomModel struct {
 	InputTypes        []string
 	ReasoningTiers    []string
 	DefaultReasoning  string
+
+	// D-56 单连接多协议分槽（plans/2026-11-05 §D-56）：可选的出站协议槽，键为
+	// 入站面（CustomFaceChat / CustomFaceResponses / CustomFaceMessages）。
+	//   - Protocols[face]     该面的上游协议（openai / anthropic / gemini）；
+	//   - ProtocolPaths[face] 该面的上游 base URL。
+	// 两个槽都缺某一面时回落旧单协议字段（Protocol/BaseURL），所以既有单协议
+	// 连接行为不变；槽协议非法或槽键非法在转发前报错（customSlotFor）。槽是
+	// 出站连接侧的协议入口，与入站协议范围（D-12）不同层。宿主侧的存储列与管
+	// 理界面回填不在本目录，gateway 侧只消费 provider 给到的值。
+	Protocols     map[string]string
+	ProtocolPaths map[string]string
 }
 
 // CustomChatURL normalises a custom base URL to its chat endpoint:
@@ -189,6 +200,10 @@ func (g *Gateway) handleCustomModel(w http.ResponseWriter, r *http.Request, rec 
 		return true
 	}
 
+	// D-56: the inbound face selects the outbound protocol slot; the legacy
+	// single-protocol fields are the fallback slot for every face.
+	face := customFaceForPath(path)
+
 	switch path {
 	case "/v1/messages":
 		// The converter is shared with the plugin path; the sender is the only
@@ -196,13 +211,13 @@ func (g *Gateway) handleCustomModel(w http.ResponseWriter, r *http.Request, rec 
 		aw := newAnthropicWriter(w, rec.model, rec.stream)
 		aw.Header().Set(sourceHeader, rec.source)
 		defer aw.finish()
-		g.relayMessages(aw, rec, body, g.customSender(r, rec, cm))
+		g.relayMessages(aw, rec, body, g.customSender(r, rec, cm, face))
 	case "/v1/responses":
-		g.forwardCustomEnvelope(w, r, rec, cm, body, envelopeResponses)
+		g.forwardCustomEnvelope(w, r, rec, cm, face, body, envelopeResponses)
 	case "/v1/completions":
-		g.forwardCustomEnvelope(w, r, rec, cm, body, envelopeCompletions)
+		g.forwardCustomEnvelope(w, r, rec, cm, face, body, envelopeCompletions)
 	default:
-		g.forwardCustom(w, r, rec, cm, body)
+		g.forwardCustom(w, r, rec, cm, face, body)
 	}
 	return true
 }
@@ -211,26 +226,26 @@ func (g *Gateway) handleCustomModel(w http.ResponseWriter, r *http.Request, rec 
 // shared envelope converter. The adapter parses the chat reply (JSON or SSE)
 // and writes the protocol the client asked for, incomplete status and usage
 // details included.
-func (g *Gateway) forwardCustomEnvelope(w http.ResponseWriter, r *http.Request, rec *reqRecord, cm CustomModel, body []byte, kind envelopeKind) {
+func (g *Gateway) forwardCustomEnvelope(w http.ResponseWriter, r *http.Request, rec *reqRecord, cm CustomModel, face string, body []byte, kind envelopeKind) {
 	ew := newEnvelopeWriter(w, kind, rec.model, rec.stream)
 	ew.Header().Set(sourceHeader, rec.source)
 	defer ew.finish()
-	g.relayEnvelope(ew, rec, body, kind, g.customSender(r, rec, cm))
+	g.relayEnvelope(ew, rec, body, kind, g.customSender(r, rec, cm, face))
 }
 
 // customSender is the custom-upstream side of the chatSender seam: one
 // converted chat body in, the raw upstream reply copied into the adapter.
-func (g *Gateway) customSender(r *http.Request, rec *reqRecord, cm CustomModel) chatSender {
+func (g *Gateway) customSender(r *http.Request, rec *reqRecord, cm CustomModel, face string) chatSender {
 	return func(dst http.ResponseWriter, chatBody []byte) {
-		g.customCall(dst, r, rec, cm, chatBody, func(resp *http.Response) {
+		g.customCall(dst, r, rec, cm, face, chatBody, func(resp *http.Response) {
 			g.copyCustomConverted(dst, rec, resp)
 		})
 	}
 }
 
 // forwardCustom proxies one chat request to its custom upstream.
-func (g *Gateway) forwardCustom(w http.ResponseWriter, r *http.Request, rec *reqRecord, cm CustomModel, body []byte) {
-	g.customCall(w, r, rec, cm, body, func(resp *http.Response) {
+func (g *Gateway) forwardCustom(w http.ResponseWriter, r *http.Request, rec *reqRecord, cm CustomModel, face string, body []byte) {
+	g.customCall(w, r, rec, cm, face, body, func(resp *http.Response) {
 		upstreamSSE := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
 		switch {
 		case upstreamSSE:
@@ -248,7 +263,7 @@ func (g *Gateway) forwardCustom(w http.ResponseWriter, r *http.Request, rec *req
 // unreachable, non-2xx) is written to dst with a redacted message; dst may be a
 // protocol adapter, which then re-encodes the error for its own client.
 // Request construction, auth and error mapping live here exactly once.
-func (g *Gateway) customCall(dst http.ResponseWriter, r *http.Request, rec *reqRecord, cm CustomModel, chatBody []byte, consume func(*http.Response)) {
+func (g *Gateway) customCall(dst http.ResponseWriter, r *http.Request, rec *reqRecord, cm CustomModel, face string, chatBody []byte, consume func(*http.Response)) {
 	key := g.customKey(cm.ConnectionID)
 	if key == "" {
 		// Legacy rows created before connections stored the key under the model id.
@@ -259,8 +274,18 @@ func (g *Gateway) customCall(dst http.ResponseWriter, r *http.Request, rec *reqR
 		g.fail(dst, rec, settingsErr.status, settingsErr.typ, settingsErr.code, settingsErr.msg)
 		return
 	}
-	protocol := NormalizeCustomProtocolName(cm.Protocol)
-	endpoint, err := CustomProtocolChatURL(protocol, cm.BaseURL, cm.UpstreamModel, rec.stream)
+	// D-56: the inbound face picks its protocol slot; a slotless entry resolves
+	// to the legacy Protocol/BaseURL pair and an invalid slot fails before any
+	// upstream call.
+	slot, slotErr := customSlotFor(cm, face)
+	if slotErr != nil {
+		rec.errText = "custom model protocol slot is invalid"
+		g.fail(dst, rec, http.StatusBadGateway, "upstream_unavailable", "upstream_unavailable",
+			slotErr.Error())
+		return
+	}
+	protocol := slot.Protocol
+	endpoint, err := CustomProtocolChatURL(protocol, slot.BaseURL, cm.UpstreamModel, rec.stream)
 	if err != nil {
 		rec.errText = "custom model base_url is invalid"
 		g.fail(dst, rec, http.StatusBadGateway, "upstream_unavailable", "upstream_unavailable",

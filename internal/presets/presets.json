@@ -1,15 +1,25 @@
 {
+  "preset_aliases": {
+    "azure": "azure-openai",
+    "qwen": "dashscope",
+    "glm": "zhipu",
+    "kimi": "moonshot",
+    "gemini": "google"
+  },
   "presets": [
     {"kind": "vendor", "id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1", "models_path": "/v1/models", "key_label": "API Key", "notes": "官方 OpenAI；也覆盖 Azure OpenAI 之外的自助中转。"},
-    {"kind": "vendor", "id": "azure-openai", "name": "Azure OpenAI", "base_url": "https://<resource>.openai.azure.com/openai/deployments", "models_path": "/openai/deployments/{deployment}/models?api-version=2024-06-01", "key_label": "Deployment Key", "notes": "Azure 部署名由每个账户的 base_url 覆盖，此处为模板。"},
+    {"kind": "vendor", "id": "azure-openai", "name": "Azure OpenAI", "base_url": "https://<resource>.openai.azure.com/openai/deployments", "models_path": "/openai/deployments/{deployment}/models?api-version=2024-06-01", "key_label": "Deployment Key", "endpoint_hint": "模型名必须与部署名一致：报「模型不在这个 API」时先核对该部署下发布的是哪个模型。", "notes": "Azure 部署名由每个账户的 base_url 覆盖，此处为模板。"},
     {"kind": "vendor", "id": "anthropic", "name": "Anthropic", "base_url": "https://api.anthropic.com/v1", "models_path": "/v1/models", "key_label": "API Key"},
-    {"kind": "vendor", "id": "deepseek", "name": "DeepSeek", "base_url": "https://api.deepseek.com/v1", "models_path": "/v1/models", "key_label": "API Key"},
-    {"kind": "vendor", "id": "dashscope", "name": "通义千问 (DashScope)", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "models_path": "/v1/models", "key_label": "API Key"},
+    {"kind": "vendor", "id": "deepseek", "name": "DeepSeek", "base_url": "https://api.deepseek.com/v1", "models_path": "/v1/models", "key_label": "API Key", "only": ["deepseek-chat", "deepseek-reasoner"]},
+    {"kind": "vendor", "id": "dashscope", "name": "通义千问 (DashScope)", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "models_path": "/v1/models", "key_label": "API Key", "region": [
+      {"id": "cn", "name": "国内", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+      {"id": "intl", "name": "国际", "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "notes": "新加坡地域；Key 与模型不与国内互通。"}
+    ]},
     {"kind": "vendor", "id": "zhipu", "name": "智谱 (GLM)", "base_url": "https://open.bigmodel.cn/api/paas/v4", "models_path": "/v1/models", "key_label": "API Key"},
     {"kind": "vendor", "id": "moonshot", "name": "月之暗面 (Kimi)", "base_url": "https://api.moonshot.cn/v1", "models_path": "/v1/models", "key_label": "API Key"},
     {"kind": "vendor", "id": "minimax", "name": "MiniMax", "base_url": "https://api.minimax.io/v1", "models_path": "/v1/models", "key_label": "API Key"},
     {"kind": "vendor", "id": "google", "name": "Google (Gemini)", "base_url": "https://generativelanguage.googleapis.com/v1beta", "models_path": "/v1beta/models", "key_label": "API Key"},
-    {"kind": "relay", "id": "relay", "name": "中转聚合", "base_url": "https://<relay-host>/v1", "models_path": "/v1/models", "key_label": "上游 Key", "notes": "第三方中转：一个 Key 可打穿多家厂商时必须接 P5 限流四件套。"},
+    {"kind": "relay", "id": "relay", "name": "中转聚合", "base_url": "https://<relay-host>/v1", "models_path": "/v1/models", "key_label": "上游 Key", "no_list": true, "notes": "第三方中转：一个 Key 可打穿多家厂商时必须接 P5 限流四件套。no_list（D-36）：中转的 /models 常返回不可信列表，目录只认 vendor 清单、手填与快照。"},
     {"kind": "local", "id": "local", "name": "本机回环", "base_url": "http://127.0.0.1:<port>/v1", "models_path": "/v1/models", "key_label": "本机 Key", "notes": "指向本机自建的 OpenAI 兼容服务。"},
     {"kind": "remote", "id": "remote", "name": "远程 magpie", "notes": "定义保留（Q2-A 拍板）：连另一台 magpie 的实现不在本卡范围，仅保留预设形状与校验。"}
   ]

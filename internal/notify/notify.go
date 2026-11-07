@@ -55,14 +55,25 @@ const (
 	// KindQuotaResetting is the P9-2 "周期重置前未用完" alert (resetsAt 临近
 	// 且 used/limit 低).
 	KindQuotaResetting = "quota_resetting"
-	KindTest           = "test"
+	// KindAuthSpike is the S5-4 应用侧告警：同一来源 IP 短窗内认证失败激增
+	// （规则引擎 internal/notify/rules.go）。缺省不订阅——网关层已有 D-42
+	// 失败限速兜底，订阅与否交给用户，避免爆破噪音一直推送。
+	KindAuthSpike = "auth_spike"
+	// KindUsageSpike is the S7-5 应用侧告警：单个客户端 Key 的小时请求量越过
+	// 阈值（日配额的 50% 或绝对值 1000 取小，见 rules.go）。缺省不订阅。
+	KindUsageSpike = "usage_spike"
+	KindTest       = "test"
 )
 
 // Channels lists the accepted channel identifiers in UI order.
 var Channels = []string{ChannelGeneric, ChannelBark, ChannelServerChan, ChannelWeCom}
 
 // Kinds lists the event kinds a user may subscribe to.
-var Kinds = []string{KindCheckinFail, KindCheckinDone, KindAccountDead, KindQuotaLow, KindQuotaExpiring, KindQuotaResetting}
+var Kinds = []string{
+	KindCheckinFail, KindCheckinDone, KindAccountDead, KindQuotaLow,
+	KindQuotaExpiring, KindQuotaResetting,
+	KindAuthSpike, KindUsageSpike,
+}
 
 // URLSecretKey is the secrets.Store extra key that holds the webhook URL. The
 // URL is a credential: it never appears in config.json, logs or API responses.
@@ -89,7 +100,7 @@ func ValidChannel(name string) bool {
 func ValidKind(kind string) bool {
 	switch kind {
 	case KindCheckinFail, KindCheckinDone, KindAccountDead, KindQuotaLow,
-		KindQuotaExpiring, KindQuotaResetting:
+		KindQuotaExpiring, KindQuotaResetting, KindAuthSpike, KindUsageSpike:
 		return true
 	}
 	return false

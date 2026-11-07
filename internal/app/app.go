@@ -99,6 +99,21 @@ type App struct {
 	notify        *notify.Dispatcher
 	checkinNotify *checkinNotifier
 
+	// rules is the S5-4/S7-5 in-memory alert engine (auth spike / usage
+	// spike); fed by serveGateway and evaluateUsageSpikes, delivered through
+	// notify. Nil in tests that do not wire alerts.
+	rules *notify.Rules
+
+	// gatewayPlugins is a test seam for the redact hot-update tests: when
+	// non-nil, gatewayOptions wires it as the gateway's PluginRegistry instead
+	// of the real manager (which needs a full plugin host). Production leaves
+	// it nil and gatewayOptions uses a.pluginMgr.
+	gatewayPlugins gateway.PluginRegistry
+
+	// gatewayKeys is the matching test seam for the client-key verifier; the
+	// real keyAdapter needs the DPAPI secret store, which tests do not have.
+	gatewayKeys gateway.KeyVerifier
+
 	usageSvc *usage.Service
 	roller   *usage.Roller
 	timeline *logging.Timeline
@@ -142,6 +157,12 @@ type App struct {
 	// identityMu serializes OS-level identity resets host-wide (M8): two
 	// plugins must never rewrite machine identifiers at the same time.
 	identityMu sync.Mutex
+
+	// gatewayHandler serves the /v1 namespace. Swapped under gatewayMu by the
+	// redact hot-update path (applyRedactLive): readers take the read lock so
+	// a config save can replace the handler while traffic flows; in-flight
+	// requests keep serving on the old handler until they finish.
+	gatewayMu sync.RWMutex
 
 	gatewayHandler http.Handler
 	adminHandler   http.Handler
@@ -326,6 +347,11 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	})
 	a.checkinNotify = newCheckinNotifier(a)
 
+	// S5-4/S7-5 应用侧告警引擎。计数与判定在内存里（notify.Rules），命中经
+	// a.notify 推送；两个新 kind 缺省不订阅，Dispatcher 的订阅过滤是第一道
+	// 闸，所以未订阅时喂事件只是内存里的滑窗维护，成本可忽略。
+	a.rules = notify.NewRules(notify.RulesOptions{Sink: a.notify})
+
 	apiLog, err := logging.NewAPILogger(st, dataDir, cfg.Logging.DebugBody)
 	if err != nil {
 		return nil, err
@@ -461,42 +487,7 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	a.keyVerifier = &keyAdapter{app: a}
 
 	// 10. Local API gateway.
-	a.gatewayHandler = gateway.New(gateway.Options{
-		Plugins:                 a.pluginMgr,
-		Keys:                    a.keyVerifier,
-		Log:                     apiLogSink{app: a},
-		DebugBody:               cfg.Logging.DebugBody,
-		CorsAllowOrigins:        cfg.Gateway.CorsAllowOrigins,
-		AllowIPs:                cfg.Gateway.AllowIPs,
-		TrustedProxies:          cfg.Gateway.TrustedProxies,
-		ServiceMode:             cfg.Gateway.ServiceMode,
-		RateLimitPerMinute:      cfg.Gateway.RateLimitPerMinute,
-		RateLimitPerIPPerMinute: cfg.Gateway.RateLimitPerIPPerMinute,
-		// P5 排队等待/排队上限: queue_timeout_seconds=0 (一直等) maps onto the
-		// gateway's negative sentinel; queue_max_depth 0 stays unbounded.
-		QueueTimeout:  queueTimeoutOption(cfg.Gateway.QueueTimeoutSeconds),
-		QueueMaxDepth: cfg.Gateway.QueueMaxDepth,
-		// Bare model names route to the configured default plugin only.
-		DefaultPlugin:     cfg.Gateway.DefaultPlugin,
-		Schedule:          a.dispatch,
-		Snapshot:          a.schedulerSnapshot,
-		SchedLog:          logger,
-		Overrides:         a.store.GetModelOverrides,
-		Prefs:             a.store.GetModelPrefs,
-		// D-33 disabled-model classification (400 model_disabled vs 404).
-		ModelCatalogState: a.store.ModelCatalogState,
-		KeyRecord:         a.keyRecord,
-		KeyUsageToday:     a.keyUsageToday,
-		KeyUsageTotal:     a.totalKeyUsage,
-		KeyUsage:          a.recordKeyUsage,
-		DecisionUpstreams: a.decisionUpstreams,
-		PriceFor:          a.priceFor,
-		// User-defined custom models route straight to their own upstream
-		// (Settings → 自定义模型); the key is read from the DPAPI store.
-		CustomModels:   a.gatewayCustomModels,
-		CustomModelKey: a.customModelKey,
-		Redact:         redactOptionsFromConfig(cfg),
-	})
+	a.setGatewayHandler(gateway.New(a.gatewayOptions(cfg, logger)))
 
 	// Atomic daily-quota reservation for client keys (A api_keys.rs:327-390).
 	gateway.InstallKeyUsageReserver(a.store)
@@ -540,6 +531,9 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	// 17. D-21③ runtime wiring: the three quota alert rules re-evaluate on a
 	// fixed interval and reach the configured notify channel.
 	safego.Go(a.logger, "quotaAlertLoop", func() { a.quotaAlertLoop() })
+	// S5-4/S7-5: the usage-spike rule polls on the same cadence family; rule 1
+	// (auth spike) evaluates on each failure inside serveGateway.
+	safego.Go(a.logger, "alertRulesLoop", func() { a.alertRulesLoop() })
 
 	list := a.pluginMgr.List()
 	running := 0
@@ -656,7 +650,7 @@ func (a *App) Shutdown() error {
 				errs = append(errs, fmt.Errorf("app: close listener: %w", err))
 			}
 		}
-		if closer, ok := a.gatewayHandler.(interface{ CloseIdleConnections() }); ok {
+		if closer, ok := a.currentGateway().(interface{ CloseIdleConnections() }); ok {
 			closer.CloseIdleConnections()
 		}
 		if a.sched != nil {
@@ -894,7 +888,7 @@ func (a *App) routeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if isGatewayPath(r.URL.Path) {
-		a.gatewayHandler.ServeHTTP(w, r)
+		a.serveGateway(w, r)
 		return
 	}
 	a.adminHandler.ServeHTTP(w, r)

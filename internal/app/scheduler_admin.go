@@ -911,6 +911,15 @@ func (a *App) syncPoolCatalog(pluginID string) (any, error) {
 	// plugin can serve and lets the user pick a subset).
 	models, err := a.pluginMgr.ModelsFresh(ctx, pluginID)
 	if err != nil {
+		// D-27⑤/D-49: the plugin did not answer; fall back to the persisted
+		// catalog snapshot so models do not disappear until the plugin recovers.
+		if n := a.restoreCatalogFromSnapshot(pluginID); n > 0 {
+			return map[string]any{
+				"ok": true, "skipped": true,
+				"reason":            "plugin did not return a model list; served from catalog snapshot",
+				"snapshot_fallback": true, "synced": n, "models": n,
+			}, nil
+		}
 		return skipped("plugin did not return a model list")
 	}
 	now := time.Now().Unix()
@@ -932,9 +941,23 @@ func (a *App) syncPoolCatalog(pluginID string) (any, error) {
 			SyncedAt:      now,
 		})
 	}
+	if len(entries) == 0 {
+		// D-49: an empty answer must not wipe the catalog; fall back to the
+		// snapshot exactly like a failed sync.
+		if n := a.restoreCatalogFromSnapshot(pluginID); n > 0 {
+			return map[string]any{
+				"ok": true, "skipped": true,
+				"reason":            "plugin returned an empty model list; served from catalog snapshot",
+				"snapshot_fallback": true, "synced": n, "models": n,
+			}, nil
+		}
+		return skipped("plugin returned an empty model list")
+	}
 	if err := a.store.ReplaceModelCatalog(pluginID, entries); err != nil {
 		return nil, err
 	}
+	// D-49: a successful sync refreshes the persisted provider catalog snapshot.
+	a.saveCatalogSnapshot(pluginID, entries)
 	a.snapMu.Lock()
 	delete(a.snapModels, pluginID)
 	a.snapMu.Unlock()

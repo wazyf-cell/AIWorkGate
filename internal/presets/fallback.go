@@ -97,6 +97,10 @@ func (fc FallbackChain) Resolve(ctx context.Context, modelID string) (CatalogEnt
 func (fc FallbackChain) lookupVendor(id string) (CatalogEntry, bool) {
 	for _, p := range fc.Vendor.ByKind(KindVendor) {
 		for _, m := range p.Models {
+			// D-36 Only: an allow-listed preset only vouches for its members.
+			if !p.ExposesModel(m) {
+				continue
+			}
 			if strings.EqualFold(strings.TrimSpace(m), id) {
 				return CatalogEntry{
 					ModelID:     id,
