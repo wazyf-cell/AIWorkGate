@@ -228,6 +228,16 @@ type Options struct {
 	// (plan 2026-10-21 §5, A: CreditsTab.tsx:533-563, usage.rs:143-145).
 	UsageModels       func(days int) ([]store.ModelUsageRow, error)
 	UsageModelLatency func(days int) ([]store.ModelLatencyRow, error)
+	// Per-day request/error totals for the usage heatmap (D-32①) and the
+	// (model × reasoning_tokens>0) split (D-32⑤). Both take an already
+	// validated 1..90 day window; a nil callback answers 501.
+	UsageHeatmap   func(days int) ([]store.DailyCount, error)
+	UsageReasoning func(days int) ([]store.ReasoningSplitRow, error)
+
+	// Retention returns the log retention windows in days (D-32⑦), so the UI
+	// can flag queries that reach past what is still stored. Nil leaves the
+	// status field absent and the UI silent.
+	Retention func() (RetentionInfo, error)
 
 	// S2 unified logs. LogTimeline returns one merged page; LogBody returns
 	// the stored (redacted) request/response body; LogSeed and LogPoll back the
@@ -346,6 +356,17 @@ type Options struct {
 	// into the audit log. Nil disables the action log, which keeps the package
 	// usable on its own in tests.
 	RecordAction func(entry model.AuditEntry) error
+
+	// P4 凭据同步器。CredentialSyncToken reads the sync token from the DPAPI
+	// store; ok=false means unconfigured and the receive endpoint answers 503
+	// sync_token_unconfigured instead of guessing. SyncCredentials applies a
+	// received payload into the local plugin-credential store and returns the
+	// redacted view. CredentialsSync pushes local credentials to a remote host
+	// over ssh; its contract lives in credential_sync.go. Nil callbacks answer
+	// 501 (the receive path answers 503 on a missing token reader).
+	CredentialSyncToken func() (token string, ok bool)
+	SyncCredentials     func(pluginID string, items []SyncCredentialItem) (SyncResult, error)
+	CredentialsSync     func(req CredentialsSyncRequest) (*CredentialsSyncResult, error)
 }
 
 type server struct {
@@ -443,6 +464,9 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/usage/latency/models", s.handleUsageModelLatency)
 	mux.HandleFunc("/api/usage/keys", s.handleUsageKeys)
 	mux.HandleFunc("/api/usage/models", s.handleUsageModels)
+	mux.HandleFunc("/api/usage/heatmap", s.handleUsageHeatmap)
+	mux.HandleFunc("/api/usage/reasoning", s.handleUsageReasoning)
+	mux.HandleFunc("/api/usage/retention", s.handleRetention)
 	mux.HandleFunc("/api/keys", s.handleKeysAPI)
 	mux.HandleFunc("/api/keys/{id}", s.handleKeyAPI)
 	mux.HandleFunc("/api/custom-models", s.handleCustomModels)
@@ -467,6 +491,10 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/scheduler/sticky", s.handleSchedulerSticky)
 	mux.HandleFunc("/api/prompt/analyze", s.handlePromptAnalyze)
 	mux.HandleFunc("/api/routing-groups", s.handleRoutingGroups)
+	// P4 凭据同步：/api/internal/credentials 是机器对机器接收端点（guard 豁免 +
+	// 回环 + X-Sync-Token），/api/credentials/sync 是普通管理端推送端点。
+	mux.HandleFunc(internalCredentialsEndpoint, s.handleInternalCredentials)
+	mux.HandleFunc("/api/credentials/sync", s.handleCredentialsSync)
 	mux.HandleFunc("/api/pools/{plugin}", s.handlePool)
 	mux.HandleFunc("/api/pools/{plugin}/members", s.handlePoolMembers)
 	mux.HandleFunc("/api/pools/{plugin}/sync", s.handlePoolSync)
@@ -544,6 +572,14 @@ func (s *server) guard(next http.Handler) http.Handler {
 		// without a cookie may reach. It still needs the launch token, which it
 		// compares itself.
 		if r.URL.Path == sessionEndpoint {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// The machine-to-machine credential receive endpoint (P4) has no
+		// browser session; its own loopback + X-Sync-Token checks guard it
+		// instead (see credential_sync.go). Origin headers from curl are
+		// absent, so sameOriginRequest would reject a legitimate caller.
+		if guardExemptInternalCredentials(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

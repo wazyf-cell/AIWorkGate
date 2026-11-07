@@ -15,9 +15,12 @@ import {
   type UsageGranularity,
   type UsageKeyRow,
   type UsageKpis,
+  type UsageDailyCount,
   type UsageLatencyDay,
   type UsageModelLatencyRow,
   type UsageModelRow,
+  type UsageReasoningRow,
+  type UsageRetention,
   type UsageSeriesPoint,
   type UsageSession,
   type UsageSessionsParams,
@@ -186,6 +189,37 @@ async function loadClears() {
   }
 }
 
+/* ---- D-32⑦ 保留期口径提示：请求日志只保留 api_request_days 天，汇总最长 ---- */
+
+const retention = ref<UsageRetention>({})
+const retentionLoaded = ref(false)
+
+async function loadRetention() {
+  try {
+    // 旧宿主没有该端点时保持空对象，提示静默缺席。
+    retention.value = (await api.usage.retention().catch(() => ({}))) ?? {}
+    retentionLoaded.value = true
+  } catch {
+    retentionLoaded.value = false
+  }
+}
+
+/**
+ * 当查询起点早于「今天 − api_request_days」时，请求日志已被清理，
+ * 逐请求数字会偏小；给出口径提示而不是让用户误读。
+ */
+const retentionHint = computed(() => {
+  const days = retention.value?.api_request_days
+  if (!retentionLoaded.value || !days || days <= 0) return ''
+  const start = new Date(`${from.value}T00:00:00`)
+  if (Number.isNaN(start.getTime())) return ''
+  const cutoff = new Date()
+  cutoff.setHours(0, 0, 0, 0)
+  cutoff.setDate(cutoff.getDate() - days)
+  if (start.getTime() > cutoff.getTime()) return ''
+  return `请求日志仅保留最近 ${days} 天；更早的区间只有每日汇总数字，逐请表明细不完整`
+})
+
 async function clearUsage() {
   if (!clearArmed.value) {
     clearArmed.value = true
@@ -253,6 +287,12 @@ const keyDays = ref(30)
 const modelDays = ref(30)
 const latencyRows = ref<UsageLatencyDay[]>([])
 const keyRows = ref<UsageKeyRow[]>([])
+// D-32① 日历热力图：近 26 周按日请求/错误总量，页面打开加载一次。
+const HEATMAP_DAYS = 26 * 7
+const heatmapRows = ref<UsageDailyCount[]>([])
+const heatmapLoaded = ref(false)
+// D-32⑤ 思考档拆分：模型 × (reasoning_tokens>0) 小聚合，跟模型排行同窗。
+const reasoningRows = ref<UsageReasoningRow[]>([])
 const modelRows = ref<UsageModelRow[]>([])
 const modelLatencyRows = ref<UsageModelLatencyRow[]>([])
 const latencyLoaded = ref(false)
@@ -268,6 +308,7 @@ const loading = reactive({
   latency: false,
   keys: false,
   models: false,
+  heatmap: false,
 })
 const error = ref('')
 
@@ -278,6 +319,7 @@ let sessionsSeq = 0
 let latencySeq = 0
 let keysSeq = 0
 let modelsSeq = 0
+let heatmapSeq = 0
 
 const sessionParams = computed<UsageSessionsParams>(() => {
   const active = drill.value
@@ -523,19 +565,23 @@ async function loadModels() {
   try {
     // The percentile block is optional: an older host answers 404/501 and the
     // ranking still renders without the latency columns.
-    const [usage, latency] = await Promise.all([
+    // D-32⑤：思考档拆分与排行同窗加载，同样可降级为空表。
+    const [usage, latency, split] = await Promise.all([
       api.usage.models(modelDays.value),
       api.usage.modelLatency(modelDays.value).catch(() => [] as UsageModelLatencyRow[]),
+      api.usage.reasoning(modelDays.value).catch(() => [] as UsageReasoningRow[]),
     ])
     if (token !== modelsSeq) return
     modelRows.value = usage ?? []
     modelLatencyRows.value = latency ?? []
+    reasoningRows.value = split ?? []
     modelsLoaded.value = true
     error.value = ''
   } catch (e) {
     if (token !== modelsSeq) return
     modelRows.value = []
     modelLatencyRows.value = []
+    reasoningRows.value = []
     error.value = errorMessage(e)
   } finally {
     if (token === modelsSeq) loading.models = false
@@ -547,6 +593,129 @@ function setModelDays(days: number) {
   modelDays.value = days
   modelsLoaded.value = false
   void loadModels()
+}
+
+/* ---- D-32① 日历热力图（近 26 周，纯 CSS 网格） ---- */
+
+async function loadHeatmap() {
+  const token = ++heatmapSeq
+  loading.heatmap = true
+  try {
+    // 404/501（旧宿主）降级为空图，不当作页面错误。
+    const data = await api.usage.heatmap(HEATMAP_DAYS).catch(() => [])
+    if (token !== heatmapSeq) return
+    heatmapRows.value = data ?? []
+    heatmapLoaded.value = true
+  } catch {
+    if (token !== heatmapSeq) return
+    heatmapRows.value = []
+  } finally {
+    if (token === heatmapSeq) loading.heatmap = false
+  }
+}
+
+/** day → 行 的快速索引；缺日渲染为空格。 */
+const heatmapByDay = computed(() => {
+  const map = new Map<string, UsageDailyCount>()
+  for (const row of heatmapRows.value) map.set(row.day, row)
+  return map
+})
+
+/**
+ * 热力图网格：以本周（周日起）为界往前取 26×7=182 天，再补齐本周剩余格。
+ * 每列一周（周日开头），与 GitHub 年历方向一致；空白=无数据。
+ */
+interface HeatCell {
+  day: string
+  /** ISO weekday of the cell's date: 0=周日 … 6=周六。 */
+  weekday: number
+  requests: number
+  errors: number
+  level: 0 | 1 | 2 | 3 | 4
+  title: string
+}
+
+const heatmapWeeks = computed<HeatCell[][]>(() => {
+  const cells: HeatCell[] = []
+  const today = new Date()
+  const todayZero = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  const max = Math.max(1, ...heatmapRows.value.map((row) => row.requests ?? 0))
+  const total = HEATMAP_DAYS
+  // 起点：今天-181 天所在周的周日。
+  const start = new Date(todayZero)
+  start.setDate(start.getDate() - (total - 1))
+  start.setDate(start.getDate() - start.getDay())
+  const cursor = new Date(start)
+  while (cursor <= todayZero) {
+    const day = dateISO(cursor)
+    const row = heatmapByDay.value.get(day)
+    const requests = row?.requests ?? 0
+    const errors = row?.errors ?? 0
+    let level: HeatCell['level'] = 0
+    if (requests > 0) {
+      // 四档色阶按对数分：1、>25%、>50%、>75% of max。
+      level = requests >= max ? 4 : requests > max / 2 ? 3 : requests > max / 4 ? 2 : 1
+    }
+    const stamp = formatTimestamp(cursor.getTime() / 1000)
+    cells.push({
+      day,
+      weekday: cursor.getDay(),
+      requests,
+      errors,
+      level,
+      title: errors > 0 ? `${stamp} · ${formatNumber(requests)} 次 / ${formatNumber(errors)} 错` : `${stamp} · ${formatNumber(requests)} 次`,
+    })
+    cursor.setDate(cursor.getDate() + 1)
+  }
+  // 切成周列。
+  const weeks: HeatCell[][] = []
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7))
+  return weeks
+})
+
+const heatmapTotal = computed(() =>
+  heatmapRows.value.reduce((sum, row) => sum + (row.requests ?? 0), 0),
+)
+const heatmapActiveDays = computed(() => heatmapRows.value.filter((row) => (row.requests ?? 0) > 0).length)
+
+/* ---- D-32⑤ 思考档拆分（模型 × reasoning>0） ---- */
+
+interface ReasoningPair {
+  model: string
+  withReq: number
+  withoutReq: number
+  withReasoning: number
+  promptWith: number
+  completionWith: number
+}
+
+const reasoningPairs = computed<ReasoningPair[]>(() => {
+  const map = new Map<string, ReasoningPair>()
+  for (const row of reasoningRows.value) {
+    let entry = map.get(row.model)
+    if (!entry) {
+      entry = { model: row.model, withReq: 0, withoutReq: 0, withReasoning: 0, promptWith: 0, completionWith: 0 }
+      map.set(row.model, entry)
+    }
+    if (row.with_thinking) {
+      entry.withReq = row.requests ?? 0
+      entry.withReasoning = row.reasoning_tokens ?? 0
+      entry.promptWith = row.prompt_tokens ?? 0
+      entry.completionWith = row.completion_tokens ?? 0
+    } else {
+      entry.withoutReq = row.requests ?? 0
+    }
+  }
+  const out = Array.from(map.values())
+  out.sort((a, b) => b.withReq + b.withoutReq - (a.withReq + a.withoutReq) || a.model.localeCompare(b.model))
+  return out
+})
+
+/** 请求里走思考档的占比（0-100）；没有任何思考请求的模型给 0。 */
+function reasoningShare(pair: ReasoningPair): number {
+  const total = pair.withReq + pair.withoutReq
+  if (total <= 0) return 0
+  return Math.round((pair.withReq / total) * 100)
 }
 
 function setKeyDays(days: number) {
@@ -1016,6 +1185,9 @@ onMounted(() => {
   void loadOptions()
   void refresh()
   void loadClears()
+  // D-32① 热力图与保留期口径只跟宿主数据相关，页面打开加载一次。
+  void loadHeatmap()
+  void loadRetention()
 })
 
 onBeforeUnmount(() => {
@@ -1201,6 +1373,43 @@ onBeforeUnmount(() => {
         <span class="stat-sub">TTFB 合计 ÷ 有首字样本数</span>
       </section>
     </div>
+
+    <!-- D-32⑦ 保留期口径提示：查询窗口超过请求日志保留期时才出现 -->
+    <div v-if="retentionHint" class="notice warn retention-hint" role="status">
+      <span>{{ retentionHint }}</span>
+    </div>
+
+    <!-- D-32① 近 26 周请求日历热力图（纯 CSS 网格，数据来自每日汇总） -->
+    <section class="card heatmap-card">
+      <div class="card-head">
+        <h2>近 26 周请求热力图</h2>
+        <div class="row small muted">
+          <span>共 {{ formatNumber(heatmapTotal) }} 次 · 活跃 {{ formatNumber(heatmapActiveDays) }} 天</span>
+          <span class="heat-legend" aria-hidden="true">
+            <i class="heat-cell lv0"></i><i class="heat-cell lv1"></i><i class="heat-cell lv2"></i><i class="heat-cell lv3"></i><i class="heat-cell lv4"></i>
+            <span class="muted">少 → 多</span>
+          </span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div v-if="loading.heatmap && !heatmapLoaded" class="skeleton heat-skeleton" aria-hidden="true"></div>
+        <div v-else-if="heatmapWeeks.length === 0" class="empty">
+          <strong>暂无按日汇总</strong>
+          <span>产生请求后这里会出现按天着色的年历。</span>
+        </div>
+        <div v-else class="heat-grid" role="img" aria-label="近 26 周每日请求次数热力图">
+          <div v-for="(week, wi) in heatmapWeeks" :key="`week-${wi}`" class="heat-week">
+            <span
+              v-for="cell in week"
+              :key="cell.day"
+              class="heat-cell"
+              :class="`lv${cell.level}`"
+              :title="cell.title"
+            ></span>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <div class="tabs" role="tablist" aria-label="用量视图">
       <button
@@ -1691,6 +1900,55 @@ onBeforeUnmount(() => {
           </table>
         </div>
       </section>
+
+      <!-- D-32⑤ 思考档拆分：同一窗口内 (model × reasoning_tokens>0 与否) -->
+      <section class="card">
+        <div class="card-head">
+          <h2>思考档拆分</h2>
+          <span class="sub">按「模型 × 是否走思考档（reasoning_tokens &gt; 0）」聚合 · 与上方排行同一窗口</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table usage-table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>思考请求</th>
+                <th>非思考请求</th>
+                <th>思考占比</th>
+                <th>思考 tokens</th>
+                <th title="走思考档请求的输入 tokens 合计">输入（思考）</th>
+                <th title="走思考档请求的输出 tokens 合计">输出（思考）</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-if="loading.models && !modelsLoaded">
+                <tr v-for="n in 3" :key="`rs-sk-${n}`">
+                  <td colspan="7"><span class="skeleton skeleton-line"></span></td>
+                </tr>
+              </template>
+              <template v-else>
+                <tr v-for="pair in reasoningPairs" :key="pair.model">
+                  <td class="title-cell mono">{{ pair.model || '未上报' }}</td>
+                  <td class="num">{{ formatNumber(pair.withReq) }}</td>
+                  <td class="num">{{ formatNumber(pair.withoutReq) }}</td>
+                  <td class="num">{{ reasoningShare(pair) }}%</td>
+                  <td class="num">{{ formatNumber(pair.withReasoning) }}</td>
+                  <td class="num">{{ formatNumber(pair.promptWith) }}</td>
+                  <td class="num">{{ formatNumber(pair.completionWith) }}</td>
+                </tr>
+                <tr v-if="reasoningPairs.length === 0">
+                  <td colspan="7">
+                    <div class="empty">
+                      <strong>暂无思考档数据</strong>
+                      <span>上游没有回传 reasoning_tokens，或窗口内没有请求。</span>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </template>
 
     <!-- 到期 -->
@@ -2057,5 +2315,57 @@ onBeforeUnmount(() => {
 
 .swatch-output {
   background: var(--chart-2);
+}
+
+/* D-32① 近 26 周日历热力图：纯 CSS 网格，每列一周、周日开头。 */
+.heat-grid {
+  display: flex;
+  gap: 3px;
+  overflow-x: auto;
+  padding-bottom: var(--space-1);
+}
+
+.heat-week {
+  display: grid;
+  grid-template-rows: repeat(7, 12px);
+  gap: 3px;
+}
+
+.heat-cell {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--surface-3, rgba(127, 127, 127, 0.15));
+}
+
+.heat-cell.lv0 {
+  background: rgba(127, 127, 127, 0.15);
+}
+
+.heat-cell.lv1 {
+  background: color-mix(in srgb, var(--ok) 30%, transparent);
+}
+
+.heat-cell.lv2 {
+  background: color-mix(in srgb, var(--ok) 55%, transparent);
+}
+
+.heat-cell.lv3 {
+  background: color-mix(in srgb, var(--ok) 78%, transparent);
+}
+
+.heat-cell.lv4 {
+  background: var(--ok);
+}
+
+.heat-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.heat-skeleton {
+  height: 84px;
+  border-radius: 4px;
 }
 </style>

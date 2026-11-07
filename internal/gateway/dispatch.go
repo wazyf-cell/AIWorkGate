@@ -38,7 +38,12 @@ const (
 	downgradedHeader    = "X-Aiworkgate-Downgraded"
 	conversationHeader  = "X-Conversation-Id"
 	clientKeyHeader     = "X-Client-Key"
-	scheduledSourceName = "scheduler"
+	// D-43 会话亲和的请求侧入口：会话轮次、亲和窗口（秒）与 strict 模式。
+	// 非法值按缺省处理（0/false），缺省时调度行为与既有 sticky 完全一致。
+	conversationTurnHeader = "X-Conversation-Turn"
+	affinityWithinHeader   = "X-Affinity-Within"
+	affinityStrictHeader   = "X-Affinity-Strict"
+	scheduledSourceName    = "scheduler"
 )
 
 // errNotScheduled marks a model that the scheduler does not own: the request
@@ -338,7 +343,17 @@ type requestFeatures struct {
 	Agent           string
 }
 
-func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, clientKey string, features requestFeatures, exclude map[scheduler.AccountKey]bool, probe []byte) (*scheduler.Snapshot, scheduler.Decision, error) {
+// requestAffinityInput carries the D-43 session-affinity inputs read from the
+// request headers (requestAffinity below) into scheduleModel. Keeping them in
+// one struct lets forwardScheduled parse the headers once per request instead
+// of once per schedule attempt.
+type requestAffinityInput struct {
+	Turn   int           // 会话内第几轮（X-Conversation-Turn）
+	Within time.Duration // 亲和窗口（X-Affinity-Within，秒）
+	Strict bool          // strict 模式（X-Affinity-Strict）
+}
+
+func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, clientKey string, features requestFeatures, affinity requestAffinityInput, exclude map[scheduler.AccountKey]bool, probe []byte) (*scheduler.Snapshot, scheduler.Decision, error) {
 	if g == nil || strings.TrimSpace(modelID) == "" {
 		return nil, scheduler.Decision{}, errNotScheduled
 	}
@@ -421,10 +436,14 @@ func (g *Gateway) scheduleModel(ctx context.Context, modelID, conversationID, cl
 	}
 
 	decision, err := g.sched.PickWait(ctx, snap, scheduler.Request{
-		Model:           routeModel,
-		ConversationID:  conversationID,
-		ClientKey:       clientKey,
-		Exclude:         exclude,
+		Model:          routeModel,
+		ConversationID: conversationID,
+		ClientKey:      clientKey,
+		Exclude:        exclude,
+		// D-43 会话亲和：请求头携带的轮次/窗口/strict 直通调度器。
+		Turn:            affinity.Turn,
+		Within:          affinity.Within,
+		Strict:          affinity.Strict,
 		PromptChars:     features.PromptChars,
 		EstimatedTokens: features.EstimatedTokens,
 		HasImage:        features.HasImage,
@@ -484,11 +503,15 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 		}
 	}()
 
+	// D-43: the session-affinity inputs live in the request headers, so they
+	// are parsed once here and passed to every schedule attempt unchanged.
+	affinity := requestAffinity(r)
+
 	for attempt := 0; attempt < maxScheduleAttempts; attempt++ {
 		snap, decision, err := g.scheduleModel(r.Context(), rec.model, rec.conversationID, requestClientKey(r, rec.keyID), requestFeatures{
 			PromptChars: rec.promptChars, EstimatedTokens: rec.estTokens,
 			HasImage: rec.hasImage, Thinking: rec.thinking, Agent: rec.agent,
-		}, exclude, body)
+		}, affinity, exclude, body)
 		if err != nil {
 			if errors.Is(err, errNotScheduled) {
 				// The scheduler does not own this name. A bare model name may
@@ -685,7 +708,7 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 			out := g.hedgedAttempt(w, r, rec, body, snap, pa, time.Duration(hedgeMS)*time.Millisecond)
 			res, winDecision, winPinned, secondKey = out.res, out.decision, out.pinned, out.secondKey
 		} else {
-			res = g.attempt(w, r, rec, pa.target, pa.headers, pa.body, pa.pinned)
+			res = g.attempt(w, r, rec, pa)
 		}
 		// The concurrency slot and the scheduler lease stay held while the same
 		// account backs off, so no other request can jump onto it.
@@ -735,7 +758,7 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 							errText: "credential refreshed",
 							action:  "refresh_same",
 						})
-						res = g.attempt(w, r, rec, pa.target, pa.headers, pa.body, winPinned)
+						res = g.attempt(w, r, rec, pa)
 						continue
 					}
 					switch {
@@ -787,7 +810,7 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 					rec.errText = "client canceled during retry backoff"
 					return
 				}
-				res = g.attempt(w, r, rec, pa.target, pa.headers, pa.body, winPinned)
+				res = g.attempt(w, r, rec, pa)
 				continue
 			}
 			g.reportAttempt(winDecision, winDecision.PluginID, winPinned, rec, res, seenFailures)
@@ -826,6 +849,12 @@ type preparedAttempt struct {
 	body       []byte
 	downgraded string
 	release    func()
+	// firstContentDeadline is the D-43 首字截止: an attempt that has written no
+	// body content to the client by this point is cancelled and the next
+	// account is tried (D-25① 同判定点——未写正文才允许换). attempt/hedged
+	// re-stamp it on every upstream call, so retries get a fresh window and the
+	// plugin queue wait never burns the budget.
+	firstContentDeadline time.Time
 }
 
 // hedgeResult reports which attempt won the race.
@@ -861,7 +890,10 @@ func (g *Gateway) hedgedAttempt(w http.ResponseWriter, r *http.Request, rec *req
 	}()
 	firstCh := make(chan hedgeOutcome, 1)
 	go func() {
-		resp, err := g.start(ctx1, r.Method, first.target, first.headers, first.body)
+		// D-43: the first-content window starts when this attempt actually goes
+		// upstream, not when it was prepared (a queue wait must not burn it).
+		first.firstContentDeadline = time.Now().Add(upstreamFirstContentTimeout)
+		resp, err := g.start(ctx1, r.Method, first.target, first.headers, first.body, first.firstContentDeadline)
 		firstCh <- hedgeOutcome{resp: resp, err: err, prepared: first}
 	}()
 
@@ -888,7 +920,8 @@ func (g *Gateway) hedgedAttempt(w http.ResponseWriter, r *http.Request, rec *req
 	defer cancel2()
 	secondCh := make(chan hedgeOutcome, 1)
 	go func() {
-		resp, err := g.start(ctx2, r.Method, second.target, second.headers, second.body)
+		second.firstContentDeadline = time.Now().Add(upstreamFirstContentTimeout)
+		resp, err := g.start(ctx2, r.Method, second.target, second.headers, second.body, second.firstContentDeadline)
 		secondCh <- hedgeOutcome{resp: resp, err: err, prepared: second}
 	}()
 
@@ -975,7 +1008,7 @@ func (g *Gateway) finishHedge(w http.ResponseWriter, r *http.Request, rec *reqRe
 	if p.pinned != "" {
 		rec.account = p.pinned
 	}
-	out.res = g.deliver(w, rec, o.resp, p.pinned)
+	out.res = g.deliver(w, rec, o.resp, p)
 	_ = o.resp.Body.Close()
 	if p.release != nil {
 		p.release()
@@ -1282,9 +1315,12 @@ func (r *upstreamAttemptResult) retryable() bool {
 
 // attempt performs the upstream call. Successful responses stream through
 // unchanged; retryable failures are buffered so another account can be tried.
-func (g *Gateway) attempt(w http.ResponseWriter, r *http.Request, rec *reqRecord, target string, headers http.Header, body []byte, pinned string) *upstreamAttemptResult {
+// Every call stamps a fresh D-43 first-content deadline onto the prepared
+// attempt, so same-account retries and hedged legs each get their own window.
+func (g *Gateway) attempt(w http.ResponseWriter, r *http.Request, rec *reqRecord, pa *preparedAttempt) *upstreamAttemptResult {
 	res := &upstreamAttemptResult{}
-	resp, err := g.start(r.Context(), r.Method, target, headers, body)
+	pa.firstContentDeadline = time.Now().Add(upstreamFirstContentTimeout)
+	resp, err := g.start(r.Context(), r.Method, pa.target, pa.headers, pa.body, pa.firstContentDeadline)
 	if err != nil {
 		if r.Context().Err() != nil {
 			res.clientGone = true
@@ -1294,12 +1330,13 @@ func (g *Gateway) attempt(w http.ResponseWriter, r *http.Request, rec *reqRecord
 		return res
 	}
 	defer resp.Body.Close()
-	return g.deliver(w, rec, resp, pinned)
+	return g.deliver(w, rec, resp, pa)
 }
 
 // start issues one upstream request and returns once headers arrive. The
-// returned body carries the idle-read deadline and owns the per-request cancel.
-func (g *Gateway) start(ctx context.Context, method, target string, headers http.Header, body []byte) (*http.Response, error) {
+// returned body carries the idle-read deadline (plus the D-43 first-content
+// deadline when set) and owns the per-request cancel.
+func (g *Gateway) start(ctx context.Context, method, target string, headers http.Header, body []byte, firstContentDeadline time.Time) (*http.Response, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
 	if err != nil {
@@ -1318,18 +1355,25 @@ func (g *Gateway) start(ctx context.Context, method, target string, headers http
 		cancel()
 		return nil, err
 	}
-	resp.Body = newIdleReadBody(resp.Body, upstreamIdleReadTimeout, cancel)
+	resp.Body = newFirstReadBody(resp.Body, upstreamIdleReadTimeout, firstContentDeadline, cancel)
 	return resp, nil
 }
 
 // deliver streams a successful response or buffers a retryable failure.
-func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Response, pinned string) *upstreamAttemptResult {
+//
+// D-43 首字超时换成员（D-25① 同判定点）: the first body byte is awaited
+// BEFORE anything is written to the client. An upstream that sent headers but
+// produces no first content within its attempt's firstContentDeadline is
+// cancelled and reported as a retryable failure, so the dispatch loop can
+// switch accounts. Once the first byte is handed to the client the reply is
+// committed — res.streamed keeps every later switch attempt away.
+func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Response, pa *preparedAttempt) *upstreamAttemptResult {
 	res := &upstreamAttemptResult{}
 	res.status = resp.StatusCode
 	res.header = resp.Header.Clone()
 	res.account = strings.TrimSpace(resp.Header.Get(accountHeader))
 	if res.account == "" {
-		res.account = pinned
+		res.account = pa.pinned
 	}
 	res.credits = parseCredits(resp.Header.Get(creditsHeader))
 
@@ -1342,6 +1386,22 @@ func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Resp
 		if rec.errText == "" {
 			res.errText = truncateUTF8(strings.TrimSpace(string(buf)), 512)
 		}
+		return res
+	}
+
+	tap := newBodyTap(g.bodyCap, isSSE)
+	buf := make([]byte, 32*1024)
+	// The first read carries the D-43 first-content deadline: the wrapper
+	// cancels the attempt context when the deadline fires and Read returns
+	// errFirstContentTimeout.
+	n, readErr := resp.Body.Read(buf)
+	if n == 0 && readErr != nil && errors.Is(readErr, errFirstContentTimeout) {
+		// Nothing has been written to the client, so the reply has not started
+		// and another account may take over (D-25① 判定点). Status 0 keeps the
+		// result in the transport-failure shape the retry loop already handles.
+		res.status = 0
+		res.errText = readErr.Error()
+		rec.errText = res.errText
 		return res
 	}
 
@@ -1367,11 +1427,8 @@ func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Resp
 		flusher.Flush()
 	}
 
-	tap := newBodyTap(g.bodyCap, isSSE)
 	ttfbSet := false
-	buf := make([]byte, 32*1024)
 	for {
-		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if !ttfbSet {
 				rec.ttfb = time.Since(rec.start)
@@ -1393,6 +1450,7 @@ func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Resp
 			}
 			break
 		}
+		n, readErr = resp.Body.Read(buf)
 	}
 	if !ttfbSet {
 		rec.ttfb = headerAt.Sub(rec.start)
@@ -1612,4 +1670,27 @@ func requestClientKey(r *http.Request, keyID string) string {
 		return v
 	}
 	return keyID
+}
+
+// requestAffinity reads the D-43 session-affinity inputs (X-Conversation-Turn,
+// X-Affinity-Within seconds, X-Affinity-Strict) and maps them onto
+// scheduler.Request.Turn/Within/Strict. Invalid values degrade to the defaults
+// (0 / no window / non-strict) instead of failing the request.
+func requestAffinity(r *http.Request) requestAffinityInput {
+	aff := requestAffinityInput{}
+	if raw := strings.TrimSpace(r.Header.Get(conversationTurnHeader)); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			aff.Turn = n
+		}
+	}
+	if raw := strings.TrimSpace(r.Header.Get(affinityWithinHeader)); raw != "" {
+		if secs, err := strconv.ParseInt(raw, 10, 64); err == nil && secs > 0 {
+			aff.Within = time.Duration(secs) * time.Second
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get(affinityStrictHeader))) {
+	case "1", "true", "yes", "on":
+		aff.Strict = true
+	}
+	return aff
 }

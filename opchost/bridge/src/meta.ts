@@ -54,6 +54,8 @@ export function buildMeta(ctx: BridgeContext): MetaResponse {
   const providers: ProviderSummary[] = Object.values(ctx.registry.providers)
     .map((p) => ({ id: p.id, name: p.name, models: Object.keys(p.models).length }))
     .sort((a, b) => a.id.localeCompare(b.id));
+  // D-58 hooks 受控面摘要（宿主忽略未知字段；全量在 GET /admin/hooks）。
+  const hooksSurface = ctx.hooks?.snapshot();
   return {
     id: ctx.config.pluginId,
     name: BRIDGE_NAME,
@@ -67,5 +69,8 @@ export function buildMeta(ctx: BridgeContext): MetaResponse {
     providers,
     plugin_dir: ctx.registry.dir,
     warnings: ctx.registry.warnings,
+    ...(hooksSurface
+      ? { hooks: { declared: hooksSurface.declared, actual: hooksSurface.actual } }
+      : {}),
   };
 }

@@ -17,6 +17,7 @@ import type {
   BridgeContext,
   JsonValue,
 } from '../types.ts'
+import type { HookTracker } from '../hooks.ts'
 import type { AdminCredentialStore, AdminDeps, PluginCheckinResult, PluginHandle, PluginRegistry, PluginSigninStart, PluginSite, SitesResolver } from './types.ts'
 
 /** 共享 CredentialRecord → 插件 getAuth() 看到的 auth 对象（magpie 形状）。 */
@@ -59,6 +60,8 @@ export interface RegistryOptions {
   /** 覆盖能力集；缺省按插件实际钩子推导 */
   capabilities?: Capability[]
   warnings?: string[]
+  /** D-58：桥运行时 hooks 实际面计数（authorize/checkin 调用点）。可选。 */
+  hooks?: HookTracker
 }
 
 /** LoadResult（bridge-core）→ 管理面 PluginRegistry（一个桥 = 一个插件句柄）。 */
@@ -107,6 +110,8 @@ export function registryFromLoad(load: LoadResult, credentials: SharedCredential
       if (!prov) throw new Error(`unknown provider ${providerId}`)
       const method = firstOAuthMethod(openCodeOf(prov) as OpenCodePlugin)
       if (!method?.authorize) throw new Error(`provider ${providerId} declares no browser sign-in method`)
+      // D-58 实际面：methods[].authorize 真实调用过一次。
+      opts.hooks?.count('auth.methods')
       // 真包 authorize() 不收参数；桥自持回调时把 redirectUri 一起给过去（支持的插件会用）
       const start = (await method.authorize(o.redirectUri ? { redirectUri: o.redirectUri } : undefined)) as PluginSigninStart
       if (!start || typeof start.url !== 'string' || !start.url) throw new Error(`provider ${providerId} returned no sign-in URL`)
@@ -117,6 +122,8 @@ export function registryFromLoad(load: LoadResult, credentials: SharedCredential
       if (!prov) throw new Error(`unknown provider ${providerId}`)
       const fn = openCodeOf(prov)?.auth?.checkin
       if (typeof fn !== 'function') throw new Error(`provider ${providerId} has no check-in hook`)
+      // D-58 实际面：auth.checkin 真实调用过一次。
+      opts.hooks?.count('auth.checkin')
       const out = (await fn(getAuthFor(providerId))) as PluginCheckinResult | undefined
       if (!out || typeof out.outcome !== 'string') throw new Error(`provider ${providerId} returned no outcome`)
       return out
@@ -141,6 +148,8 @@ export function adminDepsFromBridge(ctx: BridgeContext, opts: RegistryOptions = 
     dataDir: ctx.config.dataDir,
     plugins: registryFromLoad(ctx.registry, ctx.credentials, {
       pluginId: ctx.config.pluginId,
+      // D-58：桥运行时 hooks 实际面（authorize/checkin 计数）随之进入管理面。
+      ...(ctx.hooks ? { hooks: ctx.hooks } : {}),
       ...opts,
     }),
   }

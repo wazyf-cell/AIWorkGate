@@ -30,6 +30,7 @@ import path from "node:path";
 
 import { createFileCredentialStore } from "./admin/index.ts";
 import { loadEgressFromEnv, reportDeclarationGaps } from "./egress/index.ts";
+import { createHookTracker } from "./hooks.ts";
 import { loadPluginDir, ensurePluginDir } from "./loader.ts";
 import { bridgeCredentialStore, createBridgeServer } from "./server.ts";
 import { importMagpieAuth, magpieAuthFile } from "./magpie-auth.ts";
@@ -202,11 +203,16 @@ async function main(): Promise<void> {
     });
   }
 
+  // D-58：hooks 受控面 tracker。声明面在加载期登记，实际面是桥运行时的
+  // 内存计数（重启清零）——/admin/hooks 与 /meta.hooks 都读它。
+  const hooks = createHookTracker();
+
   const registry = await loadPluginDir({
     dir: config.pluginDir,
     credentials,
     egress: egress.guard,
     pluginId: config.pluginId,
+    hooks,
   });
   // P2：装了桥就能用 magpie 已有登录态；桥自己的登录/续期记录优先。
   try {
@@ -228,7 +234,7 @@ async function main(): Promise<void> {
     console.warn(gap);
   }
 
-  const ctx: BridgeContext = { config, startedAt, registry, credentials };
+  const ctx: BridgeContext = { config, startedAt, registry, credentials, hooks };
   // 生产挂载：/health、Bearer 闸门、/meta、/v1/models、/v1/chat/completions、
   // admin.handle()（/admin/*、/accounts、/checkin）、兜底 404 —— 全在 server.ts 里。
   const server = createBridgeServer(ctx, { adminStore, egressGuard: egress.guard });
@@ -257,6 +263,9 @@ async function main(): Promise<void> {
     }
     console.log(
       `[bridge] providers:  ${providers || "(none)"} | plugins=${registry.plugins.length}`,
+    );
+    console.log(
+      `[bridge] hooks: declared=${hooks.snapshot().declared.join("|") || "(none)"}`,
     );
     console.log(
       "[bridge] endpoints:  /health(open) /meta /v1/models /v1/chat/completions /accounts /checkin /admin/*",

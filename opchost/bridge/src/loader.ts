@@ -34,6 +34,7 @@ import type {
   ProviderConfigEntry,
 } from "./types.ts";
 import type { EgressGuard } from "./egress/index.ts";
+import type { HookTracker } from "./hooks.ts";
 
 // ---------------------------------------------------------------------------
 // CredentialStore（占位实现，P4 前为明文 JSON，权限 0600）
@@ -184,12 +185,17 @@ async function pickEntryFiles(target: string): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 /** 从 config 钩子 + provider.models 提取 provider 名、provider 级 chat 基址与静态模型表。 */
-async function describePlugin(inst: OpenCodePlugin): Promise<{ name: string; models: PluginModelMap; api?: string }> {
+async function describePlugin(
+  inst: OpenCodePlugin,
+  hooks?: HookTracker,
+): Promise<{ name: string; models: PluginModelMap; api?: string }> {
   const id = inst.provider.id;
   const cfg: MutableProviderConfig = {};
   if (typeof inst.config === "function") {
     try {
       await inst.config(cfg);
+      // D-58：config 钩子真实调用过一次（成功才算实际面）。
+      hooks?.count("config");
     } catch {
       // config 钩子失败只影响名字/缺省表，不终止加载。
     }
@@ -205,6 +211,8 @@ async function describePlugin(inst: OpenCodePlugin): Promise<{ name: string; mod
     try {
       // 无凭据 → 插件回落到静态表（trae L3607：auth.type !== "oauth" → provider.models）。
       const got = await pm(entry ?? { id, models: {} }, { auth: null });
+      // D-58：provider.models 以函数形态真实调用过一次。
+      hooks?.count("provider.models");
       if (got && typeof got === "object") {
         for (const [k, v] of Object.entries(got)) {
           if (v && typeof v === "object") models[k] = v as PluginModelEntry;
@@ -304,6 +312,8 @@ export interface LoadOptions {
   egress?: EgressGuard;
   /** 宿主注入的插件 id（AIWORKGATE_PLUGIN_ID）；声明以它为主键。 */
   pluginId?: string;
+  /** D-58 hooks 面登记：加载期声明 + config/provider.models 调用计数。可选。 */
+  hooks?: HookTracker;
 }
 
 /**
@@ -388,7 +398,7 @@ export async function loadPluginDir(opts: LoadOptions): Promise<LoadResultWithSi
         continue;
       }
 
-      const { name: providerName, models, api: providerApi } = await describePlugin(inst);
+      const { name: providerName, models, api: providerApi } = await describePlugin(inst, opts.hooks);
       const loaded: LoadedPlugin = {
         file,
         exportName: name,
@@ -398,6 +408,8 @@ export async function loadPluginDir(opts: LoadOptions): Promise<LoadResultWithSi
       };
       providers[id] = { id, name: providerName, models, ...(providerApi ? { api: providerApi } : {}), plugin: loaded };
       plugins.push(loaded);
+      // D-58：登记该 provider 的声明面（对象键存在性，不调用任何钩子）。
+      opts.hooks?.declare(id, inst);
 
       // P8：采集该 provider 的 SITES 域名（供声明 + /admin/manifest）
       const site = moduleSites[id];

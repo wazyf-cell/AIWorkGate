@@ -212,6 +212,8 @@ export interface MetaResponse {
   providers?: ProviderSummary[];
   plugin_dir?: string;
   warnings?: string[];
+  /** D-58 hooks 受控面摘要：{ declared: string[], actual: Record<string, number> }。 */
+  hooks?: { declared: string[]; actual: Record<string, number> };
 }
 
 // ---------------------------------------------------------------------------
@@ -538,4 +540,10 @@ export interface BridgeContext {
   startedAt: number;
   registry: LoadResult;
   credentials: CredentialStore;
+  /**
+   * D-58 hooks 受控面：声明面（加载期）+ 实际面（运行期内存计数）。
+   * /admin/hooks 与 /meta.hooks 摘要共用这一份快照。可选：standalone /
+   * 旧调用方不给时按空面处理。
+   */
+  hooks?: import("./hooks.ts").HookTracker;
 }

@@ -247,6 +247,34 @@ function rangeParams(): { from?: string; to?: string } {
   return { from: fromDate.value || undefined, to: toDay.value || undefined }
 }
 
+/* ---- D-32⑦ 保留期口径提示：自定义窗口越过请求日志保留期时提示 ---- */
+
+const retentionDays = ref(0)
+
+onMounted(async () => {
+  // 旧宿主没有 /api/usage/retention 时保持 0，提示缺席即可。
+  try {
+    const info = await api.usage.retention()
+    retentionDays.value = info?.api_request_days ?? 0
+  } catch {
+    retentionDays.value = 0
+  }
+})
+
+const retentionHint = computed(() => {
+  if (retentionDays.value <= 0) return ''
+  const cutoff = new Date()
+  cutoff.setHours(0, 0, 0, 0)
+  cutoff.setDate(cutoff.getDate() - retentionDays.value)
+  const startDay = dateISO(cutoff)
+  if (range.value === 'today' || range.value === 'hour') return ''
+  const start = fromDate.value || ''
+  if (start && start < startDay) {
+    return `请求日志仅保留最近 ${retentionDays.value} 天；更早区间的记录已被清理，结果会不完整`
+  }
+  return ''
+})
+
 /** Timeline page load; `append` continues from the last page's cursor. */
 async function loadTimeline(append = false) {
   if (append && !nextCursor.value) return
@@ -1364,6 +1392,9 @@ onBeforeUnmount(() => {
             <span class="muted small">至</span>
             <input v-model="toDay" class="input input-date" type="date" aria-label="结束日期" />
           </div>
+
+          <!-- D-32⑦ 保留期口径提示：自定义窗口越过请求日志保留期时显示 -->
+          <span v-if="retentionHint" class="small muted" role="status">⚠ {{ retentionHint }}</span>
 
           <div class="field grow log-keyword">
             <input

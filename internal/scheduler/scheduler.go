@@ -410,6 +410,24 @@ type Request struct {
 	ClientKey      string
 	Exclude        map[AccountKey]bool
 	Hedge          bool
+	// D-43 会话亲和（plans/2026-11-05 计划）：Turn 是会话内第几轮。它与既有
+	// sticky 的关系：本实现的会话键（ConversationID）在亲和窗口内始终钉住同
+	// 一账号，Turn 递增从不参与选择，仅作为会话轮次的显式标记随请求传递、
+	// 供 trace/审计使用——「Turn 递增不换号」由此成立，而不是由 Turn 的数值
+	// 触发任何切换逻辑。
+	Turn int
+	// Within is the D-43 request-scoped affinity window. When > 0 it overrides
+	// the pool's ConvStickyTTL for conversation pins: the same session key
+	// sticks to the picked account for Within (窗口从首次选定起算，命中不续
+	// 期，与既有 sticky 的 keep-expiry 规则一致)。It also lets a caller opt
+	// into conversation affinity on a pool whose ConvStickyTTL is 0. Pool-scope
+	// (client key) stickiness is unaffected and keeps its pool TTL.
+	Within time.Duration
+	// Strict is the D-43 strict mode: an expired window or a temporarily
+	// unavailable pinned account no longer breaks affinity; only permanent
+	// loss (disabled / no credential / not a member / removed from the pool)
+	// switches accounts. See sticky_why.go for the exact state set.
+	Strict bool
 	// P11 group-rule features, computed by the gateway from the request body.
 	PromptChars     int
 	EstimatedTokens int
@@ -425,7 +443,11 @@ type Decision struct {
 	Model        string   `json:"model"`
 	LogicalModel string   `json:"logical_model,omitempty"`
 	Sticky       bool     `json:"sticky"`
-	Reasons      []string `json:"reasons,omitempty"`
+	// StickyWhy is the D-43 seven-state verdict of why the decision stuck to
+	// (or left) the session's account; the states are documented in
+	// sticky_why.go. Empty only for legacy zero-value Decisions.
+	StickyWhy string   `json:"sticky_why,omitempty"`
+	Reasons   []string `json:"reasons,omitempty"`
 }
 
 // Candidate is one explain row: an account considered (or a pool rejected
@@ -436,6 +458,8 @@ type Candidate struct {
 	AccountID string  `json:"account_id,omitempty"`
 	Score     float64 `json:"score"`
 	Sticky    bool    `json:"sticky,omitempty"`
+	// StickyWhy mirrors Decision.StickyWhy on the selected row (D-43).
+	StickyWhy string  `json:"sticky_why,omitempty"`
 	Selected  bool    `json:"selected"`
 	Rejected  bool    `json:"rejected,omitempty"`
 	Reason    string  `json:"reason,omitempty"`
@@ -1382,22 +1406,33 @@ func (s *Scheduler) ensureStickyLocked(scope string) {
 
 // lookupSticky returns one unexpired entry. Expired rows are deleted lazily.
 func (s *Scheduler) lookupSticky(scope, key string, now int64) (stickyEntry, bool) {
-	if key == "" {
+	entry, found, expired := s.lookupStickyState(scope, key, now)
+	if expired {
 		return stickyEntry{}, false
+	}
+	return entry, found
+}
+
+// lookupStickyState is lookupSticky with the D-43 expired/absent distinction:
+// it reports whether a row existed at all and whether the row it found had
+// already lapsed (the row is deleted lazily, exactly like lookupSticky does).
+func (s *Scheduler) lookupStickyState(scope, key string, now int64) (entry stickyEntry, found, expired bool) {
+	if key == "" {
+		return stickyEntry{}, false, false
 	}
 	s.ensureStickyLocked(scope)
-	entry, ok := s.stickyEntries[stickyKey{Scope: scope, Key: key}]
+	e, ok := s.stickyEntries[stickyKey{Scope: scope, Key: key}]
 	if !ok {
-		return stickyEntry{}, false
+		return stickyEntry{}, false, false
 	}
-	if entry.ExpiresAt <= now {
+	if e.ExpiresAt <= now {
 		delete(s.stickyEntries, stickyKey{Scope: scope, Key: key})
 		if s.stickyStore != nil {
 			_ = s.stickyStore.DeleteSticky(scope, key)
 		}
-		return stickyEntry{}, false
+		return e, true, true
 	}
-	return entry, true
+	return e, true, false
 }
 
 func (s *Scheduler) saveSticky(scope, key, pluginID, accountID string, expiresAt int64) {
@@ -1535,6 +1570,10 @@ type plan struct {
 	stickyKey      string
 	skipConvSticky bool
 	skipPoolSticky bool
+	// strictRepin marks a D-43 strict hold past the window expiry: the lapsed
+	// pin was lazily deleted, so persistSticky must write a fresh pin to keep
+	// holding affinity across requests.
+	strictRepin bool
 	// rpmWaitable marks a failed plan whose only recoverable blocker is the
 	// per-account RPM window; rpmWake is the earliest second at which some
 	// candidate slides back in (P5 每分钟请求数).
@@ -1696,7 +1735,7 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		if len(reasons) == 0 {
 			reasons = []string{"no candidate pool"}
 		}
-		p := &plan{candidates: traceCandidates(traces, nil, Account{}, false, s, now), reasons: reasons}
+		p := &plan{candidates: traceCandidates(traces, nil, Account{}, false, StickyNoSession, s, now), reasons: reasons}
 		p.rpmWaitable, p.rpmWake = rpmWaitWindow(traces)
 		return p, fmt.Errorf("%w: %s", ErrNoCandidate, strings.Join(reasons, "; "))
 	}
@@ -1739,6 +1778,9 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 	}
 
 	// Sticky lookup: conversation first, then pool (model + client key).
+	// D-43 wraps the pre-existing pin mechanics in the seven-state StickyWhy
+	// verdict (sticky_why.go): every branch below records why the pin was
+	// honored, held strict, skipped for one attempt, or dropped.
 	var (
 		stickyPC       *poolCandidate
 		stickyAcc      Account
@@ -1746,41 +1788,38 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		stickyKey      string
 		skipConvSticky bool
 		skipPoolSticky bool
+		strictRepin    bool
+		stickyWhy      = StickyNoSession
 	)
-	if conv := strings.TrimSpace(req.ConversationID); conv != "" {
-		if entry, ok := s.lookupSticky(StickyScopeConversation, conv, now); ok {
-			pc, acc, ttl, excluded := matchSticky(evaluated, entry, true, req)
-			switch {
-			case pc == nil || ttl <= 0:
-				// The pinned account disappeared, is cooling down or the pool
-				// disabled conversation stickiness: drop the pin and reselect.
-				s.dropStickyLocked(StickyScopeConversation, conv)
-				rejections = append(rejections, "sticky conv binding invalid; dropped")
-			case excluded:
-				// A retry exclusion is per attempt: keep the pin for the next
-				// request but do not select it now.
-				skipConvSticky = true
-				rejections = append(rejections, "sticky conv account excluded for this attempt")
-			default:
-				stickyPC, stickyAcc, stickyKind, stickyKey = pc, acc, StickyScopeConversation, conv
-			}
+	conv := strings.TrimSpace(req.ConversationID)
+	if conv != "" {
+		v := s.resolveStickyLocked(evaluated, StickyScopeConversation, conv, true, req, now)
+		if v.pc != nil {
+			stickyPC, stickyAcc, stickyKind, stickyKey = v.pc, v.acc, StickyScopeConversation, conv
+		}
+		skipConvSticky = v.skip
+		strictRepin = v.repin
+		stickyWhy = v.why
+		if v.rejection != "" {
+			rejections = append(rejections, v.rejection)
 		}
 	}
 	if stickyPC == nil {
 		if clientKey := strings.TrimSpace(req.ClientKey); clientKey != "" {
 			poolKey := poolStickyKey(req.Model, clientKey)
-			if entry, ok := s.lookupSticky(StickyScopePool, poolKey, now); ok {
-				pc, acc, ttl, excluded := matchSticky(evaluated, entry, false, req)
-				switch {
-				case pc == nil || ttl <= 0:
-					s.dropStickyLocked(StickyScopePool, poolKey)
-					rejections = append(rejections, "sticky pool binding invalid; dropped")
-				case excluded:
-					skipPoolSticky = true
-					rejections = append(rejections, "sticky pool account excluded for this attempt")
-				default:
-					stickyPC, stickyAcc, stickyKind, stickyKey = pc, acc, StickyScopePool, poolKey
-				}
+			v := s.resolveStickyLocked(evaluated, StickyScopePool, poolKey, false, req, now)
+			if v.pc != nil {
+				stickyPC, stickyAcc, stickyKind, stickyKey = v.pc, v.acc, StickyScopePool, poolKey
+				strictRepin = v.repin
+			}
+			skipPoolSticky = v.skip
+			// The pin that was actually used decides; otherwise the more
+			// specific verdict wins (sticky_why.go rank).
+			if v.pc != nil || stickyWhyMoreSpecific(stickyWhy, v.why) {
+				stickyWhy = v.why
+			}
+			if v.rejection != "" {
+				rejections = append(rejections, v.rejection)
 			}
 		}
 	}
@@ -1796,6 +1835,10 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 			rejections = append(rejections, "sticky yield: "+stickyAcc.ID+
 				" at concurrency limit, idle alternative exists")
 			stickyPC, stickyAcc, stickyKind, stickyKey = nil, Account{}, "", ""
+			// D-43: the pinned account is unusable for this decision, so the
+			// verdict says why the affinity was left (strict never overrides
+			// the concurrency-yield protection; A pool.rs:704-790 outranks it).
+			stickyWhy = StickyAccountDown
 		} else {
 			rejections = append(rejections, "sticky fallback: all accounts busy")
 		}
@@ -1821,7 +1864,9 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		Model:        chosenPC.source.Model,
 		LogicalModel: logical,
 		Sticky:       stickyPC != nil,
+		StickyWhy:    stickyWhy,
 	}
+	decision.Reasons = append(decision.Reasons, "sticky_why="+stickyWhy)
 	if stickyPC != nil {
 		decision.Reasons = append(decision.Reasons, "sticky:"+stickyKind)
 	} else {
@@ -1844,13 +1889,14 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		decision.Reasons = append(decision.Reasons, rejections...)
 	}
 
-	candidates := traceCandidates(traces, chosenPC, chosenAcc, stickyPC != nil, s, now)
+	candidates := traceCandidates(traces, chosenPC, chosenAcc, stickyPC != nil, stickyWhy, s, now)
 
 	return &plan{
 		decision: decision, candidates: candidates, reasons: decision.Reasons,
 		pool: chosenPC.pool, source: chosenPC.source, request: req,
 		stickyScope: stickyKind, stickyKey: stickyKey,
 		skipConvSticky: skipConvSticky, skipPoolSticky: skipPoolSticky,
+		strictRepin: strictRepin,
 	}, nil
 }
 
@@ -1859,15 +1905,23 @@ func (s *Scheduler) persistSticky(p *plan) {
 	if p == nil || p.pool == nil {
 		return
 	}
+	now := s.now().Unix()
 	if p.stickyScope != "" {
-		// A sticky hit keeps the existing expiry; do not extend it.
+		if !p.strictRepin {
+			// A sticky hit keeps the existing expiry; do not extend it.
+			return
+		}
+		// D-43 strict hold past expiry: the lapsed pin was already lazily
+		// deleted by the lookup, so holding affinity across requests needs a
+		// fresh write with the scope's effective window.
+		s.saveSticky(p.stickyScope, p.stickyKey, p.pool.PluginID, p.decision.AccountID,
+			now+int64(p.effectiveTTL(p.stickyScope == StickyScopeConversation)))
 		return
 	}
-	now := s.now().Unix()
 	if conv := strings.TrimSpace(p.request.ConversationID); conv != "" &&
-		p.pool.ConvStickyTTL > 0 && !p.skipConvSticky {
+		p.effectiveTTL(true) > 0 && !p.skipConvSticky {
 		s.saveSticky(StickyScopeConversation, conv, p.pool.PluginID, p.decision.AccountID,
-			now+int64(p.pool.ConvStickyTTL))
+			now+int64(p.effectiveTTL(true)))
 	}
 	if clientKey := strings.TrimSpace(p.request.ClientKey); clientKey != "" &&
 		p.pool.PoolStickyTTL > 0 && !p.skipPoolSticky {
@@ -1876,34 +1930,163 @@ func (s *Scheduler) persistSticky(p *plan) {
 	}
 }
 
+// effectiveTTL returns the affinity window of one scope in seconds. The D-43
+// request-scoped Within overrides the pool's ConvStickyTTL for the
+// conversation scope; the pool scope keeps its configured TTL.
+func (p *plan) effectiveTTL(conversation bool) int {
+	if !conversation {
+		return p.pool.PoolStickyTTL
+	}
+	if p.request.Within > 0 {
+		return int(p.request.Within / time.Second)
+	}
+	return p.pool.ConvStickyTTL
+}
+
 // poolStickyKey builds the pool-sticky key: model + client key.
 func poolStickyKey(model, clientKey string) string {
 	return strings.TrimSpace(model) + "\x00" + strings.TrimSpace(clientKey)
 }
 
 // matchSticky finds entry's pool among candidates and validates the account.
-// It returns the pool candidate, the account, the configured TTL (0 means
-// stickiness is disabled for that scope) and whether the account is merely
-// excluded for this attempt (the pin must survive such a retry).
-func matchSticky(candidates []*poolCandidate, entry stickyEntry, conversation bool, req Request) (*poolCandidate, Account, int, bool) {
-	for _, pc := range candidates {
+// It returns the pool candidate (nil when the pool is absent from candidates
+// or the account is not usable right now), the account, the effective TTL
+// (0 means stickiness is disabled for that scope), whether the account is
+// merely excluded for this attempt (the pin must survive such a retry) and
+// whether the pinned pool itself is among the candidates. The D-43
+// request-scoped Within overrides the pool's conversation TTL.
+func matchSticky(candidates []*poolCandidate, entry stickyEntry, conversation bool, req Request) (pc *poolCandidate, acc Account, ttl int, excluded bool, poolFound bool) {
+	for _, c := range candidates {
+		if c.pool.PluginID != entry.PluginID {
+			continue
+		}
+		poolFound = true
+		ttl = c.pool.PoolStickyTTL
+		if conversation {
+			ttl = c.pool.ConvStickyTTL
+			if req.Within > 0 {
+				ttl = int(req.Within / time.Second)
+			}
+		}
+		for _, a := range c.stickyOK {
+			if a.ID != entry.AccountID {
+				continue
+			}
+			key := AccountKey{PluginID: c.pool.PluginID, AccountID: a.ID}
+			return c, a, ttl, req.Exclude[key], true
+		}
+		return nil, Account{}, ttl, false, true
+	}
+	return nil, Account{}, 0, false, false
+}
+
+// stickyVerdict is the D-43 outcome of evaluating one persisted pin. A nil pc
+// means the pin did not produce a selection for this decision.
+type stickyVerdict struct {
+	pc   *poolCandidate
+	acc  Account
+	why  string // one of the sticky_why.go states
+	skip bool   // pin alive; its account is excluded for this attempt only
+	// repin marks a strict hold past window expiry: the lapsed pin was already
+	// deleted, so the caller must persist a fresh one to keep holding.
+	repin bool
+	// rejection is the human-readable note for decision.Reasons.
+	rejection string
+}
+
+// resolveStickyLocked looks up one persisted pin and classifies the outcome
+// into a stickyVerdict. conversation selects the scope's TTL rules (and the
+// D-43 Within override); req.Strict enables the hold-past-blocker mode.
+// Caller holds s.mu.
+func (s *Scheduler) resolveStickyLocked(evaluated []*poolCandidate, scope, key string, conversation bool, req Request, now int64) stickyVerdict {
+	if key == "" {
+		return stickyVerdict{why: StickyNoSession}
+	}
+	label := "pool"
+	if conversation {
+		label = "conv"
+	}
+	entry, found, expired := s.lookupStickyState(scope, key, now)
+	if expired {
+		// The window lapsed and the row was lazily deleted: reselect, unless
+		// strict mode holds the pin for one more window.
+		if req.Strict {
+			if pc, acc, ok := strictHoldTarget(evaluated, entry); ok {
+				return stickyVerdict{
+					pc: pc, acc: acc, why: StickyStrictHold, repin: true,
+					rejection: "sticky strict hold: window expired, affinity kept",
+				}
+			}
+		}
+		return stickyVerdict{why: StickyWindowExpired}
+	}
+	if !found {
+		return stickyVerdict{why: StickyFirstPick}
+	}
+	pc, acc, ttl, excluded, poolFound := matchSticky(evaluated, entry, conversation, req)
+	// The pool-missing check must precede the ttl check: a pool that is absent
+	// from the candidates never supplies a TTL, so a ttl-first ordering would
+	// mask StickyPoolChanged behind the "stickiness disabled" verdict and make
+	// the pool_changed state unreachable (D-43 bug fix).
+	switch {
+	case !poolFound:
+		// The pin's pool left the candidate set (disabled upstream, open
+		// circuit, whole pool rejected): affinity never crosses pools.
+		s.dropStickyLocked(scope, key)
+		return stickyVerdict{why: StickyPoolChanged, rejection: "sticky " + label + " binding invalid; dropped"}
+	case ttl <= 0:
+		// Stickiness is disabled for this scope (TTL 0 and no Within): the
+		// stale pin cannot be honored. A zero-length window reads as expired.
+		s.dropStickyLocked(scope, key)
+		return stickyVerdict{why: StickyWindowExpired, rejection: "sticky " + label + " binding invalid; dropped"}
+	case excluded:
+		// A retry exclusion is per attempt: keep the pin for the next request
+		// but do not select it now.
+		return stickyVerdict{
+			skip: true, why: StickyAccountDown,
+			rejection: "sticky " + label + " account excluded for this attempt",
+		}
+	case pc != nil:
+		return stickyVerdict{pc: pc, acc: acc, why: StickySessionPinned}
+	case req.Strict:
+		// The pinned account is temporarily unusable (cooldown, RPM pause,
+		// soft credit/egress filter). Strict keeps the affinity; only a
+		// permanent blocker breaks it.
+		if holdPC, holdAcc, ok := strictHoldTarget(evaluated, entry); ok {
+			return stickyVerdict{
+				pc: holdPC, acc: holdAcc, why: StickyStrictHold,
+				rejection: "sticky strict hold: pinned account temporarily unavailable",
+			}
+		}
+	}
+	// Not strict (or strict could not hold): drop the pin and reselect.
+	s.dropStickyLocked(scope, key)
+	return stickyVerdict{why: StickyAccountDown, rejection: "sticky " + label + " binding invalid; dropped"}
+}
+
+// strictHoldTarget locates the pinned account inside the evaluated pools while
+// ignoring temporary filters (cooldowns, RPM pauses, soft credit/egress
+// filters, concurrency). It returns ok=false when the account is permanently
+// unusable (disabled / no credential / not a member / removed from the pool
+// snapshot) — the only conditions D-43 strict affinity yields to.
+func strictHoldTarget(evaluated []*poolCandidate, entry stickyEntry) (*poolCandidate, Account, bool) {
+	for _, pc := range evaluated {
 		if pc.pool.PluginID != entry.PluginID {
 			continue
 		}
-		ttl := pc.pool.PoolStickyTTL
-		if conversation {
-			ttl = pc.pool.ConvStickyTTL
-		}
-		for _, acc := range pc.stickyOK {
-			if acc.ID != entry.AccountID {
+		for _, oc := range pc.outcomes {
+			if oc.account.ID != entry.AccountID {
 				continue
 			}
-			key := AccountKey{PluginID: pc.pool.PluginID, AccountID: acc.ID}
-			return pc, acc, ttl, req.Exclude[key]
+			if oc.permanent {
+				return nil, Account{}, false
+			}
+			return pc, oc.account, true
 		}
-		return nil, Account{}, 0, false
+		// The pool matched but the account vanished from its snapshot.
+		return nil, Account{}, false
 	}
-	return nil, Account{}, 0, false
+	return nil, Account{}, false
 }
 
 // evaluateAccountsLocked filters one pool's accounts and applies concurrency.
@@ -2215,8 +2398,9 @@ func (s *Scheduler) accountScoreLocked(pluginID string, acc Account, now int64) 
 }
 
 // traceCandidates renders the explain rows for every traced source. Rejected
-// pools get one row of their own plus a row per rejected account.
-func traceCandidates(traces []*poolTrace, chosenPC *poolCandidate, chosenAcc Account, sticky bool, s *Scheduler, now int64) []Candidate {
+// pools get one row of their own plus a row per rejected account. stickyWhy is
+// the D-43 verdict attached to the selected row.
+func traceCandidates(traces []*poolTrace, chosenPC *poolCandidate, chosenAcc Account, sticky bool, stickyWhy string, s *Scheduler, now int64) []Candidate {
 	out := make([]Candidate, 0, len(traces)*2)
 	for _, tr := range traces {
 		if tr.pc == nil {
@@ -2254,6 +2438,7 @@ func traceCandidates(traces []*poolTrace, chosenPC *poolCandidate, chosenAcc Acc
 			case tr.pc == chosenPC && oc.account.ID == chosenAcc.ID:
 				row.Selected = true
 				row.Sticky = sticky
+				row.StickyWhy = stickyWhy
 			case !oc.selectable:
 				row.Rejected = true
 				row.Reason = oc.reason

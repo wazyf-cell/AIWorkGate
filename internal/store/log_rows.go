@@ -36,7 +36,7 @@ func (s *Store) APILogByReqID(reqID string) (model.APIRequestLog, bool, error) {
 		&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 		&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens,
 		&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &usageKnown, &rec.Purpose,
-		&credits, &cost, &rec.PricingModel, &rec.Error,
+		&credits, &cost, &rec.PricingModel, &rec.Error, &rec.Attempt,
 	)
 	if err == sql.ErrNoRows {
 		return model.APIRequestLog{}, false, nil

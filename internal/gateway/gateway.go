@@ -188,9 +188,17 @@ const (
 //   - idleReadTimeout covers a reply that stalled after the headers, e.g. a
 //     silent SSE stream: every body Read rearms the timer and a fired timer
 //     cancels the request context.
+//   - firstContentTimeout is the D-43 首字超时换成员 bound: an upstream attempt
+//     that has produced no first body byte (SSE first frame / first byte of a
+//     buffered reply) within this window is cancelled and the next account is
+//     tried. The 90s value deliberately aligns with responseHeaderTimeout —
+//     headers plus the first content must both fit into one 90s budget measured
+//     from the attempt start. Not configurable on purpose (D-43 计划未提供配
+//     置项); operators tune the header/idle bounds instead.
 var (
 	upstreamResponseHeaderTimeout = 90 * time.Second
 	upstreamIdleReadTimeout       = 5 * time.Minute
+	upstreamFirstContentTimeout   = 90 * time.Second
 )
 
 // Gateway is the http.Handler returned by New.
@@ -1487,23 +1495,49 @@ func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *req
 // stopped sending bytes for upstreamIdleReadTimeout.
 var errUpstreamIdleTimeout = errors.New("upstream idle timeout")
 
+// errFirstContentTimeout marks a D-43 attempt whose upstream never produced a
+// first body byte within its first-content deadline. Nothing was written to
+// the client yet, so the attempt is retryable on another account.
+var errFirstContentTimeout = errors.New("upstream first content timeout")
+
 // idleReadBody wraps an upstream response body with an idle-read deadline.
 // Each Read rearms the timer; when it fires the request context is cancelled so
 // the blocked Read returns instead of hanging forever (silent SSE stream).
+//
+// D-43 首字超时换成员: while firstDeadline is in the future and no byte has
+// been read, the timer is armed to that deadline instead of the idle timeout,
+// so a reply whose headers arrived but whose first content never does is
+// cancelled inside the attempt window. After the first byte the wrapper behaves
+// exactly like the pre-D-43 idle watchdog (流式已开始写正文后绝不切换).
 type idleReadBody struct {
 	body    io.ReadCloser
 	timeout time.Duration
-	cancel  context.CancelFunc
-	timer   *time.Timer
-	stalled atomic.Bool
+	// firstDeadline is the absolute D-43 first-content deadline; zero disables
+	// the first-content arm (plain idle watchdog).
+	firstDeadline    time.Time
+	cancel           context.CancelFunc
+	timer            *time.Timer
+	stalled          atomic.Bool
+	firstByteSeen    atomic.Bool
+	firstDeadlineHit atomic.Bool
 }
 
 func newIdleReadBody(body io.ReadCloser, timeout time.Duration, cancel context.CancelFunc) io.ReadCloser {
+	return newFirstReadBody(body, timeout, time.Time{}, cancel)
+}
+
+// newFirstReadBody is newIdleReadBody with a D-43 first-content deadline.
+func newFirstReadBody(body io.ReadCloser, timeout time.Duration, firstDeadline time.Time, cancel context.CancelFunc) io.ReadCloser {
 	if body == nil || timeout <= 0 {
 		return body
 	}
-	b := &idleReadBody{body: body, timeout: timeout, cancel: cancel}
-	b.timer = time.AfterFunc(timeout, func() {
+	b := &idleReadBody{body: body, timeout: timeout, firstDeadline: firstDeadline, cancel: cancel}
+	b.timer = time.AfterFunc(b.armDuration(), func() {
+		// Which deadline fired? Before the first byte the timer is armed to the
+		// first-content deadline (when set); afterwards it is the idle watchdog.
+		if !b.firstDeadline.IsZero() && !b.firstByteSeen.Load() {
+			b.firstDeadlineHit.Store(true)
+		}
 		b.stalled.Store(true)
 		if b.cancel != nil {
 			b.cancel()
@@ -1512,12 +1546,32 @@ func newIdleReadBody(body io.ReadCloser, timeout time.Duration, cancel context.C
 	return b
 }
 
+// armDuration returns the timeout the timer should be (re)armed with: the
+// remaining first-content budget until the first byte, then the idle timeout.
+func (b *idleReadBody) armDuration() time.Duration {
+	if b.firstDeadline.IsZero() || b.firstByteSeen.Load() {
+		return b.timeout
+	}
+	d := time.Until(b.firstDeadline)
+	if d < 0 {
+		d = 0
+	}
+	return d
+}
+
 func (b *idleReadBody) Read(p []byte) (int, error) {
 	if b.timer != nil {
-		b.timer.Reset(b.timeout)
+		b.timer.Reset(b.armDuration())
 	}
 	n, err := b.body.Read(p)
+	if n > 0 {
+		b.firstByteSeen.Store(true)
+	}
 	if err != nil && b.stalled.Load() && !errors.Is(err, io.EOF) {
+		if b.firstDeadlineHit.Load() && !b.firstByteSeen.Load() {
+			return n, fmt.Errorf("%w after headers: no first body byte within %s",
+				errFirstContentTimeout, upstreamFirstContentTimeout)
+		}
 		return n, fmt.Errorf("%w after %s: %v", errUpstreamIdleTimeout, b.timeout, err)
 	}
 	return n, err

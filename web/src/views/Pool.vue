@@ -20,7 +20,7 @@ import {
   type PoolDetail,
   type PoolSettings,
 } from '../api'
-import { formatLatency, formatNumber, formatTimestamp } from '../format'
+import { formatLatency, formatNumber, formatTimestamp, relativeTime } from '../format'
 
 interface ToastItem {
   id: number
@@ -508,6 +508,20 @@ const lastSyncLabel = computed(() => {
   return stamp > 0 ? formatTimestamp(stamp) : ''
 })
 
+/* D-30② 目录新鲜度相对显示：正文用「x 分钟前 / x 小时前」，悬停 title 给出
+ * 绝对时间（lastSyncLabel 保留为绝对值，供 title 与其他调用使用）。 */
+const nowTick = ref(Date.now())
+let nowTimer = 0
+
+const lastSyncStamp = computed(() => {
+  const synced = modelSync.value?.last_success_at ?? 0
+  return Math.max(synced * 1000, syncAt.value || 0, lastSyncAt.value || 0)
+})
+
+const lastSyncRelative = computed(() =>
+  lastSyncStamp.value > 0 ? relativeTime(lastSyncStamp.value, nowTick.value) : '',
+)
+
 const syncFailures = computed(() => modelSync.value?.failure_count ?? 0)
 
 const nextRetryLabel = computed(() => {
@@ -606,6 +620,131 @@ const catalogRows = computed<CatalogRow[]>(() =>
 const editingOverride = computed(() =>
   editingModel.value ? overrides.value[editingModel.value.model_id] : undefined,
 )
+
+/* ------------------------------------------------------------------ */
+/* 目录视图（D-30④⑦）：搜索 / 绿标 / 只选可用 / 三种视图               */
+/* ------------------------------------------------------------------ */
+
+type CatalogView = 'all' | 'enabled' | 'family'
+
+const CATALOG_VIEWS: { key: CatalogView; label: string; title: string }[] = [
+  { key: 'all', label: '全部', title: '显示目录里的每个模型' },
+  { key: 'enabled', label: '仅所选', title: '只看已勾选「接入」的模型' },
+  { key: 'family', label: '每系最新', title: '同系 = 模型名同前缀（如 gpt-*、qwen*），取上下文最大、其次最新同步的一个' },
+]
+
+const catalogSearch = ref('')
+const catalogView = ref<CatalogView>('all')
+
+/**
+ * D-30⑦ 绿标（已验证标记，内存态，不持久化）：该模型最近一次「检测」与
+ * 最近一次「真发测试」都以通过收尾——任一最近一次失败都会摘掉绿标；从未
+ * 测过的模型没有徽章，而不是默认绿色。
+ */
+const verifiedModels = computed<Set<string>>(() => {
+  const passed = new Set<string>()
+  for (const [modelId, probe] of Object.entries(catalogProbe.value)) {
+    if (probe.ok) passed.add(modelId)
+    else passed.delete(modelId)
+  }
+  for (const row of batchResults.value) {
+    if (row.result?.ok) passed.add(row.modelId)
+    else passed.delete(row.modelId)
+  }
+  return passed
+})
+
+function isModelVerified(modelId: string): boolean {
+  return verifiedModels.value.has(modelId)
+}
+
+/**
+ * D-30⑦ 每系最新的同系键：截掉模型名里第一个 '-'/'_'/'.'/数字 之后的部分。
+ * gpt-4o / gpt-4.1 → gpt，qwen3-max / qwen-max → qwen，deepseek-r1 →
+ * deepseek；纯名字（无分隔符）保持自身。命名只是前端启发式，不影响后端。
+ */
+function familyKey(modelId: string): string {
+  const id = (modelId || '').trim().toLowerCase()
+  if (!id) return '—'
+  const cut = id.search(/[-_.0-9]/)
+  const key = cut > 0 ? id.slice(0, cut) : id
+  return key || id
+}
+
+/** 每系里谁代表这一系：上下文最大优先，其次同步时间新，最后名字大者。 */
+function familyBetter(a: CatalogRow, b: CatalogRow): boolean {
+  if (a.contextLength !== b.contextLength) return a.contextLength > b.contextLength
+  const syncedA = a.model.synced_at ?? 0
+  const syncedB = b.model.synced_at ?? 0
+  if (syncedA !== syncedB) return syncedA > syncedB
+  return a.model.model_id > b.model.model_id
+}
+
+const familyCatalogRows = computed<CatalogRow[]>(() => {
+  const best = new Map<string, CatalogRow>()
+  for (const row of catalogRows.value) {
+    const key = familyKey(row.model.model_id)
+    const prev = best.get(key)
+    if (!prev || familyBetter(row, prev)) best.set(key, row)
+  }
+  return Array.from(best.values()).sort(
+    (a, b) => b.contextLength - a.contextLength || a.model.model_id.localeCompare(b.model.model_id),
+  )
+})
+
+const visibleCatalogRows = computed<CatalogRow[]>(() => {
+  let rows = catalogRows.value
+  if (catalogView.value === 'family') rows = familyCatalogRows.value
+  else if (catalogView.value === 'enabled') rows = rows.filter((row) => row.model.enabled !== false)
+  const needle = catalogSearch.value.trim().toLowerCase()
+  if (needle) {
+    rows = rows.filter((row) =>
+      `${row.model.model_id} ${row.displayName} ${row.vendor}`.toLowerCase().includes(needle),
+    )
+  }
+  return rows
+})
+
+const selectingVerified = ref(false)
+
+/**
+ * D-30⑦ 只选可用：把当前过滤视图中「有绿标（检测通过）」但尚未接入的模型
+ * 批量设为已接入。逐个调用接入开关（该端点本就是单模型粒度），失败不中断
+ * 其余模型，最后汇总提示。
+ */
+async function selectOnlyVerified() {
+  if (selectingVerified.value) return
+  const verified = visibleCatalogRows.value.filter((row) => isModelVerified(row.model.model_id))
+  if (verified.length === 0) {
+    toast('过滤后的列表里没有检测通过的模型：先「批量测试」或逐个「检测」。', 'warn')
+    return
+  }
+  const pending = verified.filter((row) => row.model.enabled === false)
+  if (pending.length === 0) {
+    toast(`检测通过的 ${verified.length} 个模型都已接入。`)
+    return
+  }
+  selectingVerified.value = true
+  let enabled = 0
+  let failed = 0
+  try {
+    for (const row of pending) {
+      try {
+        await api.pools.setModelEnabled(pluginId.value, row.model.model_id, true)
+        enabled += 1
+      } catch {
+        failed += 1
+      }
+    }
+    await loadDetail()
+    toast(
+      `已接入 ${enabled} 个检测通过的模型${failed ? `，${failed} 个失败，请重试` : ''}。`,
+      failed ? 'warn' : 'ok',
+    )
+  } finally {
+    selectingVerified.value = false
+  }
+}
 
 function overriddenLabels(entry?: ModelOverrideRecord): string[] {
   return (entry?.overridden ?? []).map((field) => OVERRIDE_FIELD_LABELS[field] ?? field)
@@ -756,6 +895,7 @@ watch(pluginId, () => {
   editingModel.value = null
   catalogProbe.value = {}
   probingModel.value = ''
+  catalogSearch.value = ''
   if (pluginId.value) void loadDetail()
   else void loadPlugins()
 })
@@ -763,9 +903,14 @@ watch(pluginId, () => {
 onMounted(() => {
   if (pluginId.value) void loadDetail()
   else void loadPlugins()
+  // Relative labels ("3 分钟前") must age without a reload.
+  nowTimer = window.setInterval(() => {
+    nowTick.value = Date.now()
+  }, 30_000)
 })
 
 onBeforeUnmount(() => {
+  window.clearInterval(nowTimer)
   for (const timer of toastTimers) window.clearTimeout(timer)
   toastTimers.clear()
 })
@@ -894,8 +1039,8 @@ onBeforeUnmount(() => {
             </div>
             <div class="row small muted hint-row">
               <span>模型目录按需同步；设了同步时刻则每天到点自动同步一次</span>
-              <span v-if="lastSyncLabel">
-                最后同步 {{ lastSyncLabel }}<template v-if="syncNote"> · {{ syncNote }}</template>
+              <span v-if="lastSyncRelative" :title="`最后同步 ${lastSyncLabel}`">
+                最后同步 {{ lastSyncRelative }}<template v-if="syncNote"> · {{ syncNote }}</template>
               </span>
               <span v-else>从未同步</span>
               <span v-if="modelSync?.running" class="badge plain">同步中</span>
@@ -1109,9 +1254,38 @@ onBeforeUnmount(() => {
         <section class="card">
           <div class="card-head">
             <h2>模型目录</h2>
-            <div class="row">
-              <span class="small muted">人工覆盖优先于插件上报，同步不会覆盖人工值</span>
+            <div class="row catalog-tools">
+              <input
+                v-model="catalogSearch"
+                class="input catalog-search"
+                type="search"
+                placeholder="搜索模型 / 名称 / 厂商"
+                aria-label="搜索模型目录"
+              />
+              <div class="seg" role="group" aria-label="目录视图">
+                <button
+                  v-for="item in CATALOG_VIEWS"
+                  :key="item.key"
+                  type="button"
+                  class="seg-btn"
+                  :class="{ active: catalogView === item.key }"
+                  :aria-pressed="catalogView === item.key"
+                  :title="item.title"
+                  @click="catalogView = item.key"
+                >
+                  {{ item.label }}
+                </button>
+              </div>
               <span class="badge plain muted">{{ enabledCount }} / {{ detail.catalog.length }} 已接入</span>
+              <button
+                type="button"
+                class="btn sm"
+                :disabled="selectingVerified || detail.catalog.length === 0"
+                title="把当前视图中检测通过（绿标）但未接入的模型批量设为已接入"
+                @click="selectOnlyVerified"
+              >
+                {{ selectingVerified ? '接入中…' : '只选可用' }}
+              </button>
               <button
                 type="button"
                 class="btn sm"
@@ -1150,9 +1324,14 @@ onBeforeUnmount(() => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in catalogRows" :key="row.model.model_id">
+                <tr v-for="row in visibleCatalogRows" :key="row.model.model_id">
                   <td class="title-cell mono">
                     {{ row.model.model_id }}
+                    <span
+                      v-if="isModelVerified(row.model.model_id)"
+                      class="verify-dot"
+                      title="最近一次检测 / 真发测试通过"
+                    >✓</span>
                     <span
                       v-if="row.override"
                       class="badge accent plain"
@@ -1217,6 +1396,14 @@ onBeforeUnmount(() => {
                         {{ probeLabel(row.model.model_id) }}
                       </span>
                       <button type="button" class="btn sm" @click="openOverrideEditor(row.model)">编辑</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="visibleCatalogRows.length === 0">
+                  <td colspan="10">
+                    <div class="empty">
+                      <strong>没有匹配的模型</strong>
+                      <span>换一个关键字，或把视图切回「全部」。</span>
                     </div>
                   </td>
                 </tr>
@@ -1456,5 +1643,33 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Catalog toolbar: search box + view switch + batch actions. */
+.catalog-tools {
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.catalog-search {
+  width: 190px;
+}
+
+/* D-30 绿标（已验证标记）：模型名旁的绿色对勾圆点，内存态，不持久化。 */
+.verify-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: var(--space-1);
+  border-radius: 50%;
+  background: var(--ok);
+  color: var(--surface-1, #fff);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: 1px;
+  cursor: help;
 }
 </style>

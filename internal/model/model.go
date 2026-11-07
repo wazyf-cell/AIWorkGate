@@ -480,6 +480,14 @@ type APIRequestLog struct {
 	CostUSD      *float64 `json:"cost_usd,omitempty"`
 	PricingModel string   `json:"pricing_model,omitempty"`
 	Error        string   `json:"error,omitempty"`
+	// Attempt is the dispatch round that produced this row (D-32⑥): 1 = the
+	// first try, 2+ = a retry after a failed/cooldown attempt. 0 means "first
+	// attempt or unknown" and also covers every row written before the column
+	// existed (v26 backfills 0). Writing side: the number lives in the gateway
+	// dispatch path (internal/gateway), whose emit chain is not touched in the
+	// round that added the column — the store accepts and returns the value,
+	// and the gateway wires Attempt into its log record in a later round.
+	Attempt int `json:"attempt,omitempty"`
 	// Redact is the P10 masking audit line for the request (categories/counts/
 	// lines/elapsed, never the masked values; gateway/redact_wiring.go).
 	// Omitempty: empty when redaction is off or nothing was masked.

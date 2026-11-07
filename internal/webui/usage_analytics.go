@@ -13,12 +13,44 @@ import (
 // separate from the usage_daily views because latency percentiles need the
 // per-request rows and key accounting lives in client_key_usage.
 
+// RetentionInfo is the body of GET /api/usage/retention (D-32⑦): the log
+// retention windows in days, mirrored from the host config so the usage/log
+// pages can flag a query window that reaches past the stored data. The
+// aggregate window (usage_daily) is not pruned by these numbers, so the UI
+// compares only the request-log window against its queries.
+type RetentionInfo struct {
+	APIRequestDays  int `json:"api_request_days"`
+	BodyPreviewDays int `json:"body_preview_days"`
+	HostLogDays     int `json:"host_log_days"`
+	ProxyLogDays    int `json:"proxy_log_days"`
+}
+
 const (
 	defaultUsageLatencyDays = 14
 	defaultUsageKeyDays     = 30
 	defaultUsageModelDays   = 30
+	defaultUsageHeatmapDays = 26 * 7
 	maxUsageDays            = 90
 )
+
+// handleRetention serves GET /api/usage/retention: a read-only mirror of the
+// retention windows (D-32⑦). A nil callback answers 501 and the UI stays
+// silent instead of guessing a default.
+func (s *server) handleRetention(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
+	if s.opts.Retention == nil {
+		s.unavailable(w)
+		return
+	}
+	info, err := s.opts.Retention()
+	if err != nil {
+		writeUsageError(w, "usage retention", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
 
 func (s *server) handleUsageLatency(w http.ResponseWriter, r *http.Request) {
 	if !allowMethods(w, r, http.MethodGet) {
@@ -118,6 +150,59 @@ func (s *server) handleUsageModelLatency(w http.ResponseWriter, r *http.Request)
 	}
 	if rows == nil {
 		rows = []store.ModelLatencyRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// handleUsageHeatmap serves GET /api/usage/heatmap: per-day request/error
+// totals from usage_daily for the calendar heatmap (D-32①). The window
+// defaults to the 26 weeks the UI draws.
+func (s *server) handleUsageHeatmap(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
+	if s.opts.UsageHeatmap == nil {
+		s.unavailable(w)
+		return
+	}
+	days, err := parseUsageDays(r.URL.Query().Get("days"), defaultUsageHeatmapDays)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "usage heatmap: "+err.Error(), "invalid_query")
+		return
+	}
+	rows, err := s.opts.UsageHeatmap(days)
+	if err != nil {
+		writeUsageError(w, "usage heatmap", err)
+		return
+	}
+	if rows == nil {
+		rows = []store.DailyCount{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// handleUsageReasoning serves GET /api/usage/reasoning: the (model ×
+// reasoning_tokens>0) split of the raw request logs (D-32⑤).
+func (s *server) handleUsageReasoning(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
+	if s.opts.UsageReasoning == nil {
+		s.unavailable(w)
+		return
+	}
+	days, err := parseUsageDays(r.URL.Query().Get("days"), defaultUsageModelDays)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "usage reasoning: "+err.Error(), "invalid_query")
+		return
+	}
+	rows, err := s.opts.UsageReasoning(days)
+	if err != nil {
+		writeUsageError(w, "usage reasoning", err)
+		return
+	}
+	if rows == nil {
+		rows = []store.ReasoningSplitRow{}
 	}
 	writeJSON(w, http.StatusOK, rows)
 }

@@ -91,6 +91,19 @@ type Meta struct {
 	AccountCount int      `json:"account_count"`
 	UptimeS      int64    `json:"uptime_s"`
 	StartedAt    int64    `json:"started_at,omitempty"`
+	// Hooks is the D-58 controlled hooks surface a bridge reports: the
+	// declared face (keys present on the plugin object) plus the actual face
+	// (runtime call counts, in-memory). Plain plugins omit it; nil here means
+	// the plugin did not report one, which is not an error.
+	Hooks *HooksSurface `json:"hooks,omitempty"`
+}
+
+// HooksSurface mirrors the bridge's /meta.hooks summary (opchost/bridge/src/hooks.ts).
+// The full per-provider breakdown lives in GET /admin/hooks; the host relays
+// the summary verbatim and never interprets hook names.
+type HooksSurface struct {
+	Declared []string       `json:"declared,omitempty"`
+	Actual   map[string]int `json:"actual,omitempty"`
 }
 
 // Accounts fetches GET /accounts with inline quota.

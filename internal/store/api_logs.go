@@ -79,7 +79,8 @@ const apiLogColumns = `ts, COALESCE(req_id, ''), COALESCE(source, ''), COALESCE(
 	COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0),
 	COALESCE(cache_write, 0), COALESCE(cache_write_1h, 0), COALESCE(cache_unknown, 0),
 	COALESCE(reasoning_tokens, 0), COALESCE(usage_known, 0), COALESCE(purpose, ''),
-	credits, cost_usd, COALESCE(pricing_model, ''), COALESCE(error, ''), COALESCE(body_req, ''), COALESCE(body_resp, '')`
+	credits, cost_usd, COALESCE(pricing_model, ''), COALESCE(error, ''), COALESCE(attempt, 0),
+	COALESCE(body_req, ''), COALESCE(body_resp, '')`
 
 // apiLogColumnsNoBodies mirrors apiLogColumns without the two body columns so
 // list/timeline queries never load large previews.
@@ -91,7 +92,7 @@ const apiLogColumnsNoBodies = `COALESCE(ts, ''), COALESCE(req_id, ''), COALESCE(
 	COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0),
 	COALESCE(cache_write, 0), COALESCE(cache_write_1h, 0), COALESCE(cache_unknown, 0),
 	COALESCE(reasoning_tokens, 0), COALESCE(usage_known, 0), COALESCE(purpose, ''),
-	credits, cost_usd, COALESCE(pricing_model, ''), COALESCE(error, '')`
+	credits, cost_usd, COALESCE(pricing_model, ''), COALESCE(error, ''), COALESCE(attempt, 0)`
 
 // InsertAPIRequestLog stores one request log row.
 func (s *Store) InsertAPIRequestLog(rec model.APIRequestLog) error {
@@ -110,8 +111,8 @@ func (s *Store) InsertAPIRequestLog(rec model.APIRequestLog) error {
 		 conversation_id, stream, status, latency_ms, ttfb_ms, first_token_at,
 		 prompt_tokens, completion_tokens, cached_tokens,
 		 cache_write, cache_write_1h, cache_unknown, reasoning_tokens, usage_known, purpose,
-		 credits, cost_usd, pricing_model, error, body_req, body_resp)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 credits, cost_usd, pricing_model, error, attempt, body_req, body_resp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ts,
 		nullStr(rec.ReqID), nullStr(rec.Source), nullStr(rec.Model),
 		nullStr(rec.ModelRequested), nullStr(rec.ModelUpstream), nullStr(rec.ModelServed),
@@ -122,7 +123,7 @@ func (s *Store) InsertAPIRequestLog(rec model.APIRequestLog) error {
 		rec.CachedTokens, rec.CacheWrite, rec.CacheWrite1h, boolInt(rec.CacheUnknown), rec.ReasoningTokens,
 		boolInt(rec.UsageKnown),
 		nullStr(rec.Purpose), optFloat(rec.Credits), optFloat(rec.CostUSD), nullStr(rec.PricingModel),
-		nullStr(rec.Error), nullStr(rec.BodyReq), nullStr(rec.BodyResp),
+		nullStr(rec.Error), rec.Attempt, nullStr(rec.BodyReq), nullStr(rec.BodyResp),
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert api log: %w", err)
@@ -209,7 +210,7 @@ func (s *Store) QueryAPILogsTimelinePage(f Filter, beforeAt, beforeID int64, lim
 			&row.Log.LatencyMS, &row.Log.TTFBMS, &row.Log.FirstTokenAt,
 			&row.Log.PromptTokens, &row.Log.CompletionTokens, &row.Log.CachedTokens,
 			&row.Log.CacheWrite, &row.Log.CacheWrite1h, &cacheUnknown, &row.Log.ReasoningTokens, &usageKnown, &row.Log.Purpose,
-			&credits, &cost, &row.Log.PricingModel, &row.Log.Error,
+			&credits, &cost, &row.Log.PricingModel, &row.Log.Error, &row.Log.Attempt,
 		); err != nil {
 			return nil, fmt.Errorf("store: query api logs page: scan: %w", err)
 		}
@@ -298,7 +299,7 @@ func (s *Store) queryAPIRequestLogs(f Filter, limit, offset int) ([]model.APIReq
 				&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 				&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens,
 				&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &usageKnown, &rec.Purpose,
-				&credits, &cost, &rec.PricingModel, &rec.Error,
+				&credits, &cost, &rec.PricingModel, &rec.Error, &rec.Attempt,
 			); err != nil {
 				return nil, 0, fmt.Errorf("store: query api logs: scan: %w", err)
 			}
@@ -309,7 +310,7 @@ func (s *Store) queryAPIRequestLogs(f Filter, limit, offset int) ([]model.APIReq
 			&rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens,
 			&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &usageKnown, &rec.Purpose,
-			&credits, &cost, &rec.PricingModel, &rec.Error, &rec.BodyReq, &rec.BodyResp,
+			&credits, &cost, &rec.PricingModel, &rec.Error, &rec.Attempt, &rec.BodyReq, &rec.BodyResp,
 		); err != nil {
 			return nil, 0, fmt.Errorf("store: query api logs: scan: %w", err)
 		}

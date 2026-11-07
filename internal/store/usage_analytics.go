@@ -325,6 +325,106 @@ func (s *Store) ModelLatencyStats(days int) ([]ModelLatencyRow, error) {
 	return out, nil
 }
 
+// DailyCount is one local day of request totals for the usage heatmap
+// (D-32①). Day is "2006-01-02"; Days absent from the result are rendered as
+// empty cells, so only days with rows are returned.
+type DailyCount struct {
+	Day      string `json:"day"`
+	Requests int64  `json:"requests"`
+	Errors   int64  `json:"errors"`
+}
+
+// UsageDailyCounts sums usage_daily by day over the last `days` local days
+// (inclusive of today). The aggregates are the same rows the summary view
+// reads, so heatmap and KPI totals never disagree; the 366-day aggregate
+// retention covers every window the endpoint accepts.
+func (s *Store) UsageDailyCounts(days int) ([]DailyCount, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store: usage daily counts: store is not open")
+	}
+	from, to, _ := analyticsWindow(days, time.Now())
+	ctx, cancel := s.ctx()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT day, COALESCE(SUM(requests), 0),
+		COALESCE(SUM(errors), 0)
+		FROM usage_daily WHERE day >= ? AND day <= ?
+		GROUP BY day ORDER BY day ASC`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("store: usage daily counts: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]DailyCount, 0, days)
+	for rows.Next() {
+		var row DailyCount
+		if err := rows.Scan(&row.Day, &row.Requests, &row.Errors); err != nil {
+			return nil, fmt.Errorf("store: usage daily counts: scan: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: usage daily counts: iterate: %w", err)
+	}
+	return out, nil
+}
+
+// ReasoningSplitRow is one (model × reasoning) bucket of the thinking-tier
+// split (D-32⑤). WithThinking rows are those whose reasoning_tokens > 0; the
+// adjacent WithoutThinking bucket is the same model with 0/unknown reasoning,
+// so the pair sums to the model's total row count.
+type ReasoningSplitRow struct {
+	Model            string `json:"model"`
+	WithThinking     bool   `json:"with_thinking"`
+	Requests         int64  `json:"requests"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	ReasoningTokens  int64  `json:"reasoning_tokens"`
+}
+
+// ReasoningSplit aggregates api_logs by served model × (reasoning_tokens > 0)
+// over the window. The same served-name fallback as ModelUsageSummary keeps
+// both rankings aligned. Requests are counted per bucket; a model that never
+// reasoned still appears, as its WithoutThinking half.
+func (s *Store) ReasoningSplit(days int) ([]ReasoningSplitRow, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store: reasoning split: store is not open")
+	}
+	from, to, _ := analyticsWindow(days, time.Now())
+	ctx, cancel := s.ctx()
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		COALESCE(NULLIF(model_served, ''), NULLIF(logical_model, ''), COALESCE(model, '')) AS served,
+		CASE WHEN COALESCE(reasoning_tokens, 0) > 0 THEN 1 ELSE 0 END AS thought,
+		COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(reasoning_tokens), 0)
+		FROM api_logs
+		WHERE substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
+		GROUP BY served, thought
+		ORDER BY COUNT(*) DESC, served ASC, thought DESC`, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("store: reasoning split: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ReasoningSplitRow, 0)
+	for rows.Next() {
+		var (
+			row     ReasoningSplitRow
+			thought int64
+		)
+		if err := rows.Scan(&row.Model, &thought, &row.Requests, &row.PromptTokens,
+			&row.CompletionTokens, &row.ReasoningTokens); err != nil {
+			return nil, fmt.Errorf("store: reasoning split: scan: %w", err)
+		}
+		row.WithThinking = thought != 0
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: reasoning split: iterate: %w", err)
+	}
+	return out, nil
+}
+
 // nearestRankPercentile is A's percentile(): nearest-rank with ceil(p%*n)-1,
 // sorted ascending, clamped. It returns nil for an empty sample set.
 func nearestRankPercentile(samples []int64, p float64) *int64 {

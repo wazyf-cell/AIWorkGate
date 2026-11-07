@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"aiworkgate/internal/fsutil"
@@ -258,6 +259,20 @@ func (s *Store) GetExtra(key string) (string, bool) {
 	defer s.mu.Unlock()
 	v, ok := s.blob.Extra[key]
 	return v, ok && v != ""
+}
+
+// ExtraKeys lists every extra key in deterministic order. Values are never
+// returned: callers enumerate keys (for example the P4 credential syncer
+// walking its credential.* records) and then read each value separately.
+func (s *Store) ExtraKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.blob.Extra))
+	for k := range s.blob.Extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func zero(b []byte) {

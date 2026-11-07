@@ -50,6 +50,13 @@ func (a *App) webOptions() webui.Options {
 			return err
 		},
 
+		// P4 凭据同步器（app/credential_sync.go）。SyncCredentials 是接收端，
+		// 把推来的凭据写进 DPAPI extra；CredentialsSync 是推送端，经 ssh+curl
+		// 把本机凭据推到目标服务器。token 读写走 extra 机制（notify.url 先例）。
+		CredentialSyncToken: a.credentialSyncToken,
+		SyncCredentials:     a.syncCredentials,
+		CredentialsSync:     a.runCredentialsSync,
+
 		Status:         a.status,
 		GetSettings:    a.getSettings,
 		SaveSettings:   a.saveSettings,
@@ -123,6 +130,9 @@ func (a *App) webOptions() webui.Options {
 
 		UsageModels:       a.usageModels,
 		UsageModelLatency: a.usageModelLatency,
+		UsageHeatmap:      a.usageHeatmap,
+		UsageReasoning:    a.usageReasoning,
+		Retention:         a.retentionInfo,
 
 		LogTimeline: a.logTimeline,
 		LogBody:     a.logBody,
@@ -2857,6 +2867,32 @@ func (a *App) usageModels(days int) ([]store.ModelUsageRow, error) {
 // usageModelLatency serves GET /api/usage/latency/models.
 func (a *App) usageModelLatency(days int) ([]store.ModelLatencyRow, error) {
 	return a.store.ModelLatencyStats(days)
+}
+
+// usageHeatmap serves GET /api/usage/heatmap (D-32①): per-day request/error
+// totals from usage_daily. The aggregates outlive the request-log retention,
+// so the calendar renders the full window even after api_logs was pruned.
+func (a *App) usageHeatmap(days int) ([]store.DailyCount, error) {
+	return a.store.UsageDailyCounts(days)
+}
+
+// usageReasoning serves GET /api/usage/reasoning (D-32⑤): the (model ×
+// reasoning_tokens>0) split read directly from the request logs.
+func (a *App) usageReasoning(days int) ([]store.ReasoningSplitRow, error) {
+	return a.store.ReasoningSplit(days)
+}
+
+// retentionInfo serves GET /api/usage/retention (D-32⑦): a read-only mirror of
+// the retention windows. The config's Normalize() already floors every window
+// at 1 day, so no clamping happens here.
+func (a *App) retentionInfo() (webui.RetentionInfo, error) {
+	cfg := a.configSnapshot()
+	return webui.RetentionInfo{
+		APIRequestDays:  cfg.Retention.APIRequestDays,
+		BodyPreviewDays: cfg.Retention.BodyPreviewDays,
+		HostLogDays:     cfg.Retention.HostLogDays,
+		ProxyLogDays:    cfg.Retention.ProxyLogDays,
+	}, nil
 }
 
 // ---------------------------------------------------------------- unified logs (S2)

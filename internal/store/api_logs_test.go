@@ -151,3 +151,88 @@ func TestExportAPIRequestLogs(t *testing.T) {
 		t.Fatalf("invalid class export error = %v, want ErrInvalidArgument", err)
 	}
 }
+
+// TestAPIRequestLogAttemptRoundTrip covers the v26 attempt column end to end:
+// an explicit attempt survives the insert, an unset one reads back 0 (the
+// NOT NULL DEFAULT 0 backfill), and every query shape that selects the
+// apiLogColumns projections returns it.
+func TestAPIRequestLogAttemptRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	rows := []model.APIRequestLog{
+		{TS: base.Format(time.RFC3339), ReqID: "req-att-1", Source: "plugin:mock", Model: "m1", Status: 200, Attempt: 2},
+		{TS: base.Add(time.Minute).Format(time.RFC3339), ReqID: "req-att-2", Source: "plugin:mock", Model: "m1", Status: 500, Attempt: 3},
+		{TS: base.Add(2 * time.Minute).Format(time.RFC3339), ReqID: "req-att-3", Source: "plugin:mock", Model: "m1", Status: 200},
+	}
+	for _, rec := range rows {
+		if err := s.InsertAPIRequestLog(rec); err != nil {
+			t.Fatalf("insert %s: %v", rec.ReqID, err)
+		}
+	}
+
+	// Full projection (bodies included).
+	got, _, err := s.QueryAPIRequestLogs(Filter{Model: "m1"})
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	wantAttempts := map[string]int{"req-att-1": 2, "req-att-2": 3, "req-att-3": 0}
+	if len(got) != len(wantAttempts) {
+		t.Fatalf("query rows = %d, want %d", len(got), len(wantAttempts))
+	}
+	for _, row := range got {
+		if row.Attempt != wantAttempts[row.ReqID] {
+			t.Fatalf("%s attempt = %d, want %d", row.ReqID, row.Attempt, wantAttempts[row.ReqID])
+		}
+	}
+
+	// NoBodies projection (list/export path).
+	nobodies, truncated, err := s.ExportAPIRequestLogs(Filter{Model: "m1"}, 10)
+	if err != nil || truncated {
+		t.Fatalf("export: %v truncated=%v", err, truncated)
+	}
+	for _, row := range nobodies {
+		if row.Attempt != wantAttempts[row.ReqID] {
+			t.Fatalf("export %s attempt = %d, want %d", row.ReqID, row.Attempt, wantAttempts[row.ReqID])
+		}
+	}
+
+	// Timeline page projection.
+	page, err := s.QueryAPILogsTimelinePage(Filter{}, 0, 0, 10)
+	if err != nil {
+		t.Fatalf("timeline page: %v", err)
+	}
+	if len(page) != len(wantAttempts) {
+		t.Fatalf("timeline rows = %d, want %d", len(page), len(wantAttempts))
+	}
+	for _, row := range page {
+		if row.Log.Attempt != wantAttempts[row.Log.ReqID] {
+			t.Fatalf("timeline %s attempt = %d, want %d", row.Log.ReqID, row.Log.Attempt, wantAttempts[row.Log.ReqID])
+		}
+	}
+
+	// Single-row lookup by req id.
+	byID, ok, err := s.APILogByReqID("req-att-2")
+	if err != nil || !ok {
+		t.Fatalf("by req id: ok=%v err=%v", ok, err)
+	}
+	if byID.Attempt != 3 {
+		t.Fatalf("by req id attempt = %d, want 3", byID.Attempt)
+	}
+
+	// Rollup window scan.
+	since, lastID, err := s.QueryAPILogsSince(0, base.Format("2006-01-02"), base.Add(time.Hour).Format("2006-01-02"), 10)
+	if err != nil {
+		t.Fatalf("since: %v", err)
+	}
+	if len(since) != len(wantAttempts) {
+		t.Fatalf("since rows = %d, want %d", len(since), len(wantAttempts))
+	}
+	if lastID == 0 {
+		t.Fatalf("since lastID = 0, want a positive row id")
+	}
+	for _, row := range since {
+		if row.Attempt != wantAttempts[row.ReqID] {
+			t.Fatalf("since %s attempt = %d, want %d", row.ReqID, row.Attempt, wantAttempts[row.ReqID])
+		}
+	}
+}

@@ -1073,6 +1073,32 @@ export interface UsageModelLatencyRow {
   p95_ttfb_ms?: number | null
 }
 
+/** One day of /usage/heatmap (D-32①). Days without rows are simply absent. */
+export interface UsageDailyCount {
+  day: string
+  requests?: number
+  errors?: number
+}
+
+/** One (model × reasoning) bucket of /usage/reasoning (D-32⑤). */
+export interface UsageReasoningRow {
+  model: string
+  /** true = reasoning_tokens > 0（走思考档）；false = 0/未知。 */
+  with_thinking?: boolean
+  requests?: number
+  prompt_tokens?: number
+  completion_tokens?: number
+  reasoning_tokens?: number
+}
+
+/** GET /usage/retention (D-32⑦): the log retention windows in days. */
+export interface UsageRetention {
+  api_request_days?: number
+  body_preview_days?: number
+  host_log_days?: number
+  proxy_log_days?: number
+}
+
 /* ------------------------------------------------------------------ */
 /* Unified log timeline (S2)                                           */
 /* ------------------------------------------------------------------ */
@@ -2563,6 +2589,18 @@ export const api = {
     /** Per-model latency/TTFB percentiles over successful requests (1–90). */
     modelLatency(days: number): Promise<UsageModelLatencyRow[]> {
       return request<UsageModelLatencyRow[]>(`/usage/latency/models${qs({ days })}`)
+    },
+    /** Per-day request/error totals for the calendar heatmap (D-32①, 1–90). */
+    heatmap(days: number): Promise<UsageDailyCount[]> {
+      return request<UsageDailyCount[]>(`/usage/heatmap${qs({ days })}`)
+    },
+    /** (model × reasoning_tokens>0) split over the last N days (D-32⑤, 1–90). */
+    reasoning(days: number): Promise<UsageReasoningRow[]> {
+      return request<UsageReasoningRow[]>(`/usage/reasoning${qs({ days })}`)
+    },
+    /** Log retention windows in days (D-32⑦); optional fields tolerate an older host. */
+    retention(): Promise<UsageRetention> {
+      return request<UsageRetention>(`/usage/retention`)
     },
     /** Absolute CSV URL, for an `<a download>` click. */
     exportUrl(filters: UsageFilterParams, granularity: UsageGranularity = 'day'): string {

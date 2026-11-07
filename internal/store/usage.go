@@ -902,7 +902,7 @@ func (s *Store) QueryAPILogsSince(id int64, fromDay, toDay string, limit int) ([
 			&stream, &rec.Status, &rec.LatencyMS, &rec.TTFBMS, &rec.FirstTokenAt,
 			&rec.PromptTokens, &rec.CompletionTokens, &rec.CachedTokens,
 			&rec.CacheWrite, &rec.CacheWrite1h, &cacheUnknown, &rec.ReasoningTokens, &usageKnown, &rec.Purpose,
-			&credits, &cost, &rec.PricingModel, &rec.Error); err != nil {
+			&credits, &cost, &rec.PricingModel, &rec.Error, &rec.Attempt); err != nil {
 			return nil, id, fmt.Errorf("store: api logs since: scan: %w", err)
 		}
 		rec.Stream = stream != 0

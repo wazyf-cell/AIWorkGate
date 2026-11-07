@@ -32,6 +32,7 @@ import type { AuthValue, ChatDeps, ProviderBinding } from "./chat/index.ts";
 import type { PluginHooks } from "./chat/types.ts";
 import type { EgressGuard } from "./egress/index.ts";
 import { buildHealth } from "./health.ts";
+import { buildHooksSurface } from "./hooks.ts";
 import { bridgeCapabilities, buildMeta } from "./meta.ts";
 import { buildModels } from "./models.ts";
 import type { LoadResultWithSites } from "./loader.ts";
@@ -117,8 +118,9 @@ function wrapLoaderFetch(
   pluginId: string,
   providerId: string,
   egress?: EgressGuard,
+  hooks?: import("./hooks.ts").HookTracker,
 ): PluginHooks {
-  if (!egress) return plugin as unknown as PluginHooks;
+  // D-58：auth.loader 只有在插件真的带这个钩子时才会被包/被调用。
   if (!plugin.auth || typeof plugin.auth.loader !== "function") {
     return plugin as unknown as PluginHooks;
   }
@@ -130,8 +132,12 @@ function wrapLoaderFetch(
     auth: {
       ...plugin.auth,
       loader: async (getAuth) => {
+        // D-58 实际面：chat 每次解析上游选项都会走到 auth.loader。
+        hooks?.count("auth.loader");
         const options = await innerLoader(getAuth);
         if (options && typeof options.fetch === "function") {
+          // D-58 实际面：loader 给了自定义 fetch（协议转换点，审查重点）。
+          hooks?.count("fetch_override");
           options.fetch = egress.wrapFetch({
             plugin: pluginId,
             provider: providerId,
@@ -189,7 +195,13 @@ function buildChatDeps(
       return {
         providerId: rec.id,
         label: rec.name,
-        hooks: wrapLoaderFetch(rec.plugin.plugin, ctx.config.pluginId, rec.id, egressGuard),
+        hooks: wrapLoaderFetch(
+          rec.plugin.plugin,
+          ctx.config.pluginId,
+          rec.id,
+          egressGuard,
+          ctx.hooks,
+        ),
       };
     },
     getModelApiUrl: (providerId: string, modelId: string) =>
@@ -361,6 +373,12 @@ export function createBridgeServer(ctx: BridgeContext, deps: BridgeServerDeps = 
     // ---- 5. chat 泳道（方法校验归 chat handler：非 POST → 405）----
     if (pathname === CHAT_PATH) {
       return chat(req, res);
+    }
+
+    // ---- 5b. D-58 hooks 受控面（先于 admin.handle：/admin/ 前缀会被其 404 兜住）----
+    if (pathname === "/admin/hooks") {
+      if (method !== "GET") return methodNotAllowed(res, "GET");
+      return sendJson(res, 200, buildHooksSurface(ctx));
     }
 
     // ---- 6. 管理面 + /accounts + /checkin（async；true = 已处理）----

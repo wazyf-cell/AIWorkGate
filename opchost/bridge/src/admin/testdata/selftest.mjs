@@ -9,13 +9,15 @@
 // READY_FOR_CURL. Exit code 1 if any CHECK failed.
 
 import { createServer } from 'node:http'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { createAdminRouter, createFileCredentialStore } from '../index.ts'
 import { importMagpieAuth } from '../../magpie-auth.ts'
 import { bridgeCredentialStore } from '../../server.ts'
+import { createHookTracker, KNOWN_HOOKS } from '../../hooks.ts'
+import { loadPluginDir } from '../../loader.ts'
 import { registryFromLoad } from '../wiring.ts'
 import { buildIndex, DEFAULT_QUOTA_GROUPS, mergeQuotaRecords, quotaRecordFor } from '../quotagroups.ts'
 import { isLoopback } from '../util.ts'
@@ -502,6 +504,80 @@ let pluginModeSid = ''
   check('magpie_import_optout', disabled.length === 0, JSON.stringify(disabled))
   delete process.env.AIWORKGATE_MAGPIE_AUTH_IMPORT
   delete process.env.MAGPIE_AUTH_FILE
+}
+
+// ---- 14. D-58 hooks controlled surface --------------------------------------------
+{
+  // A throwaway plugin dir: mock shape with config + models fn + loader +
+  // methods + checkin + usage (all the faces the bridge knows about).
+  const pluginDir = join(mkdtempSync(join(tmpdir(), 'd58-hooks-')), 'plugin')
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(
+    join(pluginDir, 'opencode.mjs'),
+    `export async function MockHooksPlugin() {
+  return {
+    config: async (config) => {
+      config.provider ??= {}
+      config.provider.mock ??= { name: 'Mock', api: 'https://copilot.tencent.com/v2' }
+    },
+    provider: {
+      id: 'mock',
+      async models() { return { 'mock-chat': { id: 'mock-chat', name: 'Mock Chat' } } },
+    },
+    auth: {
+      provider: 'mock',
+      async loader() { return { baseURL: 'https://copilot.tencent.com/v2', apiKey: 'k' } },
+      async checkin() { return { outcome: 'done', credit: 1 } },
+      usage: async () => ({}),
+      methods: [{ type: 'oauth', label: 'x', authorize: async () => ({ url: 'https://x.test/a' }) }],
+    },
+  }
+}`,
+    'utf8',
+  )
+
+  // 14a. loader enumerates the declared face from a real plugin instance and
+  // counts the load-time calls (config + provider.models fn).
+  const tracker = createHookTracker()
+  const loaded = await loadPluginDir({
+    dir: pluginDir,
+    credentials: { count: () => 0, list: () => [], get: () => undefined, save: async (p) => ({ provider: p, updated_at: Date.now() }) },
+    hooks: tracker,
+  })
+  const snap = tracker.snapshot()
+  check(
+    'hooks_declared_shape',
+    loaded.providers.mock !== undefined &&
+      JSON.stringify(snap.by_provider.mock) === JSON.stringify(['auth.checkin', 'auth.loader', 'auth.methods', 'auth.usage', 'config', 'provider.models']),
+    JSON.stringify(snap.by_provider),
+  )
+  check(
+    'hooks_actual_load_counts',
+    snap.actual.config === 1 && snap.actual['provider.models'] === 1,
+    JSON.stringify({ config: snap.actual.config, models: snap.actual['provider.models'] }),
+  )
+  // every known key (declared + actual-only) is present in the actual map
+  const missing = snap.known.filter((k) => typeof snap.actual[k] !== 'number')
+  check('hooks_actual_keys_complete', missing.length === 0 && snap.known.length === KNOWN_HOOKS.length + 1, JSON.stringify(missing))
+
+  // 14b. the shared builder (server.ts's GET /admin/hooks) reports the same
+  // surface with ok:true, and an empty context degrades to the zero shape.
+  const { buildHooksSurface } = await import('../../hooks.ts')
+  const surface = buildHooksSurface({ hooks: tracker })
+  check(
+    'hooks_surface_shape',
+    surface.ok === true &&
+      surface.declared.includes('auth.loader') &&
+      typeof surface.by_provider.mock === 'object' &&
+      typeof surface.actual['auth.checkin'] === 'number',
+    JSON.stringify(surface).slice(0, 120),
+  )
+  const empty = buildHooksSurface({})
+  check(
+    'hooks_surface_empty_context',
+    empty.ok === true && empty.declared.length === 0 && empty.actual['auth.loader'] === 0,
+    JSON.stringify(empty).slice(0, 120),
+  )
 }
 
 const failed = results.filter((r) => !r.ok)

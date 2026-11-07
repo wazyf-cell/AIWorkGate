@@ -689,6 +689,16 @@ var migrations = []migrationStep{
 			{"model_overrides", "upstream_name", "TEXT"},
 		},
 	},
+	{ // version 26: D-32⑥ per-request attempt number on the request log
+		columns: []columnMigration{
+			// attempt = the dispatch round that produced this row (0 = first
+			// attempt / unknown, which also covers every row written before the
+			// column existed). The gateway emit chain owns the real number and
+			// is wired in a later round; until then the column stays 0 and the
+			// queries surface it verbatim.
+			{"api_logs", "attempt", "INTEGER NOT NULL DEFAULT 0"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is

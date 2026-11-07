@@ -84,3 +84,24 @@ export function percent(part?: number | null, total?: number | null): number {
   if (!part || !total || total <= 0) return 0
   return Math.max(0, Math.min(100, Math.round((part / total) * 100)))
 }
+
+/**
+ * Coarse relative time in Chinese, for freshness displays ("3 分钟前"). Past
+ * only: a future stamp falls back to "刚刚". The caller shows the absolute
+ * time in a title/tooltip when precision matters.
+ */
+export function relativeTime(value: number | string | Date | undefined | null, now: number = Date.now()): string {
+  const date = toDate(value)
+  if (!date) return ''
+  const seconds = Math.floor((now - date.getTime()) / 1000)
+  if (seconds < 45) return '刚刚'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days} 天前`
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months} 个月前`
+  return `${Math.floor(days / 365)} 年前`
+}
