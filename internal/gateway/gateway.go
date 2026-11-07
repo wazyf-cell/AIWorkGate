@@ -134,6 +134,10 @@ type Options struct {
 	// KeyUsage accumulates one finished request for a key. Fire-and-forget:
 	// accounting never changes the response the client already received.
 	KeyUsage func(keyID, day string, requests, promptTokens, completionTokens, cachedTokens int, credits *float64)
+	// KeyCostTotal returns a key's cumulative cost in USD (D-42② cost budget).
+	// Nil disables the budget gate; a store read error fails open like the
+	// lifetime-request cap.
+	KeyCostTotal func(keyID string) (float64, error)
 
 	// DebugBody enables request/response preview capture (redacted by the
 	// sink). Request previews are capped at 4KB, responses at BodyCap.
@@ -217,6 +221,7 @@ type Gateway struct {
 	keyRecord      func(keyID string) (KeyRecord, bool, error)
 	keyUsageToday  func(keyID, day string) (int, error)
 	keyUsageTotal  func(keyID string) (int, error)
+	keyCostTotal   func(keyID string) (float64, error)
 	keyUsage       func(keyID, day string, requests, promptTokens, completionTokens, cachedTokens int, credits *float64)
 	debugBody      atomic.Bool
 	bodyCap        int
@@ -336,6 +341,7 @@ func newGateway(opts Options) *Gateway {
 		keyRecord:         opts.KeyRecord,
 		keyUsageToday:     opts.KeyUsageToday,
 		keyUsageTotal:     opts.KeyUsageTotal,
+		keyCostTotal:      opts.KeyCostTotal,
 		keyUsage:          opts.KeyUsage,
 		bodyCap:           bodyCap,
 		modelCacheTTL:     modelCacheTTL,
@@ -448,11 +454,11 @@ type reqRecord struct {
 	// (D-18⑦). Without it, prompt/completion 0 means "unknown", never "free".
 	usageKnown bool
 	purpose    string
-	credits        *float64
-	downgraded     string
-	errText        string
-	bodyReq        string
-	bodyResp       string
+	credits    *float64
+	downgraded string
+	errText    string
+	bodyReq    string
+	bodyResp   string
 	// billable marks a /v1 inference request that consumes the client key's
 	// daily quota; quotaRejected marks the request refused by that gate, which
 	// is not counted again (otherwise a blocked key keeps growing its counter).
@@ -464,6 +470,10 @@ type reqRecord struct {
 	// redactLine is the P10 masking audit for this request (categories/counts/
 	// lines/elapsed, never the values), written to the API log when set.
 	redactLine string
+	// attempt is the dispatch round that produced the final answer (D-32⑥):
+	// 1 = the first try, 2+ = a retry switched to another account/round.
+	// Non-scheduled paths (forwardPlugin/forwardA) leave it 0 = "unknown".
+	attempt int
 }
 
 // sseKeepAliveInterval is how long a streaming reply may stay silent before the
@@ -732,6 +742,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(withKeyRecord(r.Context(), kr))
 	}
 	rec.billable = isInferencePath(path)
+	// D-42②: read-only keys and the cost budget sit in the same admission
+	// chain as daily_quota, before anything is routed or reserved.
+	if !g.keyReadOnlyAllows(w, r, rec, path) {
+		return
+	}
+	if !g.keyCostBudgetAllows(w, r, rec) {
+		return
+	}
 	if !g.keyQuotaAllows(w, r, rec) {
 		return
 	}
@@ -1799,6 +1817,7 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 		Credits:          rec.credits,
 		Error:            truncateUTF8(rec.errText, 512),
 		Redact:           rec.redactLine,
+		Attempt:          rec.attempt,
 	}
 	if !rec.firstTokenAt.IsZero() {
 		row.FirstTokenAt = rec.firstTokenAt.Format(time.RFC3339)

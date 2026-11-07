@@ -12,6 +12,7 @@
 import type {
   Capability,
   CredentialStore as SharedCredentialStore,
+  IdentityResetResult,
   LoadResult,
   OpenCodePlugin,
   BridgeContext,
@@ -74,16 +75,22 @@ export function registryFromLoad(load: LoadResult, credentials: SharedCredential
 
   const warnings = [...(opts.warnings ?? []), ...(load.warnings ?? [])]
 
-  // 能力口径（task-9 裁定，与 meta.ts bridgeCapabilities 同基线）：
+  // 能力口径（task-9 裁定 + task-35 D-57 修订，与 meta.ts bridgeCapabilities 同基线）：
   //   基线 = [upstream, accounts, checkin] —— 桥实际能应答的契约端点
   //   quota 仅当有 provider 的插件真带 auth.usage 时附加（额度经 /accounts 的 quota 字段透出）
+  //   D-57：identity_request 仅当插件真带 auth.identity 钩子时附加；
+  //         identity_os_switch 还要求该钩子声明 identityOS（permissions.os_identity 语义）。
   // 刻意不声明（端点未实现，声明了就是骗宿主）：
   //   refresh（/accounts/{id}/refresh 未接线）、login_*（登录走管理面 /admin/signin，不是
-  //   宿主契约 /accounts/login*）、identity_request/identity_os_switch（D-57 指纹透传未接线，
-  //   声明 = 谎称桥能 reset identity）。
+  //   宿主契约 /accounts/login*）。
   const derived: Capability[] = ['upstream', 'accounts', 'checkin']
   const hasUsage = providers.some((p) => typeof openCodeOf(p)?.auth?.usage === 'function')
   if (hasUsage) derived.push('quota')
+  const identityProviders = providers.filter((p) => typeof openCodeOf(p)?.auth?.identity === 'function')
+  if (identityProviders.length > 0) {
+    derived.push('identity_request')
+    if (identityProviders.some((p) => openCodeOf(p)?.auth?.identityOS === true)) derived.push('identity_os_switch')
+  }
   derived.sort()
 
   const getAuthFor = (providerId: string) => async (): Promise<Record<string, unknown> | undefined> => {
@@ -126,6 +133,18 @@ export function registryFromLoad(load: LoadResult, credentials: SharedCredential
       opts.hooks?.count('auth.checkin')
       const out = (await fn(getAuthFor(providerId))) as PluginCheckinResult | undefined
       if (!out || typeof out.outcome !== 'string') throw new Error(`provider ${providerId} returned no outcome`)
+      return out
+    },
+    // D-57 指纹重置透传：桥只代理调用与归一化，绝不接触指纹材料本身。
+    async identity(providerId: string, accountId: string, mode: 'request' | 'os'): Promise<IdentityResetResult> {
+      const prov = load.providers[providerId]
+      if (!prov) throw new Error(`unknown provider ${providerId}`)
+      const fn = openCodeOf(prov)?.auth?.identity
+      if (typeof fn !== 'function') throw new Error(`provider ${providerId} has no identity hook`)
+      // D-58 实际面：auth.identity 真实调用过一次。
+      opts.hooks?.count('auth.identity')
+      const out = (await fn({ mode, accountId })) as IdentityResetResult | undefined
+      if (!out || typeof out.ok !== 'boolean') throw new Error(`provider ${providerId} returned no identity result`)
       return out
     },
     // 桥的凭据是 provider 级的，宿主看到的一个账号 = 一个 provider

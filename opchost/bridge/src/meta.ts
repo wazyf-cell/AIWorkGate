@@ -23,13 +23,16 @@ import { BRIDGE_API_LEVEL, BRIDGE_ID, BRIDGE_NAME, BRIDGE_VERSION, CAP } from ".
  * **quota 附加条件**：仅当任一插件确有 `auth.usage` 钩子才声明
  *   （额度经 /accounts 的 quota 字段透出；没有钩子就没有数据可透）。
  *
+ * **D-57 identity 附加条件（task-35）**：仅当任一插件确有 `auth.identity` 钩子才声明
+ *   identity_request；该钩子声明 identityOS（permissions.os_identity 语义）时再附加
+ *   identity_os_switch。没有钩子就不声明——端点 /accounts/{id}/identity/reset 已实现，
+ *   但只会对没有钩子的插件回 501，声明了就是骗宿主。
+ *
  * **一律不声明**（端点没有接线，声明了就是骗宿主）：
  *   refresh            → POST /accounts/{id}/refresh 未实现
  *   login_api_key / login_oauth / login_paste_code / login_local_state / login_cookie
  *                      → 契约端点 /accounts/login* 未实现；登录实际走管理面
  *                        /admin/signin/start（管理面能力，不是宿主契约能力）
- *   identity_request / identity_os_switch
- *                      → POST /accounts/{id}/identity/reset 未实现（D-57 的透传待补）
  *
  * 与 Go 侧 DefaultBridgeCapabilities=[accounts, checkin] 的差异（桥多了 upstream、
  * 条件 quota）记在 README §3.3，宿主 HasCapability 读的是 manifest 而非 /meta，不影响调度。
@@ -45,6 +48,11 @@ export function bridgeCapabilities(ctx: BridgeContext): Capability[] {
   for (const rec of Object.values(ctx.registry.providers)) {
     const auth = rec.plugin.plugin.auth;
     if (auth && typeof auth.usage === "function") caps.add(CAP.quota);
+    // D-57（task-35）：插件真带 identity 钩子才声明；OS 级还需钩子声明 identityOS
+    if (auth && typeof auth.identity === "function") {
+      caps.add(CAP.identityRequest);
+      if (auth.identityOS === true) caps.add(CAP.identityOS);
+    }
   }
   return [...caps].sort();
 }

@@ -19,6 +19,7 @@ package store
 // The table itself ships with migration v5; this file only reads and writes it.
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -576,4 +577,101 @@ func newCustomModelID() (string, error) {
 		return "", fmt.Errorf("store: custom model id: %w", err)
 	}
 	return "cm-" + hex.EncodeToString(buf[:]), nil
+}
+
+// CustomModelPluginID is the plugin-namespace prefix D-37 gives folded custom
+// models: "custom:<connection_id>". The scheduler, catalog and override
+// consumers see a custom model exactly like a plugin model of that namespace.
+func CustomModelPluginID(connectionID string) string {
+	return "custom:" + strings.TrimSpace(connectionID)
+}
+
+// foldCustomModelsHook is the v27 migration step body (D-37): mirror every
+// custom_models row that already belongs to a custom connection into
+// model_catalog and model_overrides under the CustomModelPluginID namespace.
+// Rows without a connection (pre-connection era) stay untouched here; the
+// app's legacy merge attaches them and then re-runs FoldCustomModelsIntoCatalog,
+// so one database converges to the same state either way.
+//
+// The fold is deliberately decoupled from the custom_models table: the table
+// is kept (read-only compatible) for rollback, and every reader of model
+// catalog/overrides sees custom models through the "custom:" namespace.
+func foldCustomModelsHook(ctx context.Context, tx *sql.Tx) error {
+	return foldCustomModelsIntoCatalog(ctx, tx)
+}
+
+// foldCustomModelsIntoCatalog runs the two mirror statements inside tx. It is
+// idempotent: catalog rows are refreshed (sync-owned metadata) and override
+// rows are created once with ON CONFLICT DO NOTHING (user-owned, never
+// clobbered by the fold).
+func foldCustomModelsIntoCatalog(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{
+		// model_catalog mirror. removed_at is reset to NULL because a custom
+		// model is never marked removed by a sync (there is none).
+		`INSERT INTO model_catalog
+			(plugin_id, model_id, display_name, vendor, multiplier, thinking,
+			 context_length, vision, free, enabled, synced_at, removed_at, upstream_name)
+		SELECT 'custom:' || cm.connection_id, cm.upstream_model, cm.name, 'custom', 1,
+			NULLIF(NULLIF(cm.reasoning_tiers, ''), '[]'), NULLIF(cm.context_window, 0), 0, 0,
+			cm.enabled, cm.updated_at, NULL, NULL
+		FROM custom_models cm
+		WHERE cm.connection_id IS NOT NULL AND cm.connection_id <> ''
+		ON CONFLICT(plugin_id, model_id) DO UPDATE SET
+			display_name = excluded.display_name,
+			vendor = excluded.vendor,
+			multiplier = excluded.multiplier,
+			thinking = excluded.thinking,
+			context_length = excluded.context_length,
+			free = excluded.free,
+			enabled = excluded.enabled,
+			synced_at = excluded.synced_at,
+			removed_at = NULL`,
+		// model_overrides mirror: only the fields the custom model carries.
+		// thinking is the JSON tiers array (model_overrides.thinking decodes as
+		// []string); default_reasoning has no override column and stays on the
+		// custom model itself.
+		`INSERT INTO model_overrides
+			(plugin_id, model, display_name, context_length, max_output_tokens, thinking, updated_at)
+		SELECT 'custom:' || cm.connection_id, cm.upstream_model, cm.name,
+			NULLIF(cm.context_window, 0), NULLIF(cm.max_output_tokens, 0),
+			NULLIF(NULLIF(cm.reasoning_tiers, ''), '[]'), cm.updated_at
+		FROM custom_models cm
+		WHERE cm.connection_id IS NOT NULL AND cm.connection_id <> ''
+		ON CONFLICT(plugin_id, model) DO NOTHING`,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("store: fold custom models: %w", err)
+		}
+	}
+	return nil
+}
+
+// FoldCustomModelsIntoCatalog runs the fold outside a migration: the app calls
+// it at start so legacy rows attached by migrateLegacyCustomModels land in
+// the catalog/override mirror as well. Returns the number of eligible
+// custom_models rows (attached ones).
+func (s *Store) FoldCustomModelsIntoCatalog() (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store: fold custom models: store is not open")
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	var eligible int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM custom_models WHERE connection_id IS NOT NULL AND connection_id <> ''`).Scan(&eligible); err != nil {
+		return 0, fmt.Errorf("store: fold custom models: count: %w", err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("store: fold custom models: begin: %w", err)
+	}
+	if err := foldCustomModelsIntoCatalog(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: fold custom models: commit: %w", err)
+	}
+	return eligible, nil
 }

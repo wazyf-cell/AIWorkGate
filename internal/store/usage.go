@@ -35,11 +35,16 @@ type UsageTotals struct {
 	Errors           int64
 	PromptTokens     int64
 	CompletionTokens int64
-	Credits          float64
-	LatencyMSSum     int64
-	TTFBMSSum        int64
-	TTFBCount        int64
-	ActiveAccounts   int64
+	// CachedTokens is the summed cached prefix of the range (usage_daily
+	// aggregates the api_logs.cached_tokens column). It feeds the P9-8 cache
+	// hit rate: cached / prompt with the denominator correction from the plan
+	// ("prompt_tokens already includes cached" for OpenAI-dialect rows).
+	CachedTokens   int64
+	Credits        float64
+	LatencyMSSum   int64
+	TTFBMSSum      int64
+	TTFBCount      int64
+	ActiveAccounts int64
 }
 
 // UsageAccountCredit is the newest quota snapshot of one account plus the
@@ -254,6 +259,7 @@ func (s *Store) UsageTotalsOf(f UsageFilter) (UsageTotals, error) {
 	where, args := f.dailyWhere()
 	q := `SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(errors), 0),
 		COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
+		COALESCE(SUM(cached_tokens), 0),
 		COALESCE(SUM(credits), 0), COALESCE(SUM(latency_ms_sum), 0),
 		COALESCE(SUM(ttfb_ms_sum), 0), COALESCE(SUM(ttfb_count), 0),
 		COALESCE(COUNT(DISTINCT CASE WHEN account_id <> ''
@@ -263,6 +269,7 @@ func (s *Store) UsageTotalsOf(f UsageFilter) (UsageTotals, error) {
 	defer cancel()
 	if err := s.db.QueryRowContext(ctx, q, args...).Scan(
 		&out.Requests, &out.Errors, &out.PromptTokens, &out.CompletionTokens,
+		&out.CachedTokens,
 		&out.Credits, &out.LatencyMSSum, &out.TTFBMSSum, &out.TTFBCount,
 		&out.ActiveAccounts,
 	); err != nil {

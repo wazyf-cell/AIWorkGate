@@ -731,3 +731,149 @@ func TestKeyBindPoolModelsListingHidesOtherPools(t *testing.T) {
 		}
 	}
 }
+
+// TestReadOnlyKeyAllowsModelsRejectsChat pins D-42②: a read-only key may read
+// the catalogue (/v1/models) but every consuming endpoint is refused with
+// 403 read_only_key before anything is routed or reserved.
+func TestReadOnlyKeyAllowsModelsRejectsChat(t *testing.T) {
+	reg, calls1, _ := chatPluginServers(t, scopedChatReply)
+	g := newTestGateway(t, Options{
+		Plugins:   reg,
+		KeyRecord: staticKeyRecord(KeyRecord{Enabled: true, ReadOnly: true}),
+	})
+
+	rr := serve(g, newGetRequest(t, "/v1/models", clientKey))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("read-only key /v1/models = %d, want 200 (body %s)", rr.Code, rr.Body.String())
+	}
+
+	rr = serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+		`{"model":"p1/alpha","messages":[]}`))
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("read-only key chat = %d, want 403 (body %s)", rr.Code, rr.Body.String())
+	}
+	if code := decodeError(t, rr).Error.Code; code != "read_only_key" {
+		t.Fatalf("read-only chat error code = %q, want read_only_key", code)
+	}
+	if calls1.count() != 0 {
+		t.Fatalf("read-only key reached the plugin (%d calls)", calls1.count())
+	}
+}
+
+// TestReadOnlyKeyRejectsBillablePassThrough pins that pass-through endpoints
+// (embeddings/images), which are billable inference, are refusal targets too.
+func TestReadOnlyKeyRejectsBillablePassThrough(t *testing.T) {
+	for _, path := range []string{"/v1/embeddings", "/v1/images/generations"} {
+		t.Run(path, func(t *testing.T) {
+			g := newTestGateway(t, Options{
+				Plugins:   newFakeRegistry(),
+				KeyRecord: staticKeyRecord(KeyRecord{Enabled: true, ReadOnly: true}),
+			})
+			rr := serve(g, newChatRequest(t, path, clientKey, `{"model":"gpt-4o","input":"x"}`))
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("%s status = %d, want 403 (body %s)", path, rr.Code, rr.Body.String())
+			}
+			if code := decodeError(t, rr).Error.Code; code != "read_only_key" {
+				t.Fatalf("%s error code = %q, want read_only_key", path, code)
+			}
+		})
+	}
+}
+
+// TestNonReadOnlyKeyUnrestricted pins the default: a key without ReadOnly
+// keeps routing chat exactly as before.
+func TestNonReadOnlyKeyUnrestricted(t *testing.T) {
+	reg, calls1, _ := chatPluginServers(t, scopedChatReply)
+	g := newTestGateway(t, Options{
+		Plugins:   reg,
+		KeyRecord: staticKeyRecord(KeyRecord{Enabled: true}),
+	})
+	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+		`{"model":"p1/alpha","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("normal key chat = %d, want 200 (body %s)", rr.Code, rr.Body.String())
+	}
+	if calls1.count() != 1 {
+		t.Fatalf("normal key plugin calls = %d, want 1", calls1.count())
+	}
+}
+
+// TestCostBudgetWithinLimitAllowed pins D-42②: a key still inside its budget
+// routes normally.
+func TestCostBudgetWithinLimitAllowed(t *testing.T) {
+	reg, calls1, _ := chatPluginServers(t, scopedChatReply)
+	g := newTestGateway(t, Options{
+		Plugins:      reg,
+		KeyRecord:    staticKeyRecord(KeyRecord{ID: "key-1", Enabled: true, CostBudgetUSD: 1.0}),
+		KeyCostTotal: func(string) (float64, error) { return 0.5, nil },
+	})
+	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+		`{"model":"p1/alpha","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("within budget = %d, want 200 (body %s)", rr.Code, rr.Body.String())
+	}
+	if calls1.count() != 1 {
+		t.Fatalf("within-budget key plugin calls = %d, want 1", calls1.count())
+	}
+}
+
+// TestCostBudgetExceededRejected pins the 429: once cumulative cost meets the
+// budget the key is refused with cost_budget_exceeded and never reaches a
+// plugin.
+func TestCostBudgetExceededRejected(t *testing.T) {
+	reg, calls1, _ := chatPluginServers(t, scopedChatReply)
+	g := newTestGateway(t, Options{
+		Plugins:      reg,
+		KeyRecord:    staticKeyRecord(KeyRecord{ID: "key-1", Enabled: true, CostBudgetUSD: 1.0}),
+		KeyCostTotal: func(string) (float64, error) { return 1.0, nil },
+	})
+	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+		`{"model":"p1/alpha","messages":[]}`))
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("over budget = %d, want 429 (body %s)", rr.Code, rr.Body.String())
+	}
+	if code := decodeError(t, rr).Error.Code; code != "cost_budget_exceeded" {
+		t.Fatalf("error code = %q, want cost_budget_exceeded", code)
+	}
+	if calls1.count() != 0 {
+		t.Fatalf("over-budget key reached the plugin (%d calls)", calls1.count())
+	}
+}
+
+// TestCostBudgetZeroUnlimited pins 0 = unlimited: a zero budget never rejects,
+// even when the reported cost is large.
+func TestCostBudgetZeroUnlimited(t *testing.T) {
+	reg, calls1, _ := chatPluginServers(t, scopedChatReply)
+	g := newTestGateway(t, Options{
+		Plugins:      reg,
+		KeyRecord:    staticKeyRecord(KeyRecord{Enabled: true, CostBudgetUSD: 0}),
+		KeyCostTotal: func(string) (float64, error) { return 9999, nil },
+	})
+	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+		`{"model":"p1/alpha","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("zero budget = %d, want 200 (body %s)", rr.Code, rr.Body.String())
+	}
+	if calls1.count() != 1 {
+		t.Fatalf("zero-budget key plugin calls = %d, want 1", calls1.count())
+	}
+}
+
+// TestCostBudgetErrorFailsOpen pins the documented failure mode: a store read
+// error must not block traffic (spend guard, not an authorization boundary).
+func TestCostBudgetErrorFailsOpen(t *testing.T) {
+	reg, calls1, _ := chatPluginServers(t, scopedChatReply)
+	g := newTestGateway(t, Options{
+		Plugins:      reg,
+		KeyRecord:    staticKeyRecord(KeyRecord{Enabled: true, CostBudgetUSD: 1.0}),
+		KeyCostTotal: func(string) (float64, error) { return 0, errors.New("db gone") },
+	})
+	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey,
+		`{"model":"p1/alpha","messages":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("budget read error = %d, want 200 (fail open, body %s)", rr.Code, rr.Body.String())
+	}
+	if calls1.count() != 1 {
+		t.Fatalf("fail-open key plugin calls = %d, want 1", calls1.count())
+	}
+}

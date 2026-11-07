@@ -140,6 +140,8 @@ func (a *App) snapshotFrom(ctx context.Context, src schedulerSource) (*scheduler
 			Name:                 strings.TrimSpace(st.Manifest.Name),
 			APIVersion:           st.Manifest.APILevel,
 			UpstreamEnabled:      poolSettings.UpstreamEnabled && st.Enabled,
+			GroupOnly:            poolSettings.GroupOnly,
+			PriceRate:            poolSettings.PriceRate,
 			Strategy:             poolSettings.Strategy,
 			PoolPriority:         poolSettings.PoolPriority,
 			AccountConcurrency:   poolSettings.AccountConcurrency,

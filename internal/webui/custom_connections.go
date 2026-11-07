@@ -12,6 +12,16 @@ package webui
 //	POST   /api/custom-connections/{id}/models/import -> batch create
 //
 // Keys are write-only: responses only carry key_set.
+//
+// 面板退役（D-37）：这一组 custom-connections 路由**保留**（自定义接入的建
+// 连/改连/导入/测试能力仍然需要），但「自定义模型」面板本身退役——模型级
+// 编辑面收敛到 model_overrides 入口（Pool 页编辑面已存在，经
+// /api/scheduler/models 的 overrides 回调与 ModelOverrides/PutModelOverride/
+// DeleteModelOverride 暴露）。自定义模型本身自 v27 起被 store 折叠进
+// model_catalog/model_overrides 的 "custom:<connection_id>" 命名空间，
+// 消费端（调度器/目录/覆盖层）只看得到折叠后的视图，不再需要 custom_models
+// 面板作为唯一入口。旧数据不删除：custom_models 表保留只读兼容，回滚靠
+// Migrate 的 .bak-v26-v28 整库备份。
 
 import (
 	"encoding/json"

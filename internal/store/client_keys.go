@@ -142,6 +142,28 @@ func (s *Store) CleanupClientKeyUsage(beforeDay string) (int64, error) {
 	return n, nil
 }
 
+// TotalClientKeyCost sums the recorded cost_usd of every api_logs row of one
+// client key (D-42②). The gateway cost budget check reads this; 0 means "no
+// cost recorded", never "zero cost by definition". An empty key id is a
+// caller error.
+func (s *Store) TotalClientKeyCost(keyID string) (float64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store: key cost: store is not open")
+	}
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return 0, fmt.Errorf("store: key cost: %w: key id is required", ErrInvalidArgument)
+	}
+	ctx, cancel := s.ctx()
+	defer cancel()
+	var total float64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(cost_usd), 0) FROM api_logs WHERE key_id = ?`, keyID).Scan(&total); err != nil {
+		return 0, fmt.Errorf("store: key cost: %w", err)
+	}
+	return total, nil
+}
+
 // queryString runs a single-column, single-row query and reports whether a
 // row existed.
 func (s *Store) queryString(q, what string, args ...any) (string, bool, error) {

@@ -18,6 +18,7 @@ import type { AdminDeps, CheckinLedgerRow, PluginCheckinResult } from './types.t
 import type { CheckinSwitchIndex } from './switches.ts'
 import type { CheckinLedger } from './ledger.ts'
 import { dayOf, isLoopback, readJSON, rejectRemote, sendJSON } from './util.ts'
+import { withEgressFetch } from './egress_fetch.ts'
 
 /** aiworkgate 契约的结果对象（字段名逐字对齐 model.CheckinResult）。 */
 export interface CheckinResultPayload {
@@ -156,7 +157,9 @@ export async function runCheckin(
   }
   let out: PluginCheckinResult
   try {
-    out = await handle.checkin(providerId, accountId)
+    // task-35②：插件签到自带上游网络调用（全局 fetch），在守卫窗口内执行，
+    // strict 白名单的拦截/放行从此进审计。
+    out = await withEgressFetch(deps, pluginId, providerId, () => handle.checkin(providerId, accountId))
   } catch (e) {
     // 插件抛错 = 上游没给答案（离线/网络）。契约里留给 fail + 归类，不冒充成功。
     const msg = e instanceof Error ? e.message : String(e)
@@ -171,8 +174,8 @@ export async function runCheckin(
   return normalizeCheckin(pluginId, accountId, out ?? { outcome: 'failed' }, ledger)
 }
 
-/** 在一簇插件里找账号所属的 (plugin, provider)。 */
-async function locateAccount(
+/** 在一簇插件里找账号所属的 (plugin, provider)。identity/reset（D-57）复用。 */
+export async function locateAccount(
   deps: AdminDeps,
   accountId: string,
   pluginIdHint?: string,

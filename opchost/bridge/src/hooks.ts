@@ -13,6 +13,7 @@
 //     fetch_override    同上：loader 返回了自定义 fetch（被桥包装/使用）
 //     auth.methods      admin/wiring.ts handle.authorize 调 methods[].authorize
 //     auth.checkin      admin/wiring.ts handle.checkin 调 auth.checkin
+//     auth.identity     admin/wiring.ts handle.identity 调 auth.identity（D-57）
 //     auth.usage        桥只做能力探测（typeof），从不调用 → actual 恒 0
 //     auth.refresh      桥未接线续期调用 → actual 恒 0
 //     chat.headers      chat 泳道尚未消费 → actual 恒 0
@@ -27,6 +28,7 @@ export const KNOWN_HOOKS = [
   "auth.loader",
   "auth.methods",
   "auth.checkin",
+  "auth.identity",
   "auth.usage",
   "auth.refresh",
   "chat.headers",
@@ -90,6 +92,7 @@ export function declaredHooksOf(plugin: OpenCodePlugin): string[] {
     if (typeof auth.loader === "function") out.add("auth.loader");
     if (Array.isArray(auth.methods) && auth.methods.length > 0) out.add("auth.methods");
     if (typeof auth.checkin === "function") out.add("auth.checkin");
+    if (typeof auth.identity === "function") out.add("auth.identity");
     if (typeof auth.usage === "function") out.add("auth.usage");
     if (typeof auth.refresh === "function") out.add("auth.refresh");
   }

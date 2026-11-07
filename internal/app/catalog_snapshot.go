@@ -105,6 +105,9 @@ func (a *App) restoreCatalogFromSnapshot(pluginID string) int {
 		}
 		return 0
 	}
+	// D-27⑤/P12-6: these rows came from the local snapshot fallback, not from
+	// the plugin's own list — label them so the Pool 来源 column stays honest.
+	a.setCatalogSource(pluginID, "snapshot")
 	a.snapMu.Lock()
 	delete(a.snapModels, pluginID)
 	a.snapMu.Unlock()

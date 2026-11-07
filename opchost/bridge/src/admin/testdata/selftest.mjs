@@ -16,12 +16,13 @@ import { randomBytes } from 'node:crypto'
 import { createAdminRouter, createFileCredentialStore } from '../index.ts'
 import { importMagpieAuth } from '../../magpie-auth.ts'
 import { bridgeCredentialStore } from '../../server.ts'
-import { createHookTracker, KNOWN_HOOKS } from '../../hooks.ts'
+import { createHookTracker, KNOWN_HOOKS, declaredHooksOf } from '../../hooks.ts'
 import { loadPluginDir } from '../../loader.ts'
 import { registryFromLoad } from '../wiring.ts'
 import { buildIndex, DEFAULT_QUOTA_GROUPS, mergeQuotaRecords, quotaRecordFor } from '../quotagroups.ts'
 import { isLoopback } from '../util.ts'
 import { MockAuthPlugin, MockAIAuthPlugin, _internal, setMockState, resetMockState } from './mock-plugin.mjs'
+import { IdentityAuthPlugin, getIdentityState, setIdentityState } from './mock-identity-plugin.mjs'
 
 const dataDir = mkdtempSync(join(tmpdir(), 'bridge-admin-'))
 const settingsPath = join(dataDir, 'settings.json')
@@ -577,6 +578,112 @@ let pluginModeSid = ''
     'hooks_surface_empty_context',
     empty.ok === true && empty.declared.length === 0 && empty.actual['auth.loader'] === 0,
     JSON.stringify(empty).slice(0, 120),
+  )
+}
+
+// ---- 15. D-57 identity reset passthrough（task-35）---------------------------------
+{
+  // 声明面：auth.identity 键存在即计入（不调用）
+  const inst = await IdentityAuthPlugin({ client: {}, magpie: {} })
+  check(
+    'hooks_declare_identity',
+    declaredHooksOf(inst).includes('auth.identity'),
+    JSON.stringify(declaredHooksOf(inst)),
+  )
+
+  const loaded = {
+    dir: '/tmp/ident',
+    providers: {
+      ident: {
+        id: 'ident',
+        name: 'Identity Provider',
+        models: {},
+        plugin: { file: 'mock-identity-plugin.mjs', exportName: 'IdentityAuthPlugin', providerId: 'ident', providerName: 'Identity Provider', plugin: inst },
+      },
+    },
+    plugins: [],
+    warnings: [],
+  }
+  const shared = { count: () => 0, list: () => [], get: () => undefined, save: async (p) => ({ provider: p, updated_at: Date.now() }) }
+  // task-35②：假守卫——只记录 wrapFetch 的 (plugin, provider)，fetch 原样透传
+  const wrapSeen = []
+  const fakeGuard = {
+    wrapFetch(params) {
+      wrapSeen.push(params)
+      return globalThis.fetch
+    },
+  }
+  const registry = registryFromLoad(loaded, shared, { pluginId: 'mock-ident', egress: fakeGuard })
+  const h = registry.list()[0]
+  // 能力位：identity_request 恒有（钩子存在）；identity_os_switch 因 identityOS=true
+  check(
+    'identity_capabilities',
+    h.capabilities().includes('identity_request') && h.capabilities().includes('identity_os_switch'),
+    JSON.stringify(h.capabilities()),
+  )
+
+  const api5 = createAdminRouter({ dataDir, plugins: registry, checkinSettingsPath: settingsPath, egress: fakeGuard })
+  const srv = createServer((req, res) => void api5.handle(req, res))
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  const p5 = srv.address().port
+  const post5 = (p, body) =>
+    fetch(`http://127.0.0.1:${p5}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) })
+
+  // ① 缺省 mode = request；钩子收到归一化后的 mode 与 accountId；守卫窗口生效
+  setIdentityState({ identityCalls: 0, seen: [], osLocked: false })
+  const r1 = await post5('/accounts/ident/identity/reset', {})
+  const b1 = await r1.json()
+  const st1 = getIdentityState()
+  check(
+    'identity_reset_request_ok',
+    r1.status === 200 && b1.ok === true && st1.identityCalls === 1 && st1.seen[0]?.mode === 'request' && st1.seen[0]?.accountId === 'ident',
+    `status=${r1.status} body=${JSON.stringify(b1)} seen=${JSON.stringify(st1)}`,
+  )
+  check(
+    'identity_reset_egress_wrapped',
+    wrapSeen.length === 1 && wrapSeen[0]?.plugin === 'mock-ident' && wrapSeen[0]?.provider === 'ident',
+    JSON.stringify(wrapSeen),
+  )
+
+  // ② mode=os（identityOS 已声明）→ 透传到钩子并成功
+  const r2 = await post5('/accounts/ident/identity/reset', { mode: '  OS  ' })
+  const b2 = await r2.json()
+  const st2 = getIdentityState()
+  check(
+    'identity_reset_os_ok',
+    r2.status === 200 && b2.ok === true && st2.seen[1]?.mode === 'os',
+    `status=${r2.status} body=${JSON.stringify(b2)} seen=${JSON.stringify(st2)}`,
+  )
+
+  // ③ os 被上游策略锁住：插件抛 409 → 桥原样透传状态码与消息
+  setIdentityState({ osLocked: true })
+  const r3 = await post5('/accounts/ident/identity/reset', { mode: 'os' })
+  const b3 = await r3.json()
+  check(
+    'identity_reset_os_locked_passthrough',
+    r3.status === 409 && b3.error?.type === 'identity_failed' && /locked by policy/.test(b3.error?.message ?? ''),
+    `status=${r3.status} body=${JSON.stringify(b3)}`,
+  )
+  setIdentityState({ osLocked: false })
+
+  // ④ 非法 mode → 400
+  const r4 = await post5('/accounts/ident/identity/reset', { mode: 'bogus' })
+  check('identity_reset_bad_mode_400', r4.status === 400, `status=${r4.status}`)
+
+  // ⑤ 未知账号 → 404
+  const r5 = await post5('/accounts/no-such-account/identity/reset', {})
+  check('identity_reset_unknown_account_404', r5.status === 404, `status=${r5.status}`)
+
+  srv.close()
+  api5.close()
+
+  // ⑥ 无 identity 钩子的插件：能力不声明，端点诚实回 501（主服务器上的 mock 即此形状）
+  const r6 = await post('/accounts/mock-account/identity/reset', {})
+  const b6 = await r6.json()
+  check(
+    'identity_reset_unsupported_501',
+    r6.status === 501 && b6.error?.type === 'identity_unsupported',
+    `status=${r6.status} body=${JSON.stringify(b6)}`,
   )
 }
 

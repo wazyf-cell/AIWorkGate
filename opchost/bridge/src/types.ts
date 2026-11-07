@@ -417,7 +417,7 @@ export interface LoginMethod {
   authorize?: (input?: unknown) => Promise<unknown> | unknown;
 }
 
-/** 插件的 auth 钩子：签到、用量、续期、登录方式。 */
+/** 插件 auth 钩子：签到、用量、续期、登录方式、指纹重置（D-57）。 */
 export interface OpenCodeAuth {
   provider?: string;
   usage?: (options: unknown) => Promise<unknown>;
@@ -426,7 +426,26 @@ export interface OpenCodeAuth {
   refresh?: (auth: unknown) => Promise<Partial<CredentialRecord> | undefined>;
   loader?: (getAuth: () => Promise<unknown>) => Promise<PluginLoaderHandle>;
   methods?: LoginMethod[];
+  /**
+   * D-57 指纹重置钩子（可选，magpie 契约 v0.4 语义）：
+   *   mode "request" → 轮换每请求指纹（下次调用重新生成）；
+   *   mode "os"      → 切机器级身份（需 permissions.os_identity）。
+   * 宿主 client.go:197 只代理调用，mode 归一化在桥侧完成。
+   */
+  identity?: (options: {
+    mode: "request" | "os";
+    accountId?: string;
+  }) => Promise<IdentityResetResult>;
+  /** identity 钩子声明支持 OS 级切换时置 true（决定 identity_os_switch 能力位）。 */
+  identityOS?: boolean;
   [key: string]: unknown;
+}
+
+/** D-57：identity/reset 的结果。绝不含指纹材料本身。 */
+export interface IdentityResetResult {
+  ok: boolean;
+  /** 面向管理面的说明（如 "next request re-derives the fingerprint"）。 */
+  message?: string;
 }
 
 /** config 钩子的入参形状（插件往 config.provider[<id>] 写自身配置）。 */

@@ -147,6 +147,14 @@ type App struct {
 	snapAccounts map[string]cachedAccountSet
 	snapModels   map[string]cachedModelSet
 
+	// catalogSource records which D-27⑤ layer the current model_catalog rows
+	// of one plugin came from ("plugin" = successful sync, "snapshot" =
+	// restore-from-snapshot fallback). In-memory by design: model_catalog rows
+	// carry no source column (internal/store is task-31's this round), and a
+	// host restart reports an unknown source until the next sync. Guarded by
+	// snapMu alongside the other snapshot caches.
+	catalogSource map[string]string
+
 	// snapReads holds the plugin reads currently in flight, keyed by
 	// "accounts:<id>" / "models:<id>". It is guarded by snapMu and gives a
 	// snapshot round two things: concurrent fan-out across plugins, and
@@ -368,6 +376,19 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 
 	// Usage views and the unified timeline read the same store and logs.
 	a.usageSvc = usage.NewService(st)
+	// D-53 runway multi-window numerator: the live D-21 windows of one account
+	// come from the last cached plugin snapshot (the bridge passes windows[]
+	// through verbatim). This is a synchronous store read on the usage path —
+	// never a plugin call; a cold cache keeps the scalar numerator.
+	a.usageSvc.WindowsOf = func(pluginID, accountID string) []map[string]any {
+		accounts, _ := a.cachedAccounts(pluginID)
+		for _, acc := range accounts {
+			if acc.ID == accountID {
+				return acc.Quota.Windows
+			}
+		}
+		return nil
+	}
 	a.timeline = logging.NewTimeline(st, dataDir, a.pluginIDs)
 
 	a.logger.Info("app", "AIWorkGate starting", map[string]any{

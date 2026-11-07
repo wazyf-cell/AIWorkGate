@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -298,6 +299,66 @@ func alwaysStatus(status int, headers map[string]string) func(http.ResponseWrite
 		}
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, `{"error":{"message":"upstream says no"}}`)
+	}
+}
+
+// ---------------------------------------------------------------- attempts (D-32⑥)
+
+// TestScheduledAttemptRecordedInLog pins the D-32⑥ write side: the emitted
+// APIRequestLog row carries the scheduler's dispatch round (dispatch.go:308/:1284
+// 的 attempt+1 号源) — a 500 that switches accounts lands on round 2, and the
+// store column (v26) finally gets its value. Same-account backoff retries stay
+// inside the round they started in, matching what the scheduler log records.
+func TestScheduledAttemptRecordedInLog(t *testing.T) {
+	var seen atomic.Int32
+	srv, calls := newUpstreamServer(t, func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		if seen.CompareAndSwap(0, 1) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":{"message":"upstream says no"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	})
+	reg := newFakeRegistry().add(pluginStatus("p1", true, model.ModelInfo{ID: "m1"}), srv.URL, "tok")
+	g, _ := retryGateway(t, reg, singlePoolSnapshot("p1", 2, "acc1", "acc2"), nil)
+	var rows []model.APIRequestLog
+	g.logs = sinkFunc(func(row model.APIRequestLog) { rows = append(rows, row) })
+
+	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"p1/m1"}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if calls.count() != 2 {
+		t.Fatalf("upstream calls = %d, want 2 (500 on acc1 then 200 on acc2)", calls.count())
+	}
+	if len(rows) != 1 {
+		t.Fatalf("log rows = %d, want 1", len(rows))
+	}
+	if rows[0].Attempt != 2 {
+		t.Fatalf("attempt = %d, want 2 (final answer came from the switched-account round)", rows[0].Attempt)
+	}
+}
+
+func TestScheduledAttemptFirstTry(t *testing.T) {
+	srv, calls := newUpstreamServer(t, func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	})
+	reg := newFakeRegistry().add(pluginStatus("p1", true, model.ModelInfo{ID: "m1"}), srv.URL, "tok")
+	g, _ := retryGateway(t, reg, singlePoolSnapshot("p1", 1, "acc1"), nil)
+	var rows []model.APIRequestLog
+	g.logs = sinkFunc(func(row model.APIRequestLog) { rows = append(rows, row) })
+
+	rr := serve(g, newChatRequest(t, "/v1/chat/completions", clientKey, `{"model":"p1/m1"}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if calls.count() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.count())
+	}
+	if len(rows) != 1 || rows[0].Attempt != 1 {
+		t.Fatalf("attempt = %d (rows=%d), want 1", rows[len(rows)-1].Attempt, len(rows))
 	}
 }
 

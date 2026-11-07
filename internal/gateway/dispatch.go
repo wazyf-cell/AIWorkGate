@@ -724,12 +724,15 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 		for {
 			if res.streamed {
 				releaseHeld()
+				// D-32⑥：本行由第 attempt+1 轮 dispatch 产出（hedged 也算第 1 轮）
+				rec.attempt = attempt + 1
 				g.reportAttempt(winDecision, winDecision.PluginID, winPinned, rec, res, seenFailures)
 				return
 			}
 			if res.clientGone {
 				releaseHeld()
 				rec.status = 499
+				rec.attempt = attempt + 1
 				if rec.errText == "" {
 					rec.errText = "client canceled"
 				}
@@ -740,6 +743,7 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 			// same-account retry would stack cooldowns (3x429 -> 30/60/120s)
 			// for one client request.
 			buffered = res
+			rec.attempt = attempt + 1 // D-32⑥：缓冲结果记其产出轮次，重放时随行写入
 			lastErr = nil
 			// 401/403: A retry.rs switches keys; the host manager can refresh a
 			// credential first, so spend at most one self-heal per account and

@@ -636,3 +636,166 @@ func TestExportKeySection(t *testing.T) {
 		t.Fatalf("ck_2 row = %v", keys["ck_2"])
 	}
 }
+
+// insertDailyWithCache inserts one usage_daily row with a cached-token rollup
+// (insertDaily pins it to 0).
+func insertDailyWithCache(t *testing.T, st *store.Store, day, pluginID, accountID, modelName string,
+	requests, prompt, cached int64) {
+	t.Helper()
+	if _, err := st.DB().Exec(`INSERT INTO usage_daily
+		(day, plugin_id, account_id, model, requests, errors, prompt_tokens, completion_tokens,
+		 credits, cached_tokens, latency_ms_sum, ttfb_ms_sum, ttfb_count)
+		VALUES (?, ?, ?, ?, ?, 0, ?, 0, 0, ?, 0, 0, 0)
+		ON CONFLICT(day, plugin_id, account_id, model) DO UPDATE SET
+			requests = excluded.requests, prompt_tokens = excluded.prompt_tokens,
+			cached_tokens = excluded.cached_tokens`,
+		day, pluginID, accountID, modelName, requests, prompt, cached); err != nil {
+		t.Fatalf("insert usage_daily with cache: %v", err)
+	}
+}
+
+func TestSummaryCacheHitRate(t *testing.T) {
+	st := openTestStore(t)
+	// prompt 1000 / cached 300，另一行 prompt 500 无 cached：分母包含未报缓存的
+	// 行（usage_daily 无 cache_unknown 标志，SummaryKPI.CacheHitRate 注释记录的
+	// 已知局限）→ 300 / 1500 = 0.2。
+	insertDailyWithCache(t, st, "2026-10-19", "plugin:mock", "acc_1", "m1", 2, 1000, 300)
+	insertDailyWithCache(t, st, "2026-10-20", "plugin:mock", "acc_1", "m2", 3, 500, 0)
+
+	svc := NewService(st)
+	svc.Now = fixedNow
+	res, err := svc.Summary(mustQuery(t, url.Values{"from": {"2026-10-19"}, "to": {"2026-10-20"}}))
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if res.KPIs.CacheHitRate == nil {
+		t.Fatalf("cache_hit_rate = nil, want 0.2")
+	}
+	if math.Abs(*res.KPIs.CacheHitRate-0.2) > 1e-9 {
+		t.Fatalf("cache_hit_rate = %v, want 0.2 (uncached rows stay in the denominator)", *res.KPIs.CacheHitRate)
+	}
+
+	// 有 prompt 无 cached → 缺省（显示 0% 会把「上游没报缓存」读成「全不命中」）
+	noCache, err := svc.Summary(mustQuery(t, url.Values{"from": {"2026-10-20"}, "to": {"2026-10-20"}}))
+	if err != nil {
+		t.Fatalf("Summary no-cache day: %v", err)
+	}
+	if noCache.KPIs.CacheHitRate != nil {
+		t.Fatalf("cache_hit_rate without cached rows = %v, want nil", *noCache.KPIs.CacheHitRate)
+	}
+
+	// 空范围 → 缺省且 JSON 不泄漏
+	empty, err := svc.Summary(mustQuery(t, url.Values{"from": {"2026-01-01"}, "to": {"2026-01-02"}}))
+	if err != nil {
+		t.Fatalf("Summary empty: %v", err)
+	}
+	if empty.KPIs.CacheHitRate != nil {
+		t.Fatalf("empty range cache_hit_rate = %v, want nil", *empty.KPIs.CacheHitRate)
+	}
+	j, err := json.Marshal(empty.KPIs)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(j, []byte("cache_hit_rate")) {
+		t.Fatalf("empty KPI JSON leaks cache_hit_rate: %s", j)
+	}
+}
+
+func TestCreditsRunwayMultiWindow(t *testing.T) {
+	st := openConversationStore(t)
+	base := fixedNow().Unix()
+	// 600 -> 400 over 6h = 200/6h burn, scalar remaining 400 → 12h.
+	for _, obs := range []struct {
+		hoursAgo  int64
+		remaining float64
+	}{
+		{6, 600}, {0, 400},
+	} {
+		if err := st.SaveQuotaSnapshot(model.QuotaSnapshot{
+			PluginID: "p", AccountID: "acc", Remaining: obs.remaining, Total: 1000,
+			At: base - obs.hoursAgo*3600,
+		}); err != nil {
+			t.Fatalf("SaveQuotaSnapshot: %v", err)
+		}
+	}
+
+	// The D-21 windows arrive verbatim from the bridge; the numerator sums the
+	// remaining side (amount wins, limit−used is the fallback spelling).
+	windows := []map[string]any{
+		{"amount": 250, "used": 30, "limit": 500}, // amount wins over limit−used=470
+		{"limit": 100, "used": 40},                // 60 via the fallback pair
+		{"display": "no numeric fields"},          // skipped
+	}
+	svc := NewService(st)
+	svc.Now = fixedNow
+	svc.WindowsOf = func(pluginID, accountID string) []map[string]any {
+		if pluginID == "p" && accountID == "acc" {
+			return windows
+		}
+		return nil
+	}
+	resp, err := svc.Credits(mustQuery(t, url.Values{}), false)
+	if err != nil {
+		t.Fatalf("Credits: %v", err)
+	}
+	var acc *CreditItem
+	for i := range resp.Accounts {
+		if resp.Accounts[i].AccountID == "acc" {
+			acc = &resp.Accounts[i]
+		}
+	}
+	if acc == nil || acc.RunwayHours == nil {
+		t.Fatalf("acc runway missing: %+v", acc)
+	}
+	// (250+60) / (200/6h) = 9.3h.
+	if math.Abs(*acc.RunwayHours-9.3) > 0.01 {
+		t.Fatalf("runway = %v hours, want 9.3", *acc.RunwayHours)
+	}
+	if acc.RunwayBasis != "windows" {
+		t.Fatalf("runway_basis = %q, want windows", acc.RunwayBasis)
+	}
+
+	// A cold cache / no usable windows keeps the scalar numerator.
+	scalar := NewService(st)
+	scalar.Now = fixedNow
+	scalar.WindowsOf = func(string, string) []map[string]any { return nil }
+	resp2, err := scalar.Credits(mustQuery(t, url.Values{}), false)
+	if err != nil {
+		t.Fatalf("Credits scalar: %v", err)
+	}
+	for i := range resp2.Accounts {
+		if resp2.Accounts[i].AccountID != "acc" {
+			continue
+		}
+		item := resp2.Accounts[i]
+		if item.RunwayHours == nil || math.Abs(*item.RunwayHours-12) > 0.01 {
+			t.Fatalf("scalar runway = %v, want 12", item.RunwayHours)
+		}
+		if item.RunwayBasis != "scalar" {
+			t.Fatalf("scalar runway_basis = %q, want scalar", item.RunwayBasis)
+		}
+	}
+
+	// Windows that carry no usable pair at all fall back to scalar too.
+	empty := NewService(st)
+	empty.Now = fixedNow
+	empty.WindowsOf = func(string, string) []map[string]any {
+		return []map[string]any{{"display": "nothing numeric"}}
+	}
+	resp3, err := empty.Credits(mustQuery(t, url.Values{}), false)
+	if err != nil {
+		t.Fatalf("Credits empty windows: %v", err)
+	}
+	for i := range resp3.Accounts {
+		if resp3.Accounts[i].AccountID != "acc" {
+			continue
+		}
+		item := resp3.Accounts[i]
+		if item.RunwayHours == nil || math.Abs(*item.RunwayHours-12) > 0.01 {
+			t.Fatalf("empty-windows runway = %v, want scalar 12", item.RunwayHours)
+		}
+		if item.RunwayBasis != "scalar" {
+			t.Fatalf("empty-windows basis = %q, want scalar", item.RunwayBasis)
+		}
+	}
+}

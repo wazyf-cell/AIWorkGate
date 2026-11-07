@@ -711,7 +711,7 @@ func (a *App) poolDetail(pluginID string) (any, error) {
 			if p, ok := prefs[entry.ModelID]; ok {
 				entry = p.ApplyEntry(entry)
 			}
-			catalog = append(catalog, catalogEntryPayload(entry))
+			catalog = append(catalog, catalogEntryPayload(entry, a.catalogSourceOf(pluginID)))
 		}
 	}
 
@@ -772,7 +772,7 @@ func (a *App) pluginServesModel(pluginID, modelID string) (serves, known bool) {
 	return false, false
 }
 
-func catalogEntryPayload(entry model.ModelCatalogEntry) map[string]any {
+func catalogEntryPayload(entry model.ModelCatalogEntry, source string) map[string]any {
 	return map[string]any{
 		"model_id":       entry.ModelID,
 		"display_name":   entry.DisplayName,
@@ -784,7 +784,35 @@ func catalogEntryPayload(entry model.ModelCatalogEntry) map[string]any {
 		"enabled":        entry.Enabled,
 		"thinking":       entry.Thinking,
 		"synced_at":      entry.SyncedAt,
+		// D-27⑤/P12-6: which fallback-chain layer wrote the current rows.
+		// Pool-level by nature — ReplaceModelCatalog swaps the whole plugin's
+		// table, so every row shares one source. Empty = unknown (no sync
+		// observed since process start).
+		"source": source,
 	}
+}
+
+// setCatalogSource records the layer that just replaced one plugin's
+// model_catalog. Failure to record only degrades the UI label, never the sync.
+func (a *App) setCatalogSource(pluginID, source string) {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return
+	}
+	a.snapMu.Lock()
+	defer a.snapMu.Unlock()
+	if a.catalogSource == nil {
+		a.catalogSource = make(map[string]string)
+	}
+	a.catalogSource[pluginID] = source
+}
+
+// catalogSourceOf reads the recorded D-27⑤ layer of one plugin's catalog
+// ("plugin" / "snapshot"); an unobserved plugin yields "" (unknown).
+func (a *App) catalogSourceOf(pluginID string) string {
+	a.snapMu.Lock()
+	defer a.snapMu.Unlock()
+	return a.catalogSource[pluginID]
 }
 
 func (a *App) savePoolSettings(pluginID string, update webui.PoolSettingsUpdate) (any, error) {
@@ -956,6 +984,9 @@ func (a *App) syncPoolCatalog(pluginID string) (any, error) {
 	if err := a.store.ReplaceModelCatalog(pluginID, entries); err != nil {
 		return nil, err
 	}
+	// D-27⑤/P12-6: a successful sync means the rows came from the plugin's own
+	// model list — record it so the Pool 目录「来源」列 labels them correctly.
+	a.setCatalogSource(pluginID, "plugin")
 	// D-49: a successful sync refreshes the persisted provider catalog snapshot.
 	a.saveCatalogSnapshot(pluginID, entries)
 	a.snapMu.Lock()
@@ -980,7 +1011,7 @@ func (a *App) poolCatalog(pluginID string) (any, error) {
 			return nil, err
 		}
 		for _, entry := range entries {
-			catalog = append(catalog, catalogEntryPayload(entry))
+			catalog = append(catalog, catalogEntryPayload(entry, a.catalogSourceOf(pluginID)))
 		}
 	}
 	return map[string]any{"plugin_id": pluginID, "catalog": catalog}, nil

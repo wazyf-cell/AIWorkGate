@@ -7,12 +7,17 @@ package gateway
 import "strings"
 
 // Price is the configured per-million-token rate plus a multiplier.
+// PoolRate is the D-30③ supplier (pool) multiplier: the model's own price is
+// never covered by it — a model with its own rate is billed at its rate times
+// the model multiplier alone; pools multiply the base only when the model has
+// no price of its own.
 type Price struct {
 	Input      float64
 	Output     float64
 	CacheRead  float64
 	CacheWrite float64
 	Multiplier float64
+	PoolRate   float64
 }
 
 // cost computes one request's cost. cfg-cached prompt tokens are billed at the
@@ -22,6 +27,12 @@ func (p Price) cost(promptTokens, cachedTokens, completionTokens int64) float64 
 	multiplier := p.Multiplier
 	if multiplier <= 0 {
 		multiplier = 1
+	}
+	// D-30③: the pool rate multiplies the base only when the model has no
+	// price of its own. A model-level price (Input/Output/Cache rates) is
+	// never covered by the pool rate.
+	if p.Input == 0 && p.Output == 0 && p.CacheRead == 0 && p.CacheWrite == 0 && p.PoolRate > 0 {
+		multiplier *= p.PoolRate
 	}
 	cached := float64(cachedTokens)
 	if cached < 0 {

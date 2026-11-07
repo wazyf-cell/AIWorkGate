@@ -88,6 +88,12 @@ type modelsList struct {
 	Data   []modelEntry `json:"data"`
 }
 
+// manyModels is the D-30① publication cap: a plugin reporting more models than
+// this keeps the sorted first manyModels in /v1/models. It bounds the list a
+// client would otherwise paginate through; routing is unaffected — a model
+// beyond the cap is still schedulable.
+const manyModels = 24
+
 // handleModels merges plugin models (prefixed), logical bindings and custom
 // entries into the published catalog.
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqRecord) {
@@ -113,7 +119,9 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 			}
 			// 接入 off means the pool accepts no upstream traffic, so none of
 			// its models belong in the catalog. An empty set filters them all.
-			if !pool.UpstreamEnabled {
+			// D-30②: a group-only pool is a routing-group member, not a
+			// direct entry either.
+			if !pool.UpstreamEnabled || pool.GroupOnly {
 				exposed[id] = map[string]bool{}
 				continue
 			}
@@ -138,6 +146,13 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request, rec *reqR
 				continue
 			}
 			mods, _ := g.pluginModelList(r.Context(), st)
+			// D-30①: only the first manyModels (sorted by model id) are
+			// published; the rest stay schedulable, they just do not show up.
+			if len(mods) > manyModels {
+				sorted := append([]model.ModelInfo(nil), mods...)
+				sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+				mods = sorted[:manyModels]
+			}
 			overrides := g.modelOverridesFor(id)
 			prefs := g.modelPrefsFor(id)
 			for _, m := range mods {

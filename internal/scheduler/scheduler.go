@@ -148,10 +148,17 @@ func (a Account) KeyFor(pluginID string) AccountKey {
 
 // Pool is the snapshot of one plugin's scheduling pool.
 type Pool struct {
-	PluginID             string
-	Name                 string
-	APIVersion           int
-	UpstreamEnabled      bool
+	PluginID        string
+	Name            string
+	APIVersion      int
+	UpstreamEnabled bool
+	// GroupOnly is the D-30 第三态: the pool is a routing-group member only.
+	// It is not published in /v1/models and is not reachable as a direct
+	// plugin/model route; requests still reach it when a binding lists it.
+	GroupOnly bool
+	// PriceRate is the D-30 池级倍率 applied to models whose price is not set
+	// at model level (a model's own price wins, see gateway/pricing.go).
+	PriceRate            float64
 	Strategy             string
 	PoolPriority         int
 	AccountConcurrency   int
@@ -175,6 +182,65 @@ type Pool struct {
 type Source struct {
 	PluginID string
 	Model    string
+}
+
+// groupPlugin is the plugin id a D-50 group-member item uses:
+// {"plugin_id":"group","model":"<id>"} expands to the members of routing group
+// <id> (D-50 fallback), in group weight order.
+const groupPlugin = "group"
+
+// expandGroupItems expands group members in a binding item list (D-50). Each
+// "group/<id>" becomes the members of that routing group; a group member that
+// expands to nothing is recorded in the fallback notes. Nesting is followed
+// but each group id is visited once, so a cycle cannot loop forever.
+func expandGroupItems(snap *Snapshot, items []Source) ([]Source, []string) {
+	if len(items) == 0 {
+		return items, nil
+	}
+	out := make([]Source, 0, len(items))
+	var fallbacks []string
+	visited := map[string]bool{}
+	var expand func(id string) []Source
+	expand = func(id string) []Source {
+		id = strings.TrimSpace(id)
+		if id == "" || visited[id] {
+			return nil
+		}
+		visited[id] = true
+		b, ok := snap.Bindings[id]
+		if !ok || len(b.Items) == 0 {
+			return nil
+		}
+		var items2 []Source
+		for _, it := range b.Items {
+			if strings.TrimSpace(it.PluginID) == groupPlugin {
+				items2 = append(items2, expand(it.Model)...)
+				continue
+			}
+			if strings.TrimSpace(it.PluginID) == "" || strings.TrimSpace(it.Model) == "" {
+				continue
+			}
+			items2 = append(items2, it)
+		}
+		return items2
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item.PluginID) == groupPlugin {
+			expanded := expand(item.Model)
+			if len(expanded) == 0 {
+				fallbacks = append(fallbacks, "group/"+strings.TrimSpace(item.Model)+" 无可展开成员")
+			} else {
+				fallbacks = append(fallbacks, "group/"+strings.TrimSpace(item.Model)+" → 展开自组 "+strings.TrimSpace(item.Model))
+			}
+			out = append(out, expanded...)
+			continue
+		}
+		if strings.TrimSpace(item.PluginID) == "" || strings.TrimSpace(item.Model) == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, fallbacks
 }
 
 // Binding maps a logical model name to its ordered physical sources.
@@ -438,11 +504,11 @@ type Request struct {
 
 // Decision is the answer of Pick.
 type Decision struct {
-	PluginID     string   `json:"plugin_id"`
-	AccountID    string   `json:"account_id"`
-	Model        string   `json:"model"`
-	LogicalModel string   `json:"logical_model,omitempty"`
-	Sticky       bool     `json:"sticky"`
+	PluginID     string `json:"plugin_id"`
+	AccountID    string `json:"account_id"`
+	Model        string `json:"model"`
+	LogicalModel string `json:"logical_model,omitempty"`
+	Sticky       bool   `json:"sticky"`
 	// StickyWhy is the D-43 seven-state verdict of why the decision stuck to
 	// (or left) the session's account; the states are documented in
 	// sticky_why.go. Empty only for legacy zero-value Decisions.
@@ -459,10 +525,10 @@ type Candidate struct {
 	Score     float64 `json:"score"`
 	Sticky    bool    `json:"sticky,omitempty"`
 	// StickyWhy mirrors Decision.StickyWhy on the selected row (D-43).
-	StickyWhy string  `json:"sticky_why,omitempty"`
-	Selected  bool    `json:"selected"`
-	Rejected  bool    `json:"rejected,omitempty"`
-	Reason    string  `json:"reason,omitempty"`
+	StickyWhy string `json:"sticky_why,omitempty"`
+	Selected  bool   `json:"selected"`
+	Rejected  bool   `json:"rejected,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // Explanation is the body of POST /api/scheduler/explain. Decision is nil
@@ -472,6 +538,9 @@ type Explanation struct {
 	InterPool  string      `json:"inter_pool,omitempty"`
 	Candidates []Candidate `json:"candidates"`
 	Reasons    []string    `json:"reasons,omitempty"`
+	// GroupFallbacks lists the D-50 group/<id> members expanded into this
+	// resolution (and the unexpandable ones), for Explain.
+	GroupFallbacks []string `json:"group_fallbacks,omitempty"`
 }
 
 // Options wires time, randomness and persistence into the scheduler.
@@ -1478,6 +1547,11 @@ func resolveModel(snap *Snapshot, model string) (string, []Source, error) {
 	if !bound || len(binding.Items) == 0 {
 		if pluginID, physical, ok := strings.Cut(model, "/"); ok &&
 			strings.TrimSpace(pluginID) != "" && strings.TrimSpace(physical) != "" {
+			// D-30②: a group-only pool is a routing-group member, not a
+			// directly addressable plugin route.
+			if p := snap.Pools[strings.TrimSpace(pluginID)]; p != nil && p.GroupOnly {
+				return "", nil, fmt.Errorf("%w: %q 是 group_only 池，不能直连", ErrUnknownModel, model)
+			}
 			return "", []Source{{PluginID: strings.TrimSpace(pluginID), Model: strings.TrimSpace(physical)}}, nil
 		}
 		return "", nil, fmt.Errorf("%w: %q", ErrUnknownModel, model)
@@ -1485,15 +1559,13 @@ func resolveModel(snap *Snapshot, model string) (string, []Source, error) {
 	if pluginID, physical, ok := strings.Cut(model, "/"); ok && snap.Pools[strings.TrimSpace(pluginID)] != nil {
 		// An installed plugin owns the prefix; the plugin path takes
 		// precedence, matching the gateway's matchPlugin.
+		if snap.Pools[strings.TrimSpace(pluginID)].GroupOnly {
+			// D-30②: same direct-route rejection as above.
+			return "", nil, fmt.Errorf("%w: %q 是 group_only 池，不能直连", ErrUnknownModel, model)
+		}
 		return "", []Source{{PluginID: strings.TrimSpace(pluginID), Model: strings.TrimSpace(physical)}}, nil
 	}
-	items := make([]Source, 0, len(binding.Items))
-	for _, item := range binding.Items {
-		if strings.TrimSpace(item.PluginID) == "" || strings.TrimSpace(item.Model) == "" {
-			continue
-		}
-		items = append(items, item)
-	}
+	items, _ := expandGroupItems(snap, binding.Items)
 	if len(items) == 0 {
 		return "", nil, fmt.Errorf("%w: %q has no sources", ErrUnknownModel, model)
 	}
@@ -1560,9 +1632,11 @@ type poolTrace struct {
 }
 
 type plan struct {
-	decision       Decision
-	candidates     []Candidate
-	reasons        []string
+	decision   Decision
+	candidates []Candidate
+	reasons    []string
+	// fallbacks are the D-50 group-expansion notes, for Explain.
+	fallbacks      []string
 	pool           *Pool
 	source         Source
 	request        Request
@@ -1643,6 +1717,7 @@ func (s *Scheduler) Explain(ctx context.Context, snap *Snapshot, req Request) (E
 	if p != nil {
 		out.Candidates = p.candidates
 		out.Reasons = p.reasons
+		out.GroupFallbacks = p.fallbacks
 	}
 	if err != nil {
 		return out, err
@@ -1658,6 +1733,8 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	// D-50: the group/<id> expansion notes recorded for Explain.
+	var groupFallbacks []string
 	mode := interPoolMode(snap)
 	nowTime := s.now()
 	now := nowTime.Unix()
@@ -1673,6 +1750,11 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 	)
 	if logical != "" {
 		if binding, ok := snap.Bindings[logical]; ok {
+			// D-50: record where the group/<id> members came from (the
+			// original items still hold them; resolveModel already expanded).
+			if _, notes := expandGroupItems(snap, binding.Items); len(notes) > 0 {
+				groupFallbacks = notes
+			}
 			if len(binding.Rules) > 0 {
 				if items, rule := bindingSourcesForRequest(binding, req, nowTime); rule != "" {
 					sources = items
@@ -1687,6 +1769,9 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 			}
 		}
 	}
+	// D-50: expand group/<id> members still present in the resolved sources
+	// (a binding rule may have introduced one) before pool selection.
+	sources, _ = expandGroupItems(snap, sources)
 	for _, src := range sources {
 		pool := snap.Pools[src.PluginID]
 		if pool == nil {
@@ -1735,7 +1820,7 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 		if len(reasons) == 0 {
 			reasons = []string{"no candidate pool"}
 		}
-		p := &plan{candidates: traceCandidates(traces, nil, Account{}, false, StickyNoSession, s, now), reasons: reasons}
+		p := &plan{candidates: traceCandidates(traces, nil, Account{}, false, StickyNoSession, s, now), reasons: reasons, fallbacks: groupFallbacks}
 		p.rpmWaitable, p.rpmWake = rpmWaitWindow(traces)
 		return p, fmt.Errorf("%w: %s", ErrNoCandidate, strings.Join(reasons, "; "))
 	}
@@ -1893,7 +1978,8 @@ func (s *Scheduler) plan(snap *Snapshot, req Request) (*plan, error) {
 
 	return &plan{
 		decision: decision, candidates: candidates, reasons: decision.Reasons,
-		pool: chosenPC.pool, source: chosenPC.source, request: req,
+		fallbacks: groupFallbacks,
+		pool:      chosenPC.pool, source: chosenPC.source, request: req,
 		stickyScope: stickyKind, stickyKey: stickyKey,
 		skipConvSticky: skipConvSticky, skipPoolSticky: skipPoolSticky,
 		strictRepin: strictRepin,

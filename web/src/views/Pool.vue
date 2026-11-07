@@ -79,6 +79,8 @@ function settingsOf(settings: PoolSettings): PoolSettings {
     background_downgrade: settings.background_downgrade,
     longctx_downgrade: settings.longctx_downgrade,
     model_sync_time: settings.model_sync_time,
+    group_only: settings.group_only,
+    price_rate: settings.price_rate,
   }
 }
 
@@ -102,6 +104,11 @@ function validateSettings(settings: PoolSettings): string {
   const syncTime = settings.model_sync_time.trim()
   if (syncTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(syncTime)) {
     return '模型同步时刻需为 HH:MM（例如 05:45），留空表示不自动同步。'
+  }
+  // D-30 供应商（池）级倍率：0/留空 = 官方价；不允许负数。
+  const priceRate = Number(settings.price_rate)
+  if (!Number.isFinite(priceRate) || priceRate < 0) {
+    return '供应商倍率需为不小于 0 的数值（0 表示官方价格）。'
   }
   return ''
 }
@@ -134,6 +141,18 @@ function thinkingLabel(value?: string[]): string {
 function multiplierLabel(value?: number): string {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '—'
   return `×${value.toFixed(2).replace(/\.?0+$/, '') || '0'}`
+}
+
+/* D-27⑤/P12-6 目录来源标注（池级）：目录条目落库层只有两态——插件清单同步
+ * 与快照兜底；vendor/models.dev 两层在发布面运行时合并、不落 model_catalog，
+ * 因此不出现在目录行上（进程重启后未重新同步时为未知）。 */
+const CATALOG_SOURCE_LABELS: Record<string, string> = {
+  plugin: '插件清单',
+  snapshot: '本地快照',
+}
+
+function catalogSourceLabel(source?: string): string {
+  return CATALOG_SOURCE_LABELS[source ?? ''] ?? '—'
 }
 
 const settingsDirty = computed(() => {
@@ -571,6 +590,8 @@ interface CatalogRow {
   thinking: string[]
   multiplier: number
   free: boolean
+  /** D-27⑤ 目录来源：'plugin'（插件上报）｜'snapshot'（本地快照兜底）｜缺省=未知。 */
+  source?: string
 }
 
 interface OverrideDraft {
@@ -625,16 +646,68 @@ const editingOverride = computed(() =>
 /* 目录视图（D-30④⑦）：搜索 / 绿标 / 只选可用 / 三种视图               */
 /* ------------------------------------------------------------------ */
 
-type CatalogView = 'all' | 'enabled' | 'family'
+type CatalogView = 'all' | 'enabled' | 'family' | 'usage'
+
+/**
+ * D-30③ 暴露上限 24（与后端 manyModels 同值）：/v1/models 对插件模型排序后只列
+ * 前 24 个；超出部分仍可被调度，只是不再对 agent 全列。「供应商列表」视图就是
+ * 模型目录的原始顺序，第 25 个起用虚线/标注标出「Agent 看不到但可调度」。
+ */
+const MANY_MODELS = 24
 
 const CATALOG_VIEWS: { key: CatalogView; label: string; title: string }[] = [
-  { key: 'all', label: '全部', title: '显示目录里的每个模型' },
+  {
+    key: 'all',
+    label: '供应商列表',
+    title: '目录原始顺序；第 25 个起为「Agent 不可见但可调度」（暴露上限 24）',
+  },
   { key: 'enabled', label: '仅所选', title: '只看已勾选「接入」的模型' },
   { key: 'family', label: '每系最新', title: '同系 = 模型名同前缀（如 gpt-*、qwen*），取上下文最大、其次最新同步的一个' },
+  {
+    key: 'usage',
+    label: '仅看用量',
+    title: '只看最近 30 天有请求的模型（按 /usage/models 聚合）',
+  },
 ]
 
 const catalogSearch = ref('')
 const catalogView = ref<CatalogView>('all')
+
+/**
+ * D-30 「仅看用量」：最近 30 天的按模型聚合请求数。懒加载一次并缓存；
+ * 聚合行以 `插件/模型` 形态出现，与目录行（本插件内模型 id）匹配时按
+ * `plugin/model`、`/model` 与裸 id 三种写法都对上。
+ */
+const usageModels = ref<Set<string>>(new Set())
+const usageLoading = ref(false)
+const usageLoaded = ref(false)
+
+async function loadUsageModels() {
+  if (usageLoaded.value || usageLoading.value) return
+  usageLoading.value = true
+  try {
+    const rows = (await api.usage.models(30)) ?? []
+    const used = new Set<string>()
+    for (const row of rows) {
+      const name = String(row.model ?? '')
+      if (!name) continue
+      if (Number(row.requests) > 0) used.add(name)
+    }
+    usageModels.value = used
+  } catch {
+    // 用量聚合不可用时该视图退化为空列表提示，不打断页面
+    usageModels.value = new Set()
+  } finally {
+    usageLoaded.value = true
+    usageLoading.value = false
+  }
+}
+
+/** 目录行是否落在最近 30 天的有用量集合里。 */
+function hasUsage(row: CatalogRow): boolean {
+  const local = row.model.model_id
+  return usageModels.value.has(local) || usageModels.value.has(`${pluginId.value}/${local}`)
+}
 
 /**
  * D-30⑦ 绿标（已验证标记，内存态，不持久化）：该模型最近一次「检测」与
@@ -696,6 +769,7 @@ const visibleCatalogRows = computed<CatalogRow[]>(() => {
   let rows = catalogRows.value
   if (catalogView.value === 'family') rows = familyCatalogRows.value
   else if (catalogView.value === 'enabled') rows = rows.filter((row) => row.model.enabled !== false)
+  else if (catalogView.value === 'usage') rows = rows.filter((row) => hasUsage(row))
   const needle = catalogSearch.value.trim().toLowerCase()
   if (needle) {
     rows = rows.filter((row) =>
@@ -704,6 +778,25 @@ const visibleCatalogRows = computed<CatalogRow[]>(() => {
   }
   return rows
 })
+
+/**
+ * D-30③ 供应商列表视图下，第 25 个起的模型：Agent 端 /v1/models 看不到，
+ * 但调度仍会正常用到。
+ */
+const beyondExposeCap = computed<Set<string>>(() => {
+  if (catalogView.value !== 'all') return new Set()
+  return new Set(visibleCatalogRows.value.slice(MANY_MODELS).map((row) => row.model.model_id))
+})
+
+function isBeyondExposeCap(modelId: string): boolean {
+  return beyondExposeCap.value.has(modelId)
+}
+
+/** 切换目录视图；「仅看用量」首次进入时拉取 30 天聚合。 */
+function selectCatalogView(view: CatalogView) {
+  catalogView.value = view
+  if (view === 'usage') void loadUsageModels()
+}
 
 const selectingVerified = ref(false)
 
@@ -1115,6 +1208,30 @@ onBeforeUnmount(() => {
                 <span class="help">0 = 不限；达到上限的账号让位。</span>
               </div>
               <div class="field">
+                <label for="pool-price-rate">供应商级倍率</label>
+                <input
+                  id="pool-price-rate"
+                  v-model.number="settingsDraft.price_rate"
+                  class="input"
+                  type="number"
+                  min="0"
+                  step="0.05"
+                />
+                <span class="help">
+                  费用 = 官方价 × 倍率（如 0.8 / 1.5）；0 = 官方价。模型级单独设的价格不被倍率覆盖。
+                </span>
+              </div>
+              <div class="field span-2">
+                <label class="switch">
+                  <input v-model="settingsDraft.group_only" type="checkbox" />
+                  <span class="switch-track"></span>
+                  只通过路由分组使用
+                </label>
+                <span class="help">
+                  D-30⑦：勾选后该池的模型不直接对 agent 暴露（不进 /v1/models、不接直连调度），只作为路由分组成员参与（task-32 后端）。
+                </span>
+              </div>
+              <div class="field">
                 <label for="pool-ttl">池粘性（秒）</label>
                 <input
                   id="pool-ttl"
@@ -1271,7 +1388,7 @@ onBeforeUnmount(() => {
                   :class="{ active: catalogView === item.key }"
                   :aria-pressed="catalogView === item.key"
                   :title="item.title"
-                  @click="catalogView = item.key"
+                  @click="selectCatalogView(item.key)"
                 >
                   {{ item.label }}
                 </button>
@@ -1314,6 +1431,7 @@ onBeforeUnmount(() => {
                   <th>模型</th>
                   <th>展示名称</th>
                   <th>厂商</th>
+                  <th>来源</th>
                   <th>倍率</th>
                   <th>上下文</th>
                   <th>视觉</th>
@@ -1327,6 +1445,13 @@ onBeforeUnmount(() => {
                 <tr v-for="row in visibleCatalogRows" :key="row.model.model_id">
                   <td class="title-cell mono">
                     {{ row.model.model_id }}
+                    <span
+                      v-if="isBeyondExposeCap(row.model.model_id)"
+                      class="badge warn plain"
+                      title="D-30③：该模型排在第 25 个之后，Agent 端 /v1/models 不再全列；调度不受影响"
+                    >
+                      超 24
+                    </span>
                     <span
                       v-if="isModelVerified(row.model.model_id)"
                       class="verify-dot"
@@ -1342,6 +1467,21 @@ onBeforeUnmount(() => {
                   </td>
                   <td class="small">{{ row.displayName || '—' }}</td>
                   <td class="small">{{ row.vendor || '—' }}</td>
+                  <td>
+                    <span
+                      class="badge plain"
+                      :class="row.source === 'plugin' ? 'ok' : row.source === 'snapshot' ? 'warn' : 'muted'"
+                      :title="
+                        row.source === 'plugin'
+                          ? '本轮同步成功，目录元数据来自插件上报的模型清单'
+                          : row.source === 'snapshot'
+                            ? '同步失败或返回空列表，目录由本地快照兜底恢复（D-27⑤ 底层）'
+                            : '未知：进程重启后尚未重新同步'
+                      "
+                    >
+                      {{ catalogSourceLabel(row.source) }}
+                    </span>
+                  </td>
                   <td class="num">{{ multiplierLabel(row.multiplier) }}</td>
                   <td class="num">{{ contextLabel(row.contextLength) }}</td>
                   <td>
@@ -1400,7 +1540,7 @@ onBeforeUnmount(() => {
                   </td>
                 </tr>
                 <tr v-if="visibleCatalogRows.length === 0">
-                  <td colspan="10">
+                  <td colspan="11">
                     <div class="empty">
                       <strong>没有匹配的模型</strong>
                       <span>换一个关键字，或把视图切回「全部」。</span>

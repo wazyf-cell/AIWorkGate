@@ -262,4 +262,23 @@ func (a *App) migrateLegacyCustomModels() {
 			"models": merged, "connections": len(groups),
 		})
 	}
+
+	// D-37 fold: every attached custom model mirrors into model_catalog and
+	// model_overrides under the "custom:<connection_id>" namespace. Unattached
+	// rows were just attached above, so this covers them too; running it on
+	// every start is idempotent and cheap (one two-statement mirror).
+	if folded, err := a.foldCustomModels(); err != nil {
+		a.logger.Warn("app", "custom model fold into catalog failed", map[string]any{"error": err.Error()})
+	} else if folded > 0 {
+		a.logger.Info("app", "custom models folded into catalog", map[string]any{"models": folded})
+	}
+}
+
+// foldCustomModels mirrors attached custom models into the catalog/override
+// layer (store side of the D-37 fold). A missing store only skips the fold.
+func (a *App) foldCustomModels() (int, error) {
+	if a.store == nil {
+		return 0, errors.New("app: custom model fold: store is not available")
+	}
+	return a.store.FoldCustomModelsIntoCatalog()
 }

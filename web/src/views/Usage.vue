@@ -1047,7 +1047,22 @@ function runwayLabel(row: UsageAccountCredit): string {
 }
 
 function runwayTitle(row: UsageAccountCredit): string | undefined {
-  return typeof row.runway_at === 'number' ? `按近 24 小时消耗速度，预计 ${formatTimestamp(row.runway_at)} 用完` : undefined
+  if (typeof row.runway_at !== 'number') return undefined
+  // D-53 multi-window: the numerator basis decides how "remaining" was read.
+  const basis =
+    row.runway_basis === 'windows'
+      ? '余额按多窗口合计（D-21 windows）'
+      : row.runway_basis === 'scalar'
+        ? '余额按额度快照 scalar remaining'
+        : ''
+  const suffix = basis ? `；${basis}` : ''
+  return `按近 24 小时消耗速度，预计 ${formatTimestamp(row.runway_at)} 用完${suffix}`
+}
+
+/** P9-8 缓存命中率展示：0–1 比率转百分比；异常值不显示。 */
+function formatHitRate(rate?: number): string {
+  if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0 || rate > 1) return '—'
+  return `${(rate * 100).toFixed(1)}%`
 }
 
 function expiryTone(row: UsageAccountCredit): 'past' | 'soon' | 'unknown' | '' {
@@ -1371,6 +1386,18 @@ onBeforeUnmount(() => {
           {{ kpis.avg_ttfb_ms === undefined ? '—' : formatLatency(kpis.avg_ttfb_ms) }}
         </span>
         <span class="stat-sub">TTFB 合计 ÷ 有首字样本数</span>
+      </section>
+      <section class="stat">
+        <span class="stat-label">缓存命中</span>
+        <span v-if="loading.summary && !summaryLoaded" class="skeleton skeleton-value"></span>
+        <span
+          v-else
+          class="stat-value"
+          :title="kpis.cache_hit_rate === undefined ? '区间无 cached/prompt 样本' : `cached ÷ prompt = ${exact(kpis.cache_hit_rate)}`"
+        >
+          {{ kpis.cache_hit_rate === undefined ? '—' : formatHitRate(kpis.cache_hit_rate) }}
+        </span>
+        <span class="stat-sub">cached tokens ÷ prompt tokens</span>
       </section>
     </div>
 

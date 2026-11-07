@@ -83,6 +83,8 @@ const form = reactive({
   gateway_service_mode: 'open' as 'open' | 'paused' | 'whitelist',
   gateway_rate_key: 0,
   gateway_rate_ip: 0,
+  gateway_queue_max_depth: 0,
+  gateway_queue_timeout_seconds: 0,
   gateway_public_hosts: '',
   gateway_default_plugin: '',
 })
@@ -377,6 +379,8 @@ const keyDraft = reactive({
   owner: false,
   max_requests_total: 0,
   share: false,
+  read_only: false,
+  cost_budget_usd: 0,
 })
 
 /** Epoch seconds → the date input's YYYY-MM-DD (local day). */
@@ -452,6 +456,9 @@ function openKeyEditor(item: ClientKey) {
   keyDraft.owner = Boolean(item.owner)
   keyDraft.max_requests_total = item.max_requests_total ?? 0
   keyDraft.share = Boolean(item.share)
+  // D-42: client_keys.read_only (INTEGER) / cost_budget_usd (REAL)
+  keyDraft.read_only = item.read_only === true || item.read_only === 1
+  keyDraft.cost_budget_usd = Math.max(0, Number(item.cost_budget_usd) || 0)
 }
 
 function closeKeyEditor() {
@@ -479,6 +486,8 @@ async function saveKeyEdit() {
       owner: keyDraft.owner,
       max_requests_total: Math.max(0, Math.floor(Number(keyDraft.max_requests_total) || 0)),
       share: keyDraft.share,
+      read_only: Boolean(keyDraft.read_only),
+      cost_budget_usd: Math.max(0, Number(keyDraft.cost_budget_usd) || 0),
     })
     editingKey.value = null
     message.value = '客户端 Key 已更新。'
@@ -780,6 +789,11 @@ async function load() {
     form.gateway_service_mode = (gateway.service_mode === 'paused' || gateway.service_mode === 'whitelist' ? gateway.service_mode : 'open')
     form.gateway_rate_key = asNumber(gateway.rate_limit_per_minute, defaults.gateway.rate_limit_per_minute ?? 0)
     form.gateway_rate_ip = asNumber(gateway.rate_limit_per_ip_per_minute, defaults.gateway.rate_limit_per_ip_per_minute ?? 0)
+    form.gateway_queue_max_depth = asNumber(gateway.queue_max_depth, defaults.gateway.queue_max_depth ?? 0)
+    form.gateway_queue_timeout_seconds = asNumber(
+      gateway.queue_timeout_seconds,
+      defaults.gateway.queue_timeout_seconds ?? 0,
+    )
     form.gateway_public_hosts = asStringList(gateway.public_hosts, defaults.gateway.public_hosts ?? []).join('\n')
     form.gateway_default_plugin = asString(gateway.default_plugin, defaults.gateway.default_plugin ?? '')
     savedSignature.value = settingsSignature()
@@ -922,6 +936,11 @@ async function save() {
       service_mode: form.gateway_service_mode,
       rate_limit_per_minute: Math.max(0, Math.floor(Number(form.gateway_rate_key) || 0)),
       rate_limit_per_ip_per_minute: Math.max(0, Math.floor(Number(form.gateway_rate_ip) || 0)),
+      // D-30 图三：排队上限（每 Key/账号最多排队数，0 = 不限）与排队等待
+      // （最长秒数，0 = 一直等）。钳制值与后端 internal/config 的
+      // clampQueueDepth（负数 → 0 不限、上限 100000）一致。
+      queue_max_depth: Math.max(0, Math.floor(Number(form.gateway_queue_max_depth) || 0)),
+      queue_timeout_seconds: Math.max(0, Math.floor(Number(form.gateway_queue_timeout_seconds) || 0)),
       public_hosts: publicHosts,
       default_plugin: form.gateway_default_plugin.trim().toLowerCase(),
     },
@@ -1480,6 +1499,34 @@ async function saveLanPassword() {
           <span class="help">0 = 不限。鉴权前执行（坏 Key 也计数）；重火力防护建议交给反代的 rate_limit/fail2ban。</span>
         </div>
         <div class="field">
+          <label for="set-queue-depth">排队上限</label>
+          <input
+            id="set-queue-depth"
+            v-model.number="form.gateway_queue_max_depth"
+            class="input"
+            type="number"
+            min="0"
+            step="1"
+          />
+          <span class="help">
+            每个 Key / 账号最多同时可排队的请求数，超出立刻拒绝（并发已满时排队，见「账号并发」）。0 = 不限，上限 100000（超出按后端钳制）。
+          </span>
+        </div>
+        <div class="field">
+          <label for="set-queue-timeout">排队等待（秒）</label>
+          <input
+            id="set-queue-timeout"
+            v-model.number="form.gateway_queue_timeout_seconds"
+            class="input"
+            type="number"
+            min="0"
+            step="1"
+          />
+          <span class="help">
+            等待空位的最长秒数，超时即拒（429 <code>queue_timeout</code>）。0 = 一直等；缺省 30 秒（与宿主历史回落一致）。
+          </span>
+        </div>
+        <div class="field">
           <label for="set-cors">允许的跨源来源</label>
           <textarea
             id="set-cors"
@@ -1837,6 +1884,31 @@ async function saveLanPassword() {
             />
             <span class="help">
               0 = 不限。按所有日期的累计请求数计算，达到上限后返回 429 <code>key_quota_exceeded</code>（不会按天重置）。
+            </span>
+          </div>
+          <div class="field">
+            <label for="key-edit-cost">Cost 预算（USD）</label>
+            <input
+              id="key-edit-cost"
+              v-model.number="keyDraft.cost_budget_usd"
+              class="input"
+              type="number"
+              min="0"
+              step="0.01"
+              :disabled="keyEditBusy"
+            />
+            <span class="help">
+              D-42：该 Key 生命周期内的累计成本上限（按 token 计价合计）；0 = 不限。达到上限后返回 429 <code>cost_budget_exceeded</code>。后端列 cost_budget_usd（REAL，task-31/32 承载）。
+            </span>
+          </div>
+          <div class="field">
+            <label class="switch">
+              <input v-model="keyDraft.read_only" type="checkbox" :disabled="keyEditBusy" />
+              <span class="switch-track"></span>
+              只读 Key
+            </label>
+            <span class="help">
+              D-42：勾选后该 Key 只允许 /v1 对话类请求，其他管理/写入操作一律拒绝。后端列 read_only（INTEGER）。
             </span>
           </div>
           <div class="field">

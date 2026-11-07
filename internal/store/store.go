@@ -144,6 +144,11 @@ func (s *Store) ctx() (context.Context, context.CancelFunc) {
 type migrationStep struct {
 	sql     []string
 	columns []columnMigration
+	// hook runs inside the step's transaction after sql/columns, when a data
+	// migration cannot be expressed as static DDL (D-37 custom_models fold).
+	// It must be idempotent: the same step re-runs only after a rollback, but
+	// the database can already contain half of its effect.
+	hook func(ctx context.Context, tx *sql.Tx) error
 }
 
 // columnMigration adds one column to a table created by an earlier step.
@@ -699,6 +704,35 @@ var migrations = []migrationStep{
 			{"api_logs", "attempt", "INTEGER NOT NULL DEFAULT 0"},
 		},
 	},
+	{ // version 27: D-37 custom_models fold into model_catalog/model_overrides
+		// Custom models keep working after their admin panel retires: every row
+		// already attached to a custom connection is mirrored under the
+		// "custom:<connection_id>" plugin namespace so catalog and override
+		// consumers see it. Rows with no connection (pre-connection era) stay
+		// untouched here; the app's legacy merge attaches them on start and then
+		// re-runs the same fold (FoldCustomModelsIntoCatalog). The custom_models
+		// table itself is kept read-only for rollback compatibility: restore the
+		// .bak-v26-v28 file and an old build sees exactly the old data.
+		hook: foldCustomModelsHook,
+	},
+	{ // version 28: D-42② read_only keys + cost budgets (columns for task-34)
+		sql: []string{
+			// p8-security reads per-key cost as SUM(api_logs.cost_usd); the
+			// index keeps the budget check off a full-table scan per request.
+			// The api_logs key column is key_id (v1 schema), not client_key_id.
+			`CREATE INDEX IF NOT EXISTS idx_api_logs_client_key_cost ON api_logs(key_id, cost_usd)`,
+		},
+		columns: []columnMigration{
+			// read_only = 1 marks a key that may only hit read endpoints
+			// (/v1/models, /me); consuming endpoints answer 403 read_only_key.
+			{"client_keys", "read_only", "INTEGER NOT NULL DEFAULT 0"},
+			// cost_budget_usd caps total cost (0 = unlimited, same semantics
+			// as daily_quota); when exceeded, consuming endpoints answer 429
+			// cost_budget_exceeded. Gateway logic is task-34's; this migration
+			// carries only the columns.
+			{"client_keys", "cost_budget_usd", "REAL NOT NULL DEFAULT 0"},
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is
@@ -743,6 +777,12 @@ func (s *Store) Migrate() error {
 			if err := ensureColumn(ctx, tx, col); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("store: migrate: v%d: %w", next, err)
+			}
+		}
+		if step.hook != nil {
+			if err := step.hook(ctx, tx); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("store: migrate: v%d hook: %w", next, err)
 			}
 		}
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", next)); err != nil {

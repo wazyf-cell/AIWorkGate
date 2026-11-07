@@ -105,20 +105,26 @@ type PoolMember struct {
 const GlobalPoolID = "__global__"
 
 type PoolSettings struct {
-	PluginID            string `json:"plugin_id"`
-	UpstreamEnabled     bool   `json:"upstream_enabled"`
-	Strategy            string `json:"strategy,omitempty"`
-	PoolPriority        int    `json:"pool_priority"`
-	AccountConcurrency  int    `json:"account_concurrency"`
-	PoolStickyTTL       int    `json:"pool_sticky_ttl"`
-	ConvStickyTTL       int    `json:"conv_sticky_ttl"`
-	HedgeMS             int    `json:"hedge_ms"`
-	DefaultReasoning    string `json:"default_reasoning,omitempty"`
-	BackgroundDowngrade bool   `json:"background_downgrade"`
-	LongctxDowngrade    bool   `json:"longctx_downgrade"`
-	ToolExec            bool   `json:"tool_exec"`
-	ModelSyncTime       string `json:"model_sync_time,omitempty"`
-	UpdatedAt           int64  `json:"updated_at,omitempty"`
+	PluginID        string `json:"plugin_id"`
+	UpstreamEnabled bool   `json:"upstream_enabled"`
+	// GroupOnly is the D-30 第三态: group-only pools are routing-group
+	// members, never published and never directly addressable.
+	GroupOnly bool `json:"group_only,omitempty"`
+	// PriceRate is the D-30 池级倍率; models with their own price are not
+	// multiplied by it (see gateway/pricing.go).
+	PriceRate           float64 `json:"price_rate,omitempty"`
+	Strategy            string  `json:"strategy,omitempty"`
+	PoolPriority        int     `json:"pool_priority"`
+	AccountConcurrency  int     `json:"account_concurrency"`
+	PoolStickyTTL       int     `json:"pool_sticky_ttl"`
+	ConvStickyTTL       int     `json:"conv_sticky_ttl"`
+	HedgeMS             int     `json:"hedge_ms"`
+	DefaultReasoning    string  `json:"default_reasoning,omitempty"`
+	BackgroundDowngrade bool    `json:"background_downgrade"`
+	LongctxDowngrade    bool    `json:"longctx_downgrade"`
+	ToolExec            bool    `json:"tool_exec"`
+	ModelSyncTime       string  `json:"model_sync_time,omitempty"`
+	UpdatedAt           int64   `json:"updated_at,omitempty"`
 }
 
 // ModelBinding maps a logical (client-facing) model name to an ordered list of

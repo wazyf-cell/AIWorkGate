@@ -929,6 +929,8 @@ export interface UsageKpis {
   avg_latency_ms?: number
   /** D-32②：平均首字（ms）= TTFBMSSum / TTFBCount；区间无 TTFB 样本时缺省。 */
   avg_ttfb_ms?: number
+  /** P9-8：缓存命中率 = cached_tokens / prompt_tokens；区间无 prompt 或 cached 样本时缺省。 */
+  cache_hit_rate?: number
 }
 
 export interface UsageSeriesPoint {
@@ -960,6 +962,12 @@ export interface UsageAccountCredit {
   runway_hours?: number
   /** Projected empty time (unix seconds); absent when runway_hours is absent. */
   runway_at?: number
+  /**
+   * D-53 multi-window: which remaining the runway numerator used —
+   * "windows" (summed live D-21 windows) or "scalar" (quota_snapshots
+   * remaining). Empty when runway_hours is absent.
+   */
+  runway_basis?: string
 }
 
 export interface UsageCreditsResponse {
@@ -1280,6 +1288,10 @@ export interface PoolSettings {
   longctx_downgrade: boolean
   /** "HH:MM" local time for the daily catalog sync; "" disables it. */
   model_sync_time: string
+  /** D-30 只通过路由分组使用：该池不直接对 agent 暴露，只作为路由分组成员（task-32 后端）。 */
+  group_only?: boolean
+  /** D-30 供应商（池）级价格倍率：费用 = 官方价 × 倍率；0/未设置 = 官方价；模型级已设价格不被覆盖。 */
+  price_rate?: number
 }
 
 export function emptyPoolSettings(): PoolSettings {
@@ -1299,6 +1311,8 @@ export function emptyPoolSettings(): PoolSettings {
     background_downgrade: false,
     longctx_downgrade: false,
     model_sync_time: '',
+    group_only: false,
+    price_rate: 0,
   }
 }
 
@@ -1324,6 +1338,8 @@ export function normalizePoolSettings(raw: Partial<PoolSettings> | null | undefi
     background_downgrade: Boolean(raw.background_downgrade),
     longctx_downgrade: Boolean(raw.longctx_downgrade),
     model_sync_time: typeof raw.model_sync_time === 'string' ? raw.model_sync_time.trim() : '',
+    group_only: raw.group_only === true,
+    price_rate: numberOr(raw.price_rate, 0),
   }
 }
 
@@ -1337,7 +1353,9 @@ export function samePoolSettings(a: PoolSettings, b: PoolSettings): boolean {
     a.default_reasoning === b.default_reasoning &&
     a.background_downgrade === b.background_downgrade &&
     a.longctx_downgrade === b.longctx_downgrade &&
-    a.model_sync_time === b.model_sync_time
+    a.model_sync_time === b.model_sync_time &&
+    a.group_only === b.group_only &&
+    a.price_rate === b.price_rate
   )
 }
 
@@ -1504,6 +1522,13 @@ export interface PoolCatalogModel {
   free?: boolean
   enabled?: boolean
   synced_at?: number
+  /**
+   * D-27⑤/P12-6 兜底链来源（池级）：本插件目录当前整体来自哪一层落库源。
+   * "plugin" = 插件清单同步；"snapshot" = 同步失败/空列表时的本地快照兜底；
+   * 空 = 未知（进程重启后未重新同步）。vendor/models.dev 两层只在发布面
+   * 运行时合并，不落 model_catalog，因此不出现在目录条目上。
+   */
+  source?: string
 }
 
 /**
@@ -1726,6 +1751,10 @@ export interface ClientKey {
   max_requests_total?: number
   /** Key handed to another person; requires an expiry. */
   share?: boolean
+  /** D-42: read-only key — chat allowed, all mutations rejected. Column read_only (INTEGER). */
+  read_only?: boolean | number
+  /** D-42: USD cost ceiling for this key over its lifetime; 0 = unlimited. Column cost_budget_usd (REAL). */
+  cost_budget_usd?: number
 }
 
 /** Body of POST /keys (name required) and PUT /keys/{id} (any subset). */
@@ -1740,6 +1769,10 @@ export interface KeyScopeInput {
   owner?: boolean
   max_requests_total?: number
   share?: boolean
+  /** D-42: read-only key; absent keeps the stored value. */
+  read_only?: boolean
+  /** D-42: USD cost ceiling; absent keeps the stored value, 0 clears/unlimits. */
+  cost_budget_usd?: number
 }
 
 export interface CreateKeyResponse {
@@ -2030,6 +2063,10 @@ export interface GatewayConfig {
   public_hosts?: string[]
   /** Plugin that serves bare model names (no "plugin/" prefix); empty = 404. */
   default_plugin?: string
+  /** D-30 图三：每 Key / 账号最多可排队的请求数；0 = 不限（后端 clampQueueDepth ≤100000）。 */
+  queue_max_depth?: number
+  /** D-30 图三：等待空位的最长秒数；0 = 一直等；缺省 30。 */
+  queue_timeout_seconds?: number
 }
 
 /**

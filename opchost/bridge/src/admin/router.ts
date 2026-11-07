@@ -26,6 +26,7 @@ import { deriveManifest, handleManifest } from './manifest.ts'
 import { buildIndex, loadQuotaGroups } from './quotagroups.ts'
 import { createCheckinLedger } from './ledger.ts'
 import { handleAccountCheckin, handleCheckinAll } from './checkin.ts'
+import { handleIdentityReset } from './identity.ts'
 import { createAccountLedger, handleAccounts } from './accounts.ts'
 import { loadCheckinSwitches } from './switches.ts'
 import { isLoopback, rejectRemote, sendJSON } from './util.ts'
@@ -64,8 +65,10 @@ export function createAdminRouter(deps: AdminDeps): AdminRouter {
     const pathname = url.pathname
     const isAdmin = pathname.startsWith('/admin/')
     const isCheckin = pathname === '/checkin' || /^\/accounts\/[^/]+\/checkin$/.test(pathname)
+    // D-57：/accounts/{id}/identity/reset 是宿主契约端点，先于 isAccounts 兜底判断
+    const isIdentity = /^\/accounts\/[^/]+\/identity\/reset$/.test(pathname)
     const isAccounts = pathname === '/accounts' || /^\/accounts\/[^/]+$/.test(pathname)
-    if (!isAdmin && !isCheckin && !isAccounts) return false
+    if (!isAdmin && !isCheckin && !isIdentity && !isAccounts) return false
 
     // 统一入口守卫：非回环来源直接 403，绝不进业务分支
     if (!isLoopback(req)) {
@@ -103,6 +106,8 @@ export function createAdminRouter(deps: AdminDeps): AdminRouter {
         return true
       }
       if (await handleAccounts(req, res, deps, store, accounts, ledger, pathname)) return true
+      // D-57：identity/reset 在逐请求 checkin 之前判（路径更具体，互不重叠但先短后长）
+      if (await handleIdentityReset(req, res, deps, pathname)) return true
       if (await handleAccountCheckin(req, res, deps, ledger, switches, pathname)) return true
       if (await handleCheckinAll(req, res, deps, ledger, switches, pathname)) return true
 

@@ -9,9 +9,9 @@
 //   internal/model/model.go       —— CheckinResult(228) / Account(176) / QuotaSnapshot(470)
 //   plans/2026-11-05-magpie接入与公网部署计划.md —— D-19 / D-20 / D-57
 
-import type { Capability, LoadResult, CredentialStore as SharedCredentialStore } from '../types.ts'
+import type { Capability, IdentityResetResult, LoadResult, CredentialStore as SharedCredentialStore } from '../types.ts'
 
-export type { Capability, LoadResult, SharedCredentialStore }
+export type { Capability, IdentityResetResult, LoadResult, SharedCredentialStore }
 
 /** SITES 表里被桥读取的字段（其余字段原样保留，便于导出）。 */
 export interface PluginSite {
@@ -75,6 +75,11 @@ export interface PluginHandle {
   authorize(providerId: string, opts?: { redirectUri?: string }): Promise<PluginSigninStart>
   /** D-19 签到委派 */
   checkin(providerId: string, accountId: string): Promise<PluginCheckinResult>
+  /**
+   * D-57 指纹重置透传：mode "request" | "os"。插件没有 auth.identity 钩子时
+   * 抛错（端点据此回 501）；mode 的归一化（小写/去空白）在 handler 完成。
+   */
+  identity(providerId: string, accountId: string, mode: 'request' | 'os'): Promise<IdentityResetResult>
   /** 账号 id 列表，供 /checkin 批量用；插件不提供时可缺省 */
   accounts?(providerId: string): Promise<Array<{ id: string; label?: string }>>
 }
@@ -160,6 +165,12 @@ export interface AdminDeps {
   signinTimeoutMs?: number
   /** 桥自持回调的绑定地址；只允许回环 */
   loopbackHost?: '127.0.0.1'
+  /**
+   * P8 出口白名单守卫（可选）。给了它，插件 auth.checkin / auth.identity 这类
+   * 自带网络调用的钩子在桥内执行时走 wrapFetch——strict 白名单对这些此前
+   * 绕过守卫的调用点也出拦截/放行日志（task-35②）。
+   */
+  egress?: import('../egress/guard.ts').EgressGuard
   logger?: { info(msg: string, fields?: Record<string, unknown>): void }
 }
 

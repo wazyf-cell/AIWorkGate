@@ -22,6 +22,11 @@ package gateway
 //     completion path then only adds tokens/credits.
 //   - every finished inference request is accumulated once; successes and
 //     failures both count as one request, tokens only when usage was parsed.
+//   - read_only (D-42②): a read-only key may call the catalogue reads but no
+//     consuming endpoint -> 403 read_only_key.
+//   - cost_budget_usd (D-42②, 0 = unlimited): the key's cumulative cost
+//     reached the budget -> 429 cost_budget_exceeded, in the same admission
+//     position as daily_quota.
 
 import (
 	"bytes"
@@ -48,6 +53,16 @@ type KeyRecord struct {
 	AllowedIPs       []string
 	Owner            bool
 	MaxRequestsTotal int
+
+	// ReadOnly marks a key that may only call read-only endpoints (D-42②):
+	// catalogue reads such as /v1/models and /me queries are allowed, every
+	// consuming endpoint (chat/completions/responses/messages/embeddings/…)
+	// is refused with 403 read_only_key.
+	ReadOnly bool
+	// CostBudgetUSD caps the key's cumulative cost in USD (D-42②); 0 = unlimited.
+	// The total comes from Options.KeyCostTotal, which the host backs with
+	// SUM(api_logs.cost_usd) for the key.
+	CostBudgetUSD float64
 }
 
 // keyRecordContextKey is the request-context slot holding the snapshot.
@@ -187,6 +202,59 @@ func (g *Gateway) rejectKeyQuota(w http.ResponseWriter, rec *reqRecord, used, qu
 	rec.quotaRejected = true
 	g.fail(w, rec, http.StatusTooManyRequests, "key_quota_exceeded", "key_quota_exceeded",
 		fmt.Sprintf("该客户端 Key 今日配额已用尽（已用 %d 次 / 上限 %d 次），将于次日 00:00 重置", used, quota))
+	return false
+}
+
+// keyReadOnlyAllows enforces D-42② read-only keys: a read-only key may call
+// the catalogue reads (/v1/models, /me is served outside the gateway) but no
+// consuming endpoint. It returns false after writing the 403.
+//
+// The gate runs before any quota reservation, so a refused chat request on a
+// read-only key never burns the key's daily slot.
+func (g *Gateway) keyReadOnlyAllows(w http.ResponseWriter, r *http.Request, rec *reqRecord, path string) bool {
+	if g == nil || rec == nil || !isInferencePath(path) {
+		return true
+	}
+	kr, ok := keyRecordFrom(r.Context())
+	if !ok || !kr.ReadOnly {
+		return true
+	}
+	rec.errText = "read-only client key cannot call " + path
+	g.fail(w, rec, http.StatusForbidden, "permission_error", "read_only_key",
+		"该客户端 Key 是只读 Key，只能查询模型列表等只读信息，不能发起推理请求。"+
+			"如需对话，请在宿主的「设置 → 客户端 Key」中改用普通 Key。")
+	return false
+}
+
+// keyCostBudgetAllows enforces the per-key cost budget (D-42②). It sits in the
+// same admission position as daily_quota: after the key is authenticated and
+// before anything is routed or reserved.
+//
+// A budget of 0 means unlimited. Storage errors fail OPEN, matching the P5-1
+// lifetime cap: a database hiccup must not stop all traffic, and the budget is
+// a spend guard rather than an authorization boundary.
+func (g *Gateway) keyCostBudgetAllows(w http.ResponseWriter, r *http.Request, rec *reqRecord) bool {
+	if g == nil || rec == nil || !rec.billable {
+		return true
+	}
+	kr, ok := keyRecordFrom(r.Context())
+	if !ok || kr.CostBudgetUSD <= 0 {
+		return true
+	}
+	if g.keyCostTotal == nil {
+		return true
+	}
+	used, err := g.keyCostTotal(kr.ID)
+	if err != nil {
+		return true
+	}
+	if used < kr.CostBudgetUSD {
+		return true
+	}
+	rec.quotaRejected = true
+	g.fail(w, rec, http.StatusTooManyRequests, "cost_budget_exceeded", "cost_budget_exceeded",
+		fmt.Sprintf("该客户端 Key 的额度预算已用尽（已花费 %.4f / 上限 %.4f USD），请在宿主的「设置 → 客户端 Key」中调整预算",
+			used, kr.CostBudgetUSD))
 	return false
 }
 

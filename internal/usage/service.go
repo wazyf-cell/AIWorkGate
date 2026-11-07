@@ -17,6 +17,14 @@ import (
 type Service struct {
 	Store *store.Store
 	Now   func() time.Time
+	// WindowsOf optionally supplies the live multi-window quota (D-21/F-14)
+	// of one account, as passed through verbatim by the bridge. When it
+	// returns a non-empty slice the D-53 runway numerator sums the windows'
+	// remaining amounts instead of the legacy scalar snapshot remaining.
+	// The burn rate stays scalar either way: quota_snapshots keeps no window
+	// history, so a per-window rate would need a store migration that is out
+	// of this card's scope.
+	WindowsOf func(pluginID, accountID string) []map[string]any
 }
 
 // NewService returns a usage service bound to st.
@@ -37,6 +45,18 @@ type SummaryKPI struct {
 	// would read as "instant answers" on an empty range.
 	AvgLatencyMS *float64 `json:"avg_latency_ms,omitempty"`
 	AvgTTFBMS    *float64 `json:"avg_ttfb_ms,omitempty"`
+	// CacheHitRate is the P9-8 acceptance metric: cached tokens over the
+	// prompt tokens that carried them. The plan's denominator note
+	// ("prompt_tokens − cached") is the correction for dialects whose prompt
+	// already includes the cached prefix; adding the cached tokens back onto
+	// that corrected denominator reproduces prompt_tokens verbatim, so the
+	// equivalent magpie-aligned form is cached / prompt. Rows whose prompt is
+	// 0 are skipped by the positive-denominator guard below. Known limit
+	// (recorded, not silently dropped): usage_daily carries no cache_unknown
+	// flag, so rows where the vendor reports no cache semantics at all stay
+	// in the denominator — the api_logs column exists but the daily rollup
+	// (deliberately) does not sum it.
+	CacheHitRate *float64 `json:"cache_hit_rate,omitempty"`
 }
 
 // SummaryPoint is one day/plugin row of the summary series.
@@ -68,9 +88,12 @@ type CreditItem struct {
 	DaysLeft     *int    `json:"days_left"`
 	// RunwayHours estimates how long the remaining credits last at the recent
 	// burn rate (D-53); nil when there is not enough history. RunwayAt is the
-	// projected empty time.
+	// projected empty time. RunwayBasis says which remaining the numerator
+	// used: "windows" (multi-window D-21 data, summed) or "scalar" (the
+	// legacy quota_snapshots remaining). Empty when RunwayHours is nil.
 	RunwayHours *float64 `json:"runway_hours,omitempty"`
 	RunwayAt    *int64   `json:"runway_at,omitempty"`
+	RunwayBasis string   `json:"runway_basis,omitempty"`
 }
 
 // CreditsResponse is the body of GET /api/usage/credits and .../expiry.
@@ -115,30 +138,101 @@ const (
 // accountRunway estimates remaining hours from the newest and oldest quota
 // snapshots inside the window. A refill (remaining went up) or a short span
 // yields nil instead of a misleading number.
-func (s *Service) accountRunway(pluginID, accountID string, now int64) (*float64, *int64) {
+//
+// D-53 multi-window: when WindowsOf supplies the account's live windows the
+// numerator is the sum of their remaining amounts (F-14: amount is the
+// remaining side of "876 / 4600"; limit−used is the fallback spelling) and
+// the basis comes back as "windows". The burn rate stays the scalar snapshot
+// delta either way — quota_snapshots keeps no per-window history (noted on
+// Service.WindowsOf).
+func (s *Service) accountRunway(pluginID, accountID string, now int64) (*float64, *int64, string) {
 	if s == nil || s.Store == nil || now <= 0 {
-		return nil, nil
+		return nil, nil, ""
 	}
 	since := now - int64(runwayWindow/time.Second)
 	history, err := s.Store.QueryQuotaSnapshots(pluginID, accountID, since)
 	if err != nil || len(history) < 2 {
-		return nil, nil
+		return nil, nil, ""
 	}
 	newest, oldest := history[0], history[len(history)-1]
 	spanHours := float64(newest.At-oldest.At) / 3600
 	if spanHours < runwayMinSpan.Hours() {
-		return nil, nil
+		return nil, nil, ""
 	}
 	consumed := oldest.Remaining - newest.Remaining
 	if consumed <= 0 {
-		return nil, nil
+		return nil, nil, ""
 	}
-	hours := newest.Remaining / (consumed / spanHours)
+	remaining := newest.Remaining
+	basis := "scalar"
+	if windows := s.windowsRemaining(pluginID, accountID); windows > 0 {
+		remaining = windows
+		basis = "windows"
+	}
+	hours := remaining / (consumed / spanHours)
 	if hours < 0 || math.IsNaN(hours) || math.IsInf(hours, 0) {
-		return nil, nil
+		return nil, nil, ""
 	}
 	at := now + int64(hours*3600)
-	return &hours, &at
+	return &hours, &at, basis
+}
+
+// windowsRemaining sums the D-21 windows' remaining side. amount is the
+// remaining amount in the F-14 shape ("876 / 4600"), so it wins when
+// present; limit−used covers plugins that only report the pair. A window
+// with neither usable pair is skipped; a total of 0 means "no multi-window
+// data" and the caller keeps the scalar numerator.
+func (s *Service) windowsRemaining(pluginID, accountID string) float64 {
+	if s.WindowsOf == nil {
+		return 0
+	}
+	windows := s.WindowsOf(pluginID, accountID)
+	if len(windows) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, w := range windows {
+		if v, ok := windowField(w, "amount"); ok {
+			total += v
+			continue
+		}
+		limit, limitOK := windowField(w, "limit")
+		used, usedOK := windowField(w, "used")
+		if limitOK && usedOK && limit-used > 0 {
+			total += limit - used
+		}
+	}
+	return total
+}
+
+// windowField reads one numeric window field tolerantly: plugins pass the
+// windows through verbatim (D-21 forbids force-mapping), so the value may
+// arrive as float64, int64, int, or a numeric string. Non-positive and
+// non-numeric values read as absent.
+func windowField(w map[string]any, key string) (float64, bool) {
+	raw, ok := w[key]
+	if !ok {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		if v > 0 {
+			return v, true
+		}
+	case int64:
+		if v > 0 {
+			return float64(v), true
+		}
+	case int:
+		if v > 0 {
+			return float64(v), true
+		}
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && f > 0 {
+			return f, true
+		}
+	}
+	return 0, false
 }
 
 func (s *Service) now() time.Time {
@@ -180,6 +274,11 @@ func (s *Service) Summary(q Query) (SummaryResponse, error) {
 		avg := float64(totals.TTFBMSSum) / float64(totals.TTFBCount)
 		out.KPIs.AvgTTFBMS = &avg
 	}
+	// P9-8 命中率：cached / prompt（分母≤0 不计）。口径推导见 SummaryKPI.CacheHitRate。
+	if totals.PromptTokens > 0 && totals.CachedTokens > 0 {
+		rate := float64(totals.CachedTokens) / float64(totals.PromptTokens)
+		out.KPIs.CacheHitRate = &rate
+	}
 	for _, row := range rows {
 		out.Series = append(out.Series, SummaryPoint{
 			Day:              row.Day,
@@ -215,7 +314,7 @@ func (s *Service) Credits(q Query, sortByExpiry bool) (CreditsResponse, error) {
 		if name == "" {
 			name = snap.AccountID
 		}
-		runwayHours, runwayAt := s.accountRunway(snap.PluginID, snap.AccountID, now)
+		runwayHours, runwayAt, runwayBasis := s.accountRunway(snap.PluginID, snap.AccountID, now)
 		out.Accounts = append(out.Accounts, CreditItem{
 			PluginID:     snap.PluginID,
 			AccountID:    snap.AccountID,
@@ -228,6 +327,7 @@ func (s *Service) Credits(q Query, sortByExpiry bool) (CreditsResponse, error) {
 			DaysLeft:     daysLeft(snap.ExpiresAt, now),
 			RunwayHours:  runwayHours,
 			RunwayAt:     runwayAt,
+			RunwayBasis:  runwayBasis,
 		})
 	}
 	sort.SliceStable(out.Accounts, func(i, j int) bool {

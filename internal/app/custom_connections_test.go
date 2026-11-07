@@ -180,3 +180,63 @@ func TestCreateCustomModelLegacyPayloadCreatesConnection(t *testing.T) {
 		t.Fatalf("connection key = %q", key)
 	}
 }
+
+// TestLegacyCustomModelsFoldIntoCatalog pins the app half of D-37: after the
+// legacy merge attaches pre-connection rows, every custom model is visible
+// through the "custom:<connection_id>" catalog/override namespace, and a second
+// start does not duplicate anything.
+func TestLegacyCustomModelsFoldIntoCatalog(t *testing.T) {
+	a := newCustomConnectionApp(t)
+	rows := []store.CustomModel{
+		{Name: "one", BaseURL: "https://one.example.com/v1", UpstreamModel: "m1", Enabled: true,
+			ContextWindow: 64000, MaxOutputTokens: 4096, ReasoningTiers: []string{"low", "high"}},
+		{Name: "two", BaseURL: "https://two.example.com/v1", UpstreamModel: "m2", Enabled: true},
+	}
+	for i, row := range rows {
+		created, err := a.store.UpsertCustomModel(row)
+		if err != nil {
+			t.Fatalf("legacy insert %d: %v", i, err)
+		}
+		if err := a.secrets.SetExtra(store.CustomModelSecretKey(created.ID), "sk-"+created.ID); err != nil {
+			t.Fatalf("legacy key %d: %v", i, err)
+		}
+	}
+
+	a.migrateLegacyCustomModels()
+
+	models, err := a.store.ListCustomModels()
+	if err != nil {
+		t.Fatalf("ListCustomModels: %v", err)
+	}
+	if len(models) != len(rows) {
+		t.Fatalf("models = %d, want %d (custom_models stays read-only compatible)", len(models), len(rows))
+	}
+	for _, model := range models {
+		if model.ConnectionID == "" {
+			t.Fatalf("model %q is not attached", model.Name)
+		}
+		overrides, err := a.store.GetModelOverrides(store.CustomModelPluginID(model.ConnectionID))
+		if err != nil {
+			t.Fatalf("GetModelOverrides(%s): %v", model.ConnectionID, err)
+		}
+		entry, ok := overrides[model.UpstreamModel]
+		if !ok {
+			t.Fatalf("model %q/%q missing from the custom override namespace: %+v",
+				model.ConnectionID, model.UpstreamModel, overrides)
+		}
+		if entry.DisplayName == nil || *entry.DisplayName != model.Name {
+			t.Fatalf("override display for %q = %+v, want %q", model.UpstreamModel, entry.DisplayName, model.Name)
+		}
+	}
+
+	// Idempotent: one more start folds nothing new.
+	before, _ := a.store.GetModelOverrides(store.CustomModelPluginID(models[0].ConnectionID))
+	a.migrateLegacyCustomModels()
+	after, err := a.store.GetModelOverrides(store.CustomModelPluginID(models[0].ConnectionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("re-fold changed override count: %d -> %d", len(before), len(after))
+	}
+}

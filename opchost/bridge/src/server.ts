@@ -320,6 +320,8 @@ export function createBridgeServer(ctx: BridgeContext, deps: BridgeServerDeps = 
       sites,
     }),
     credentials: adminStore,
+    // task-35②：插件 auth 钩子（checkin/identity）的出口守卫覆盖进管理面
+    ...(deps.egressGuard ? { egress: deps.egressGuard } : {}),
   });
 
   // chat 泳道：POST /v1/chat/completions（SSE 与非流式聚合）
