@@ -1953,6 +1953,7 @@ export interface CustomModelTestResult {
 export interface CustomEffortProbeInput {
   connection_id: string
   model_id: string
+  /** 协议 wire 文本（如 openai 的 reasoning_effort 取值）；由前端 tierWire() 换算。 */
   tier: string
 }
 
@@ -3066,6 +3067,28 @@ export const api = {
       return request<{ packages?: MarketInstalledRow[]; items?: MarketInstalledRow[] }>('/market/installed')
     },
   },
+
+  /* ------------------------------------------------------------------ */
+  /* Gateway 实时 trace（task-48 后端 / task-52 阶段 1 契约层）           */
+  /* 两个端点同形状 {events, last_seq}：events 为空也返回 last_seq，      */
+  /* 调用方把游标推进到 last_seq 供下一次 poll 使用。轮询循环归阶段 2。   */
+  /* ------------------------------------------------------------------ */
+  gatewayTrace: {
+    /** 首屏回放：GET /gateway/trace/recent?limit=N。limit 0/缺省 = 全部保留历史（后端环形上限 500）。 */
+    recent(limit?: number): Promise<GatewayTracePage> {
+      const suffix = limit === undefined ? '' : `?limit=${encodeURIComponent(String(limit))}`
+      return request<GatewayTracePage>(`/gateway/trace/recent${suffix}`)
+    },
+    /**
+     * 增量长轮询：GET /gateway/trace?after=<seq>&wait=1|0。
+     * wait=1 时后端挂起至多 25s（封顶 30s）直到有新事件或超时——超时返回
+     * events=[] 且 last_seq 为当前值，不是错误。
+     */
+    poll(after: number, wait = false): Promise<GatewayTracePage> {
+      const query = new URLSearchParams({ after: String(after), wait: wait ? '1' : '0' })
+      return request<GatewayTracePage>(`/gateway/trace?${query.toString()}`)
+    },
+  },
 }
 
 
@@ -3187,15 +3210,48 @@ export function normalizeMarketInstalled(
   return rows
 }
 
-/** 8.4 推理档位探测：对自定义接入的某模型发 max_tokens=1 的最小请求。 */
-export interface CustomEffortProbeInput {
-  connection_id: string
-  model_id: string
-  /** 协议 wire 文本（如 openai 的 reasoning_effort 取值）；由前端 tierWire() 换算。 */
-  tier: string
+/* ------------------------------------------------------------------ */
+/* Gateway trace 事件契约（task-48 后端 gateway/trace.go TraceEvent）   */
+/* 供 RouteStage.vue（阶段 2/3）消费；字段名与 Go json tag 一一对应，   */
+/* 不改名不补默认值——可选字段缺省即后端 omitempty 未发。               */
+/* 注意：后端未接线时两端点回 501 not_implemented（internal/webui/     */
+/* trace.go:24），request() 会抛 ApiError——调用方必须把 501 当「功能  */
+/* 未就绪」呈现，不得吞成空页；空页 {"events":[],"last_seq":0} 只代表  */
+/* 已接线但网关尚无事件。                                              */
+/* ------------------------------------------------------------------ */
+
+/** err_kind 取值（后端归因）：transport=连不上、canceled=调用方取消、upstream=上游报错、request=请求形态问题。 */
+export type GatewayTraceErrKind = 'transport' | 'canceled' | 'upstream' | 'request'
+
+/** 一条逐请求观察事件。status=0 表示上游不可达（transport 类）。 */
+export interface GatewayTraceEvent {
+  /** 单调递增事件序号；poll 游标用它。 */
+  seq: number
+  /** 事件时刻，unix 毫秒。 */
+  ts: number
+  /** 请求关联 ID（同一次 agent 请求的多次尝试共享）。 */
+  req_id: string
+  /** 发请求的 agent（如 claude / codex）；后端 omitempty，未识别时缺省。 */
+  agent?: string
+  /** 逻辑模型名（客户端请求的模型 id）。 */
+  logical_model?: string
+  /** 命中的路由组；现语义 = 逻辑模型（组 id 与逻辑名一致）。 */
+  group?: string
+  /** 实际服务的成员，"插件/账号" 形式。 */
+  member?: string
+  /** 上游 HTTP 状态码；0 = 上游不可达。 */
+  status: number
+  /** 上游耗时毫秒。 */
+  latency_ms: number
+  /** 是否流式。 */
+  stream: boolean
+  /** 失败归因；成功事件缺省。 */
+  err_kind?: GatewayTraceErrKind
 }
 
-export interface CustomEffortProbeResult {
-  supported: boolean
-  error?: string
+/** 两端点（recent / poll）统一的信封：events 为空时也返回 last_seq。 */
+export interface GatewayTracePage {
+  events: GatewayTraceEvent[]
+  /** 网关当前最后一条事件的 seq；调用方把它存为下一次 poll 的 after。 */
+  last_seq: number
 }

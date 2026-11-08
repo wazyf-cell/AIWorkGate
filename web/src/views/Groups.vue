@@ -11,6 +11,7 @@ import {
   type RoutingTemplate,
   type RoutingWhen,
 } from '../api'
+import RouteStage from '../components/RouteStage.vue'
 import '../route-stage.css'
 
 interface RuleDraft {
@@ -60,6 +61,12 @@ const savedGroups = ref<RoutingGroupView[]>([])
 const upstreams = ref<RoutingGroupsResponse['decision_upstreams']>([])
 const templates = ref<RoutingTemplate[]>([])
 const autoGroups = ref<RoutingAutoGroup[]>([])
+/** 实时舞台的独立提示位：501 未就绪等（与保存/操作反馈的 message 分开，避免误导读）。 */
+const stageNotice = ref('')
+
+function onStageUnavailable(message: string) {
+  stageNotice.value = message
+}
 const editing = ref(-1)
 const baseline = ref('')
 
@@ -438,6 +445,15 @@ onMounted(load)
         </div>
       </div>
     </section>
+
+    <!-- 实时观察流（A 阶段舞台，task-53 组件）：展示网关真实转发流；
+         数据源 = 本页已加载的 groups/autoGroups，组件不自己拉。 -->
+    <div v-if="stageNotice" class="notice warn">{{ stageNotice }}</div>
+    <RouteStage
+      :groups="savedGroups"
+      :auto-groups="autoGroups"
+      @unavailable="onStageUnavailable"
+    />
 
     <section class="card">
       <div class="card-body tight">

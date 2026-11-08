@@ -154,3 +154,164 @@
     transition: none;
   }
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   RouteStage 实时舞台（task-53 阶段 2/3，rs-stage- 前缀，不与上方 .rs-*
+   冲突）。keyframes 复用上文已移植的 rtflow / rtlive / rthit / rtfound。
+   ════════════════════════════════════════════════════════════════════ */
+
+.rs-stage {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 220px;
+  padding: 8px 0;
+}
+
+/* 三张 SVG 铺满舞台，绝对定位、不接鼠标（节点行在上层接交互）。 */
+.rs-stage-wires,
+.rs-stage-flows,
+.rs-stage-sky {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* 静态连线层：默认线色，状态类切色；lit 高亮、rest 降透明。 */
+.rs-stage-wires path {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+  transition: opacity 0.3s, stroke 0.25s;
+}
+
+.rs-stage-wires path.rs-stage-lit {
+  stroke: var(--accent);
+}
+
+.rs-stage-wires path.rs-stage-failed {
+  stroke: var(--danger);
+}
+
+.rs-stage-wires path.rs-stage-canceled {
+  stroke: var(--muted);
+  stroke-dasharray: 1 4;
+}
+
+.rs-stage-wires path.rs-stage-rest {
+  opacity: 0.35;
+}
+
+/* 流动虚线副本层：只有 live（最近成功流量）的线在这里有副本，
+   rtflow 虚线只在副本上跑——动画期间静态层完全静止。 */
+.rs-stage-flows path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 5;
+  animation: rtflow 0.7s linear infinite;
+}
+
+/* 飞行光点：请求（前）与响应（回）双色；失败/取消换色。 */
+.rs-stage-dot {
+  fill: var(--accent);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 60%, transparent));
+}
+
+.rs-stage-dot-back {
+  fill: var(--chart-2);
+}
+
+.rs-stage-dot-fail {
+  fill: var(--danger);
+}
+
+.rs-stage-dot-muted {
+  fill: var(--muted);
+}
+
+/* 左右两列节点行。 */
+.rs-stage-col {
+  display: flex;
+  flex: 0 0 22%;
+  flex-direction: column;
+  justify-content: space-around;
+  gap: 8px;
+  min-width: 9em;
+  max-width: 24%;
+  position: relative;
+  z-index: 1;
+}
+
+.rs-stage-node {
+  padding: 7px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+
+.rs-stage-node-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 刚有流量的节点：rthit 抖动一次（类随 lit 窗口出现/消失，重新命中会再抖）。 */
+.rs-stage-node.rs-stage-lit-node {
+  border-color: var(--accent);
+  animation: rthit 0.45s;
+}
+
+/* 最近失败的成员：红框警示。 */
+.rs-stage-node.rs-stage-node-failed {
+  border-color: var(--danger);
+}
+
+/* hub：居中圆柱，live 时 rtlive 光环（全舞台唯一常驻 infinite 动画）。 */
+.rs-stage-hub {
+  position: relative;
+  z-index: 1;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.rs-stage-hub.rs-stage-hub-live {
+  animation: rtlive 1.8s ease-in-out infinite;
+}
+
+.rs-stage-hub-name {
+  font-weight: 600;
+}
+
+/* reduced-motion：舞台动画全灭（连线副本静止、节点不抖、hub 无脉冲）。 */
+@media (prefers-reduced-motion: reduce) {
+  .rs-stage-flows path,
+  .rs-stage-hub.rs-stage-hub-live {
+    animation: none;
+  }
+
+  .rs-stage-node.rs-stage-lit-node {
+    animation: none;
+  }
+
+  .rs-stage-wires path,
+  .rs-stage-node {
+    transition: none;
+  }
+}
