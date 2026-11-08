@@ -56,6 +56,30 @@ writeFileSync(
         ],
       },
     },
+    // task-27⑤：第二平台各两条 window——Q1-A 下 mock 与 mock-ai 不配组，
+    // 两平台的 windows 必须各自独立透传（不合并、不串号）。
+    // 记录键 = <pluginId>/<accountId>（桥的账号寻址）：mock-ai 是 handleOff
+    // （pluginId=mock-off）名下 providerId=mock-ai 的账号。
+    'mock-off/mock-ai': {
+      at: '2026-11-06T15:00:00+08:00',
+      quota: {
+        provider: 'mock-ai',
+        plan: 'team',
+        readAt: '2026-11-06T15:00:00+08:00',
+        windows: [
+          {
+            name: '总积分',
+            amount: 70,
+            limit: 900,
+            used: 830,
+            unit: 'credits',
+            resetsAt: '2026-12-05T00:00:00Z',
+            display: '70 / 900',
+          },
+          { name: '体验券', amount: 5, limit: 50, used: 45, unit: 'credits', runsOut: 5, display: '5 / 50' },
+        ],
+      },
+    },
   }),
   'utf8',
 )
@@ -398,10 +422,32 @@ let pluginModeSid = ''
       q.reset_at === Math.floor(Date.parse('2026-12-01T00:00:00Z') / 1000),
     JSON.stringify({ remaining: q.remaining, total: q.total, expires_at: q.expires_at, reset_at: q.reset_at }),
   )
+  // task-27⑤：两平台各两条 window 各自独立（Q1-A：mock 与 mock-ai 不配组）。
+  // mock-ai = handleOff 名下 provider 账号；记录键 mock-off/mock-ai。
+  const aiRow = list.find((a) => a.id === 'mock-ai')
+  const aiQ = aiRow?.quota ?? {}
+  check(
+    'accounts_quota_second_platform_windows',
+    Array.isArray(aiQ.windows) &&
+      aiQ.windows.length === 2 &&
+      aiQ.windows[0].display === '70 / 900' &&
+      aiQ.windows[1].runsOut === 5 &&
+      aiQ.remaining === 70 &&
+      aiQ.total === 900 &&
+      aiQ.plan === 'team',
+    JSON.stringify(aiQ),
+  )
+  check(
+    'accounts_quota_platforms_independent',
+    q.remaining === 100 && aiQ.remaining === 70 && aiQ.remaining !== q.remaining,
+    `mock=${q.remaining} mock-ai=${aiQ.remaining}`,
+  )
   check(
     'accounts_quota_absent_omitted',
-    list.filter((a) => a.id !== 'mock-account').every((a) => a.quota?.windows === undefined && a.quota?.remaining === undefined),
-    JSON.stringify(list.filter((a) => a.id !== 'mock-account').map((a) => [a.id, a.quota])),
+    list
+      .filter((a) => a.id !== 'mock-account' && a.id !== 'mock-ai')
+      .every((a) => a.quota?.windows === undefined && a.quota?.remaining === undefined),
+    JSON.stringify(list.filter((a) => a.id !== 'mock-account' && a.id !== 'mock-ai').map((a) => [a.id, a.quota])),
   )
   check(
     'accounts_no_identity_fingerprint',

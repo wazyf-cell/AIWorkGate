@@ -13,6 +13,7 @@ import {
   type RoutingWhen,
 } from '../api'
 import RouteStage from '../components/RouteStage.vue'
+import RouteMonitorPanels from '../components/RouteMonitorPanels.vue'
 import { formatTimestamp } from '../format'
 import '../route-stage.css'
 
@@ -482,6 +483,7 @@ onMounted(load)
       @select="stageDetail = $event"
       @unavailable="onStageUnavailable"
     />
+    <RouteMonitorPanels />
 
     <section class="card">
       <div class="card-body tight">
