@@ -67,3 +67,4 @@ docs/变更日志-*.md
 # 哈希记录文件例外，入库以便任何机器复核二进制。
 /dist/*
 !/dist/magpie-bridge.sha256
+!/dist/magpie-bridge-linux.sha256
