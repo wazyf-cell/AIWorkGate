@@ -9,8 +9,10 @@ import {
   api,
   errorMessage,
   normalizeMarketSearch,
+  normalizeMarketInstalled,
   normalizeMarketUpdates,
   type MarketSearchResult,
+  type MarketInstalledRow,
   type MarketSource,
   type MarketUpdateItem,
 } from '../api'
@@ -25,9 +27,17 @@ const sourceOptions: { value: MarketSource; label: string }[] = [
 ]
 
 const results = ref<MarketSearchResult[]>([])
+/** magpie 官方社区包前缀（对齐 magpie plugin/updates.go:77 的 Official()）：启用/更新策略只认这批。 */
+const OFFICIAL_PREFIX = '@magpie-community/'
+function isOfficial(name: string): boolean {
+  return (name || '').startsWith(OFFICIAL_PREFIX)
+}
+
 const searching = ref(false)
 /** 已安装市场包：由 /api/market/updates 派生（一行一包，含 from→to）。 */
-const installed = ref<MarketUpdateItem[]>([])
+const installed = ref<MarketInstalledRow[]>([])
+/** 更新可用性按 id 索引（来自 /api/market/updates）。 */
+const updatesById = ref<Record<string, MarketUpdateItem>>({})
 const checkingUpdates = ref(false)
 const installingSpec = ref('')
 const updatingId = ref('')
@@ -96,14 +106,32 @@ async function checkUpdates() {
   checkingUpdates.value = true
   error.value = ''
   message.value = ''
-  const data = await run(() => api.market.updates(), () => true)
-  installed.value = normalizeMarketUpdates(data)
+  const [rawInstalled, rawUpdates] = await Promise.all([
+    run(() => api.market.installed(), () => true),
+    run(() => api.market.updates(), () => true),
+  ])
+  // 全量已装来自 /api/market/installed（覆盖 npm/GitHub/本地）；更新徽章仍由 updates 派生。
+  const rows = normalizeMarketInstalled(rawInstalled)
+  if (rows.length) {
+    installed.value = rows
+    const map: Record<string, MarketUpdateItem> = {}
+    for (const u of normalizeMarketUpdates(rawUpdates)) map[u.id] = u
+    updatesById.value = map
+  } else {
+    // 旧 exe 无 /installed → 退回 updates 派生（只含 market_installs）。
+    const only = normalizeMarketUpdates(rawUpdates)
+    installed.value = only.map((u) => ({ id: u.id, name: u.id, version: u.from, source: 'npm' }))
+    const map: Record<string, MarketUpdateItem> = {}
+    for (const u of only) map[u.id] = u
+    updatesById.value = map
+  }
   checkingUpdates.value = false
 }
 
 /** 该包是否有新版（available=true 且 to 与已装 from 不同）。 */
-function hasUpdate(item: MarketUpdateItem): boolean {
-  return item.available === true && Boolean(item.to) && item.to !== item.from
+function hasUpdate(id: string): boolean {
+  const u = updatesById.value[id]
+  return u?.available === true && Boolean(u.to) && u.to !== u.from
 }
 
 /**
@@ -111,24 +139,24 @@ function hasUpdate(item: MarketUpdateItem): boolean {
  * 契约契约：健康检查失败时宿主自动回滚，rolledBack=true → 显示「更新失败已回滚到旧版本」；
  * 成功则行内徽章消失（重查 updates 后该包不再有 from→to 差异）并提示新版本。
  */
-async function requestUpdate(item: MarketUpdateItem) {
+async function requestUpdate(id: string) {
   if (updatingId.value || checkingUpdates.value) return
-  updatingId.value = item.id
+  updatingId.value = id
   message.value = ''
   error.value = ''
-  const data = await run(() => api.market.update(item.id))
+  const data = await run(() => api.market.update(id))
   if (data?.ok === true) {
     if (data.rolledBack === true) {
-      error.value = `「${item.id}」更新失败已回滚到旧版本（${data.from ?? '—'}）。请检查插件安装目录后重试。`
+      error.value = `「${id}」更新失败已回滚到旧版本（${data.from ?? '—'}）。请检查插件安装目录后重试。`
     } else {
-      message.value = `「${item.id}」已更新 ${data.from ?? '—'} → ${data.to ?? '—'}。插件默认停用，请到「插件」页启用并启动。`
+      message.value = `「${id}」已更新 ${data.from ?? '—'} → ${data.to ?? '—'}。插件默认停用，请到「插件」页启用并启动。`
     }
     updatingId.value = ''
     await checkUpdates()
     return
   }
   if (data && (data as { ok?: boolean }).ok === undefined) {
-    error.value = `「${item.id}」更新返回异常：ok 字段缺失，请与后端核对 /api/market/update 契约。`
+    error.value = `「${id}」更新返回异常：ok 字段缺失，请与后端核对 /api/market/update 契约。`
   }
   updatingId.value = ''
 }
@@ -178,17 +206,18 @@ onMounted(() => void checkUpdates())
               </button>
             </div>
           </div>
+          <div class="field">
+            <span class="field-label">&nbsp;</span>
+            <button type="button" class="btn primary" :disabled="!query.trim() || searching" @click="search">
+              {{ searching ? '搜索中…' : '搜索' }}
+            </button>
+          </div>
         </div>
         <div v-if="source === 'local'" class="row">
           <div class="field">
             <span class="field-label">本地目录（localPath）</span>
             <input v-model="localPath" class="input" type="text" placeholder="例如 E:\Alltools\Magpine\chajian" />
           </div>
-        </div>
-        <div class="row">
-          <button type="button" class="btn primary" :disabled="!query.trim() || searching" @click="search">
-            {{ searching ? '搜索中…' : '搜索' }}
-          </button>
         </div>
       </div>
     </section>
@@ -197,7 +226,7 @@ onMounted(() => void checkUpdates())
     <section v-if="results.length" class="card">
       <div class="card-head">
         <h2>搜索结果</h2>
-        <span class="sub">{{ results.length }} 个结果</span>
+        <span class="sub">{{ results.length }} 个结果{{ results.length >= 100 ? '（单次最多返回 100 条，可加关键词缩小范围）' : '' }}</span>
       </div>
       <div class="table-wrap">
         <table class="table">
@@ -211,9 +240,12 @@ onMounted(() => void checkUpdates())
           </thead>
           <tbody>
             <tr v-for="pkg in results" :key="pkg.name">
-              <td class="mono">{{ pkg.name }}</td>
+              <td class="mono">
+                {{ pkg.name }}
+                <span v-if="isOfficial(pkg.name)" class="badge">官方</span>
+              </td>
               <td><span class="badge">{{ pkg.version }}</span></td>
-              <td class="truncate">{{ pkg.description || '—' }}</td>
+              <td class="truncate" :title="pkg.description || ''">{{ pkg.description || '—' }}</td>
               <td>
                 <button
                   type="button"
@@ -254,26 +286,31 @@ onMounted(() => void checkUpdates())
             <tr>
               <th>包名</th>
               <th>已装版本</th>
+              <th>来源</th>
               <th>更新</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="item in installed" :key="item.id">
-              <td class="mono">{{ item.id }}</td>
-              <td><span class="badge">{{ item.from || '—' }}</span></td>
+              <td class="mono">
+                {{ item.id }}
+                <span v-if="isOfficial(item.id)" class="badge">官方</span>
+              </td>
+              <td><span class="badge">{{ item.version || '—' }}</span></td>
+              <td><span class="muted">{{ item.source || '—' }}</span></td>
               <td>
-                <span v-if="hasUpdate(item)" class="badge warn">有更新 {{ item.from }} → {{ item.to }}</span>
+                <span v-if="hasUpdate(item.id)" class="badge warn">有更新 {{ updatesById[item.id]?.from }} → {{ updatesById[item.id]?.to }}</span>
                 <span v-else class="muted">无更新</span>
               </td>
               <td>
                 <button
-                  v-if="hasUpdate(item)"
+                  v-if="hasUpdate(item.id)"
                   type="button"
                   class="btn sm"
                   :disabled="checkingUpdates || updatingId === item.id"
                   title="执行更新（健康检查失败会自动回滚到旧版本）"
-                  @click="requestUpdate(item)"
+                  @click="requestUpdate(item.id)"
                 >
                   {{ updatingId === item.id ? '更新中…' : '更新' }}
                 </button>

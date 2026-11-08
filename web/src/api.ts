@@ -3033,9 +3033,11 @@ export const api = {
   /* 契约与后端 task-15 对齐；后端未就绪时视图会给出「接口未实现」提示。   */
   /* ------------------------------------------------------------------ */
   market: {
-    /** q 为包名/关键词，返回 {results:[{name,version,description}]}。 */
-    search(query: string): Promise<MarketSearchResponse> {
-      return request<MarketSearchResponse>(`/market/search?q=${encodeURIComponent(query)}`)
+    /** q 为包名/关键词，返回 {results:[{name,version,description}]}。limit 上限 100（后端 1-100）。 */
+    search(query: string, limit = 100): Promise<MarketSearchResponse> {
+      return request<MarketSearchResponse>(
+        `/market/search?q=${encodeURIComponent(query)}&limit=${encodeURIComponent(String(limit))}`,
+      )
     },
     /** 安装：{spec, source, localPath?} 返回 {ok, id, version}。 */
     install(payload: MarketInstallRequest): Promise<MarketInstallResponse> {
