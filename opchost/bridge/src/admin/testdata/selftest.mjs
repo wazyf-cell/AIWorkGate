@@ -553,6 +553,56 @@ let pluginModeSid = ''
   delete process.env.MAGPIE_AUTH_FILE
 }
 
+// task-84: magpie's multi-account convention `<provider>#<suffix>` keys import
+// as their own credential records (complete key as the store id); a suffix
+// account without usable credentials is skipped, idempotent and opt-out hold.
+{
+  const authPath = join(dataDir, 'magpie-plugin-auth-multi.json')
+  writeFileSync(
+    authPath,
+    JSON.stringify({
+      raccoon: { access: 'a1', refresh: 'r1' },
+      'raccoon#laobxa': { access: 'a2', refresh: 'r2' },
+      'raccoon#empty': { access: '', refresh: '' },
+      codearts: { access: 'a3', refresh: 'r3' },
+      'codearts#79b0648f': { access: 'a4', refresh: 'r4' },
+      'unknown#x': { access: 'a5', refresh: 'r5' },
+      'codearts#79b0648f': { access: 'a4', refresh: 'r4' },
+    }),
+  )
+  process.env.MAGPIE_AUTH_FILE = authPath
+  const store = createFileCredentialStore(join(dataDir, 'import-store-multi'))
+  const creds = bridgeCredentialStore(store, 'magpie-bridge')
+  const imported = await importMagpieAuth(creds, ['raccoon', 'codearts'])
+  check(
+    'magpie_import_multi',
+    imported.length === 4 && imported.includes('raccoon') && imported.includes('raccoon#laobxa') && imported.includes('codearts') && imported.includes('codearts#79b0648f'),
+    JSON.stringify(imported),
+  )
+  check(
+    'magpie_import_multi_keys_verbatim',
+    store.get('magpie-bridge', 'raccoon#laobxa')?.secret?.access === 'a2' &&
+      store.get('magpie-bridge', 'codearts#79b0648f')?.secret?.access === 'a4',
+    JSON.stringify([store.get('magpie-bridge', 'raccoon#laobxa'), store.get('magpie-bridge', 'codearts#79b0648f')]),
+  )
+  check('magpie_import_multi_unknown_skipped', store.get('magpie-bridge', 'unknown#x') === undefined)
+  check(
+    'magpie_import_multi_empty_skipped',
+    imported.includes('raccoon#empty') === false && store.get('magpie-bridge', 'raccoon#empty') === undefined,
+    JSON.stringify(imported),
+  )
+  const again = await importMagpieAuth(creds, ['raccoon', 'codearts'])
+  check('magpie_import_multi_idempotent', again.length === 0, JSON.stringify(again))
+  process.env.AIWORKGATE_MAGPIE_AUTH_IMPORT = '0'
+  const disabled = await importMagpieAuth(
+    bridgeCredentialStore(createFileCredentialStore(join(dataDir, 'import-store-multi-2')), 'magpie-bridge'),
+    ['raccoon', 'codearts'],
+  )
+  check('magpie_import_multi_optout', disabled.length === 0, JSON.stringify(disabled))
+  delete process.env.AIWORKGATE_MAGPIE_AUTH_IMPORT
+  delete process.env.MAGPIE_AUTH_FILE
+}
+
 // task-77: the api-key public-credential shape (opencode-zen-free free channel)
 // imports too, keeps its record verbatim, and stays idempotent/opt-out-able.
 {

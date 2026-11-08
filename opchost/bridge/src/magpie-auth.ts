@@ -25,6 +25,12 @@ export function magpieAuthFile(): string {
 /**
  * importMagpieAuth copies provider logins the bridge does not have yet.
  * AIWORKGATE_MAGPIE_AUTH_IMPORT=0 disables the import.
+ *
+ * task-84: besides the exact provider ids, magpie's multi-account convention
+ * `<provider>#<suffix>` keys are imported too (each suffix account keeps its
+ * own full credential record; the credential-store key is the complete magpie
+ * key so the plugin/scheduler can address it). A `#` key whose provider prefix
+ * is not a known provider is ignored — unknown channels stay invisible.
  */
 export async function importMagpieAuth(
   credentials: CredentialStore,
@@ -39,8 +45,21 @@ export async function importMagpieAuth(
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const file = raw as Record<string, unknown>;
+  const known = new Set(providers);
+  const candidates: string[] = [];
+  for (const key of Object.keys(file)) {
+    if (known.has(key)) {
+      candidates.push(key);
+      continue;
+    }
+    // 多账号约定：<provider>#<suffix>；provider 前缀必须是已知渠道。
+    const hash = key.indexOf("#");
+    if (hash > 0 && known.has(key.slice(0, hash))) {
+      candidates.push(key);
+    }
+  }
   const imported: string[] = [];
-  for (const provider of providers) {
+  for (const provider of candidates) {
     if (credentials.get(provider)) continue;
     const entry = file[provider];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
