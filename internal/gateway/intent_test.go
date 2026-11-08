@@ -1,9 +1,11 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -233,6 +235,69 @@ func TestParseIntentLabelSpellings(t *testing.T) {
 		if got != tc.want || ok != tc.ok {
 			t.Fatalf("parseIntentLabel(%s) = (%q,%v), want (%q,%v)", tc.body, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+// task-72：intentLabel 失败原因可观测化——每个分支的 reason 可区分。
+func TestIntentLabelFailureReasons(t *testing.T) {
+	labels := []string{"simple", "hard"}
+	intent := scheduler.IntentBinding{
+		Upstream: "jev",
+		Labels:   labels,
+		Route:    map[string]string{"simple": "grp", "hard": "strong"},
+	}
+
+	cases := []struct {
+		name       string
+		upstreamID string
+		respond    func(w http.ResponseWriter, r *http.Request, _ []byte)
+		timeout    time.Duration
+		wantSub    string
+	}{
+		{"unauthorized", "jev", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":"invalid api key"}`)
+		}, 0, "upstream status=401 body="},
+		{"timeout", "jev", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+			time.Sleep(200 * time.Millisecond)
+		}, 50 * time.Millisecond, "timeout"},
+		{"parse failed", "jev", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+			_, _ = io.WriteString(w, `{"answers":{"route":{"type":"noul","noul":0.972}}}`)
+		}, 0, "parse failed:"},
+		{"no eligible upstream", "jev-x", func(w http.ResponseWriter, r *http.Request, _ []byte) {
+			_, _ = io.WriteString(w, `{}`)
+		}, 0, "no eligible upstream id=jev-x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newUpstreamServer(t, tc.respond)
+			snap := intentSnapshot(nil, "")
+			g, _, _ := intentGateway(t, srv.URL, snap)
+			g.intentTimeout = tc.timeout
+			binding := intent
+			binding.Upstream = tc.upstreamID
+			label, ok, reason := g.intentLabel(context.Background(), binding, "classify me")
+			if ok {
+				t.Fatalf("unexpectedly ok with label %q", label)
+			}
+			if !strings.Contains(reason, tc.wantSub) {
+				t.Fatalf("reason = %q, want it to contain %q", reason, tc.wantSub)
+			}
+		})
+	}
+	// 401 的 body 截断进 reason（256 rune 上限内原样）。
+	srv, _ := newUpstreamServer(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, strings.Repeat("x", 300))
+	})
+	snap := intentSnapshot(nil, "")
+	g, _, _ := intentGateway(t, srv.URL, snap)
+	_, _, reason := g.intentLabel(context.Background(), intent, "classify me")
+	if got := len([]rune(reason)); got > 300 {
+		t.Fatalf("reason length = %d, want the body truncated near 256", got)
+	}
+	if !strings.HasPrefix(reason, "upstream status=401 body=") {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 

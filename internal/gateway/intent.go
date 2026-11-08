@@ -34,19 +34,26 @@ type intentCacheEntry struct {
 
 // intentLabel asks the decision upstream to pick one of intent.Labels for the
 // probe text. ok=false covers every failure path: no upstream, empty probe,
-// timeout, non-2xx, unparsable answer.
-func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBinding, probe string) (string, bool) {
+// timeout, non-2xx, unparsable answer. The third return is the failure reason
+// (task-72) for the scheduling note channel — success returns "".
+func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBinding, probe string) (string, bool, string) {
 	probe = strings.TrimSpace(probe)
-	if g == nil || probe == "" || len(intent.Labels) == 0 {
-		return "", false
+	if g == nil || probe == "" {
+		return "", false, "empty probe"
+	}
+	if len(intent.Labels) == 0 {
+		return "", false, "no labels"
 	}
 	upstream, ok := g.decisionUpstreamByID(intent.Upstream)
 	if !ok || strings.TrimSpace(upstream.BaseURL) == "" {
-		return "", false
+		if id := strings.TrimSpace(intent.Upstream); id != "" {
+			return "", false, "no eligible upstream id=" + id
+		}
+		return "", false, "no decision upstream configured"
 	}
 	fingerprint := intentFingerprint(upstream, intent, probe)
 	if label, ok := g.intentCacheGet(fingerprint); ok {
-		return label, true
+		return label, true, ""
 	}
 
 	timeout := g.intentTimeout
@@ -71,6 +78,7 @@ func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBindin
 		criteria[trimmed] = trimmed
 	}
 	payload, err := json.Marshal(map[string]any{
+		"model": upstream.ModelID,
 		"state": map[string]any{"message": probe},
 		"questions": map[string]any{
 			"route": map[string]any{
@@ -82,12 +90,12 @@ func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBindin
 		},
 	})
 	if err != nil {
-		return "", false
+		return "", false, "payload marshal failed"
 	}
 	target := strings.TrimRight(upstream.BaseURL, "/") + "/" + upstream.Protocol
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, target, strings.NewReader(string(payload)))
 	if err != nil {
-		return "", false
+		return "", false, "request build failed"
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if upstream.APIKey != "" {
@@ -95,19 +103,23 @@ func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBindin
 	}
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return "", false
+		// 超时与传输错误分开报：前者是预算问题，后者是可达性问题。
+		if callCtx.Err() == context.DeadlineExceeded {
+			return "", false, "timeout"
+		}
+		return "", false, "upstream unreachable: " + err.Error()
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, intentResponseLimit))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", false
+		return "", false, fmt.Sprintf("upstream status=%d body=%s", resp.StatusCode, truncateUTF8(string(body), 256))
 	}
 	label, ok := parseIntentLabel(body, intent.Labels)
 	if !ok {
-		return "", false
+		return "", false, "parse failed: " + truncateUTF8(string(body), 256)
 	}
 	g.intentCachePut(fingerprint, label)
-	return label, true
+	return label, true, ""
 }
 
 // resolveIntentTarget turns a classification into the group id to schedule on.
@@ -125,9 +137,15 @@ func (g *Gateway) resolveIntentTarget(ctx context.Context, snap *scheduler.Snaps
 		}
 		return "", note
 	}
-	label, ok := g.intentLabel(ctx, *intent, probe)
+	label, ok, reason := g.intentLabel(ctx, *intent, probe)
 	if !ok {
-		return fallback("intent: classification failed, staying on the default group")
+		// 失败原因进调度 note（宿主日志现有通道，task-72）：区分 401/超时/
+		// 解析失败等，不再是一句笼统的 classification failed。
+		detail := ""
+		if reason != "" {
+			detail = " (" + reason + ")"
+		}
+		return fallback("intent: classification failed" + detail + ", staying on the default group")
 	}
 	target = strings.TrimSpace(intent.Route[label])
 	if target == "" {
