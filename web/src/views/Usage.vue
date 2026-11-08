@@ -633,6 +633,8 @@ interface HeatCell {
   errors: number
   level: 0 | 1 | 2 | 3 | 4
   title: string
+  /** 未来日期占位格（第18轮② 固定 26×7）：不计数、最淡显示。 */
+  future?: boolean
 }
 
 const heatmapWeeks = computed<HeatCell[][]>(() => {
@@ -640,19 +642,22 @@ const heatmapWeeks = computed<HeatCell[][]>(() => {
   const today = new Date()
   const todayZero = new Date(today.getFullYear(), today.getMonth(), today.getDate())
   const max = Math.max(1, ...heatmapRows.value.map((row) => row.requests ?? 0))
-  const total = HEATMAP_DAYS
-  // 起点：今天-181 天所在周的周日。
-  const start = new Date(todayZero)
-  start.setDate(start.getDate() - (total - 1))
-  start.setDate(start.getDate() - start.getDay())
+  // 固定 26×7（第18轮②）：终点 = 本周周日（行序周一..周日），起点 = 该周日
+  // 往前推 25 整周；未来日期补「未到」占位空格，保证 26 列 × 7 行 = 182 格
+  // 完整矩形不缺格。格子总数/活跃天数仍从 API rows 统计，占位格不计。
+  const end = new Date(todayZero)
+  end.setDate(end.getDate() + (6 - ((end.getDay() + 6) % 7)))
+  const start = new Date(end)
+  start.setDate(start.getDate() - (26 * 7 - 1))
   const cursor = new Date(start)
-  while (cursor <= todayZero) {
+  while (cursor <= end) {
     const day = dateISO(cursor)
-    const row = heatmapByDay.value.get(day)
+    const future = cursor > todayZero
+    const row = future ? undefined : heatmapByDay.value.get(day)
     const requests = row?.requests ?? 0
     const errors = row?.errors ?? 0
     let level: HeatCell['level'] = 0
-    if (requests > 0) {
+    if (!future && requests > 0) {
       // 四档色阶按对数分：1、>25%、>50%、>75% of max。
       level = requests >= max ? 4 : requests > max / 2 ? 3 : requests > max / 4 ? 2 : 1
     }
@@ -663,11 +668,12 @@ const heatmapWeeks = computed<HeatCell[][]>(() => {
       requests,
       errors,
       level,
-      title: errors > 0 ? `${stamp} · ${formatNumber(requests)} 次 / ${formatNumber(errors)} 错` : `${stamp} · ${formatNumber(requests)} 次`,
+      title: future ? `${stamp} · 未到` : errors > 0 ? `${stamp} · ${formatNumber(requests)} 次 / ${formatNumber(errors)} 错` : `${stamp} · ${formatNumber(requests)} 次`,
+      future,
     })
     cursor.setDate(cursor.getDate() + 1)
   }
-  // 切成周列。
+  // 固定 7 格切列（末列已由未来占位补满，不再产生残列）。
   const weeks: HeatCell[][] = []
   for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7))
   return weeks
@@ -1424,19 +1430,13 @@ onBeforeUnmount(() => {
           <strong>暂无按日汇总</strong>
           <span>产生请求后这里会出现按天着色的年历。</span>
         </div>
-        <div
-          v-else
-          class="heat-grid"
-          role="img"
-          aria-label="近 26 周每日请求次数热力图"
-          :style="{ gridTemplateColumns: `repeat(${heatmapWeeks.length}, minmax(0, 1fr))` }"
-        >
+        <div v-else class="heat-grid" role="img" aria-label="近 26 周每日请求次数热力图">
           <div v-for="(week, wi) in heatmapWeeks" :key="`week-${wi}`" class="heat-week">
             <span
               v-for="cell in week"
               :key="cell.day"
               class="heat-cell"
-              :class="`lv${cell.level}`"
+              :class="[`lv${cell.level}`, { 'heat-future': cell.future }]"
               :title="cell.title"
             ></span>
           </div>
@@ -2350,13 +2350,13 @@ onBeforeUnmount(() => {
   background: var(--chart-2);
 }
 
-/* D-32① 近 26 周日历热力图：纯 CSS 网格，每列一周、周日开头。
-   第17轮①：列数 = heatmapWeeks.length（26 整周 + 当前不完整周 = 26~27 列，
-   随星期几浮动），逐列 minmax(0,1fr) 随容器宽度自适应铺满整行（不再固定
-   18px、不再横向滚动）；列数经内联 style 数据驱动（style-debt 的
-   PROPS 清单不含几何属性）。格子用 aspect-ratio 保持近方形。 */
+/* D-32① 近 26 周日历热力图：纯 CSS 网格，每列一周、行序周一..周日。
+   第18轮②：固定 26 列 × 7 行 = 182 格完整矩形——列数不再随 heatmapWeeks
+   浮动（当前周的未来日期由 heatmapWeeks 补「未到」占位格），逐列
+   minmax(0,1fr) 随容器宽度自适应铺满整行；格子 aspect-ratio 保持近方形。 */
 .heat-grid {
   display: grid;
+  grid-template-columns: repeat(26, minmax(0, 1fr));
   gap: 4px;
 }
 
@@ -2365,6 +2365,11 @@ onBeforeUnmount(() => {
   grid-template-rows: repeat(7, auto);
   gap: 4px;
   min-width: 0;
+}
+
+.heat-cell.heat-future {
+  background: transparent;
+  border: 1px dashed var(--border);
 }
 
 .heat-cell {

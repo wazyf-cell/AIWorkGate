@@ -71,6 +71,79 @@ async function saveAlias() {
   }
 }
 
+// —— task-64：内置默认表直接可编辑 ——
+// 后端合并语义（tool_alias 合并：自定义按 from 覆盖内置别名）已经支持覆盖，
+// 所以「编辑内置某条」= 生成一条同 from 的自定义覆盖规则，零后端改动。
+// 内置表始终全量生效（升级程序补新条目不丢），用户的覆盖行按 from 生效且
+// 升级不丢；to 填空保存 = 停用该条改写（原名透传，与自定义区语义一致）。
+
+/** 某内置工具名的自定义覆盖行（无 = 未覆盖，内置别名生效）。 */
+function overrideOf(from: string) {
+  return aliasRules.value.find((row) => row.from.trim() === from)
+}
+
+/** 内置行的展示值：有覆盖行显示自定义值（空串=已停用），否则内置别名。 */
+function builtinDisplayTo(rule: { from: string; to: string }): string {
+  const override = overrideOf(rule.from)
+  if (!override) return rule.to
+  return override.to.trim() === '' ? '（已停用）' : override.to
+}
+
+/** 点内置行「编辑」：生成一条同 from 的覆盖行（to 预填内置别名）；已有覆盖行
+ * 则不重复生成（直接编辑那份）。 */
+function editBuiltin(rule: { from: string; to: string }) {
+  if (!overrideOf(rule.from)) aliasRules.value.push(newAliasRow(rule.from, rule.to))
+}
+
+/** 内置行「恢复默认」= 删除同 from 的自定义覆盖行（保存后内置别名重新生效）。 */
+function restoreBuiltin(rule: { from: string; to: string }) {
+  const index = aliasRules.value.findIndex((row) => row.from.trim() === rule.from)
+  if (index >= 0) aliasRules.value.splice(index, 1)
+}
+
+const expandAllConfirm = ref(false)
+let expandAllTimer: number | undefined
+
+function clearExpandAllConfirm() {
+  if (expandAllTimer !== undefined) {
+    window.clearTimeout(expandAllTimer)
+    expandAllTimer = undefined
+  }
+  expandAllConfirm.value = false
+}
+
+/** 「全部展开」将新增的覆盖条数（未覆盖的内置行数）。 */
+function expandAllAddedCount(): number {
+  return (aliasStatus.value?.default_rules ?? []).filter((rule) => !overrideOf(rule.from)).length
+}
+
+/** 一键「全部展开为可编辑副本」：内置全部条目加为自定义覆盖行（已覆盖的行
+ * 保留用户当前编辑值，不重置）。两段式确认：一次新增 N 条自定义条目。 */
+function expandAllBuiltin() {
+  const defaults = aliasStatus.value?.default_rules ?? []
+  if (defaults.length === 0) return
+  if (!expandAllConfirm.value) {
+    expandAllConfirm.value = true
+    if (expandAllTimer !== undefined) window.clearTimeout(expandAllTimer)
+    expandAllTimer = window.setTimeout(() => {
+      expandAllConfirm.value = false
+      expandAllTimer = undefined
+    }, 4000)
+    return
+  }
+  clearExpandAllConfirm()
+  let added = 0
+  for (const rule of defaults) {
+    if (!overrideOf(rule.from)) {
+      aliasRules.value.push(newAliasRow(rule.from, rule.to))
+      added += 1
+    }
+  }
+  message.value = `已展开内置默认表为可编辑副本：新增 ${added} 条覆盖规则，改完点「保存并生效」。`
+}
+
+onUnmounted(clearExpandAllConfirm)
+
 let rowSeq = 0
 
 function newRuleRow(from = '', to = ''): RuleRow {
@@ -377,8 +450,9 @@ async function reloadPlugins() {
               <span>启用工具别名改写</span>
             </label>
             <span class="help">
-              内置默认表（{{ aliasStatus?.defaults ?? 0 }} 条）全量生效；下方自定义规则按工具名覆盖内置别名，
-              别名填空即停用该工具的改写。改写要求请求/响应双向一致，因此不支持多候选。
+              内置默认表（{{ aliasStatus?.defaults ?? 0 }} 条）全量生效；在下方内置表里点「编辑」即生成一条
+              同名覆盖规则（升级程序补新条目不丢你的改动），别名填空即停用该工具的改写。
+              改写要求请求/响应双向一致，因此不支持多候选。
             </span>
           </div>
 
@@ -412,18 +486,54 @@ async function reloadPlugins() {
           </div>
 
           <div class="field">
-            <button type="button" class="btn sm ghost" @click="showDefaults = !showDefaults">
-              {{ showDefaults ? '收起内置默认表' : `展开内置默认表（${aliasStatus?.defaults ?? 0} 条，只读）` }}
-            </button>
+            <div class="row between">
+              <button type="button" class="btn sm ghost" @click="showDefaults = !showDefaults">
+                {{ showDefaults ? '收起内置默认表' : `展开内置默认表（${aliasStatus?.defaults ?? 0} 条，可编辑）` }}
+              </button>
+              <template v-if="showDefaults && (aliasStatus?.default_rules?.length ?? 0) > 0">
+                <button
+                  v-if="!expandAllConfirm"
+                  type="button"
+                  class="btn sm"
+                  @click="expandAllBuiltin"
+                >
+                  全部展开为可编辑副本
+                </button>
+                <button v-else type="button" class="btn sm danger" @click="expandAllBuiltin">
+                  确认：新增 {{ expandAllAddedCount() }} 条覆盖规则
+                </button>
+              </template>
+            </div>
             <div v-if="showDefaults" class="table-wrap">
               <table class="table">
                 <thead>
-                  <tr><th>真实工具名</th><th>别名</th></tr>
+                  <tr><th>真实工具名</th><th>生效别名</th><th style="text-align: right">操作</th></tr>
                 </thead>
                 <tbody>
                   <tr v-for="rule in aliasStatus?.default_rules ?? []" :key="rule.from">
-                    <td class="mono small">{{ rule.from }}</td>
-                    <td class="mono small">{{ rule.to }}</td>
+                    <td class="mono small">
+                      {{ rule.from }}
+                      <span v-if="overrideOf(rule.from)" class="badge plain accent" title="该条已被同名自定义覆盖规则改写；升级程序不会丢这条改动">已覆盖</span>
+                    </td>
+                    <td class="mono small" :class="{ muted: overrideOf(rule.from)?.to.trim() === '' }">
+                      {{ builtinDisplayTo(rule) }}
+                    </td>
+                    <td>
+                      <div class="btn-row" style="justify-content: flex-end">
+                        <button type="button" class="btn sm" @click="editBuiltin(rule)">
+                          {{ overrideOf(rule.from) ? '编辑覆盖' : '编辑' }}
+                        </button>
+                        <button
+                          v-if="overrideOf(rule.from)"
+                          type="button"
+                          class="btn sm ghost"
+                          title="删除该覆盖规则，保存后恢复内置别名"
+                          @click="restoreBuiltin(rule)"
+                        >
+                          恢复默认
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 </tbody>
               </table>
