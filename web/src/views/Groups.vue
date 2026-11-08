@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   api,
   errorMessage,
+  type GatewayTraceEvent,
   type RoutingAutoGroup,
   type RoutingGroup,
   type RoutingGroupView,
@@ -12,6 +13,7 @@ import {
   type RoutingWhen,
 } from '../api'
 import RouteStage from '../components/RouteStage.vue'
+import { formatTimestamp } from '../format'
 import '../route-stage.css'
 
 interface RuleDraft {
@@ -67,6 +69,31 @@ const stageNotice = ref('')
 function onStageUnavailable(message: string) {
   stageNotice.value = message
 }
+
+/* ── task-56 修复 2：观察流行详情（消费 RouteStage 的 select 事件）── */
+
+const stageDetail = ref<GatewayTraceEvent | null>(null)
+
+function closeStageDetail() {
+  stageDetail.value = null
+}
+
+function formatTraceTs(ms: number): string {
+  return formatTimestamp(ms)
+}
+
+function onStageDetailKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeStageDetail()
+}
+
+watch(stageDetail, (open) => {
+  if (open) window.addEventListener('keydown', onStageDetailKeydown)
+  else window.removeEventListener('keydown', onStageDetailKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onStageDetailKeydown)
+})
 const editing = ref(-1)
 const baseline = ref('')
 
@@ -452,6 +479,7 @@ onMounted(load)
     <RouteStage
       :groups="savedGroups"
       :auto-groups="autoGroups"
+      @select="stageDetail = $event"
       @unavailable="onStageUnavailable"
     />
 
@@ -707,5 +735,34 @@ onMounted(load)
         </div>
       </div>
     </section>
+
+    <!-- task-56 修复 2：观察流事件详情（ESC / 点背景 / 关闭按钮收起）。 -->
+    <div v-if="stageDetail" class="modal-backdrop" @click="closeStageDetail">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="事件详情" @click.stop>
+        <div class="drawer-head">
+          <h2>事件详情</h2>
+          <button type="button" class="btn sm ghost" @click="closeStageDetail">关闭</button>
+        </div>
+        <div class="drawer-body">
+          <div class="form-grid">
+            <div class="field"><span class="field-label">seq</span><span class="mono">{{ stageDetail.seq }}</span></div>
+            <div class="field"><span class="field-label">时间</span><span>{{ formatTraceTs(stageDetail.ts) }}</span></div>
+            <div class="field"><span class="field-label">req_id</span><span class="mono">{{ stageDetail.req_id }}</span></div>
+            <div class="field"><span class="field-label">agent</span><span class="mono">{{ stageDetail.agent || '—' }}</span></div>
+            <div class="field"><span class="field-label">逻辑模型</span><span class="mono">{{ stageDetail.logical_model || '—' }}</span></div>
+            <div class="field"><span class="field-label">group（现语义=逻辑模型）</span><span class="mono">{{ stageDetail.group || '—' }}</span></div>
+            <div class="field"><span class="field-label">成员</span><span class="mono">{{ stageDetail.member || '—' }}</span></div>
+            <div class="field"><span class="field-label">状态</span><span>{{ stageDetail.status === 0 ? '0（上游不可达）' : `HTTP ${stageDetail.status}` }}</span></div>
+            <div class="field"><span class="field-label">耗时</span><span>{{ stageDetail.latency_ms }} ms</span></div>
+            <div class="field"><span class="field-label">流式</span><span>{{ stageDetail.stream ? '是' : '否' }}</span></div>
+            <div class="field"><span class="field-label">失败归因</span><span>{{ stageDetail.err_kind || '—（成功）' }}</span></div>
+          </div>
+          <details>
+            <summary class="small muted">原始 JSON</summary>
+            <pre class="mono small">{{ JSON.stringify(stageDetail, null, 2) }}</pre>
+          </details>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

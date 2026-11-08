@@ -78,12 +78,26 @@ const live = ref(false)
 const statusNote = ref('')
 
 const STAGE_EVENT_CAP = 200
+const STAGE_MEMBER_CAP = 24
 const seenSeqs = new Set<number>()
+
+/** 活跃 member 的 LRU（最新在前，task-56 修复 1）：保证实时泳道不被
+ * props 历史成员挤掉——laneIds 先排活跃 member，再排已知成员。 */
+const activeMembers = ref<string[]>([])
+
+function touchMember(id: string) {
+  const key = id.trim()
+  if (!key) return
+  const rest = activeMembers.value.filter((m) => m !== key)
+  rest.unshift(key)
+  activeMembers.value = rest.slice(0, STAGE_MEMBER_CAP)
+}
 
 function ingest(list: GatewayTraceEvent[]) {
   for (const ev of list) {
     if (seenSeqs.has(ev.seq)) continue // 环形重放兜底：按 seq 去重
     seenSeqs.add(ev.seq)
+    if (ev.member) touchMember(ev.member)
     events.value.push(ev)
   }
   events.value.sort((a, b) => a.seq - b.seq)
@@ -151,7 +165,9 @@ const agentIds = computed<string[]>(() => {
   return list.length > 0 ? list.slice(0, 8) : [AGENT_FALLBACK]
 })
 
-/** 泳道：先 props 标定的已知成员，再补事件里新出现的；超上限截断。 */
+/** 泳道：活跃 member 优先（修复 1），再排 props 已知成员；超上限截断。
+ * 未知 member（不在已知集合）动态追加，旧的不活跃成员按 LRU 自然淘汰
+ * （activeMembers 只保留最近 STAGE_MEMBER_CAP 个，且排在前）。 */
 const laneIds = computed<{ id: string; label: string; fresh: boolean }[]>(() => {
   const out: { id: string; label: string; fresh: boolean }[] = []
   const seen = new Set<string>()
@@ -161,14 +177,12 @@ const laneIds = computed<{ id: string; label: string; fresh: boolean }[]>(() => 
     seen.add(key)
     out.push({ id: key, label, fresh })
   }
+  for (const id of activeMembers.value) push(id, id, true)
   for (const g of props.groups) {
     for (const m of g.members ?? []) push(m, m, false)
   }
   for (const g of props.autoGroups) {
     for (const m of g.members ?? []) push(m, m, false)
-  }
-  for (const ev of events.value) {
-    if (ev.member) push(ev.member, ev.member, true)
   }
   return out.slice(0, props.maxLanes)
 })
@@ -414,11 +428,55 @@ function spawnFlight(ev: GatewayTraceEvent) {
   ensureFlightLoop()
 }
 
-/* ── 订阅循环控制：页面可见才轮询；世代令牌丢弃过期响应 ── */
+/* ── 订阅循环控制：页面可见才轮询；AbortController 真 abort（task-56 修复 4，
+ * 世代令牌保留作双保险）；501 后低频自动恢复（修复 3）。── */
 
 let generation = 0
 let backoffMs = 1000
 const BACKOFF_MAX_MS = 15000
+let pollAbort: AbortController | null = null
+
+/** 501 恢复重试（修复 3）：30s 起步、2min 封顶；页面隐藏时暂停计时。 */
+const RETRY_BASE_MS = 30_000
+const RETRY_MAX_MS = 120_000
+let retryDelayMs = RETRY_BASE_MS
+let retryTimer = 0
+
+function clearRetryTimer() {
+  if (retryTimer) {
+    clearTimeout(retryTimer)
+    retryTimer = 0
+  }
+}
+
+function scheduleRetry() {
+  if (retryTimer || !disabled.value || document.hidden) return
+  retryTimer = window.setTimeout(async () => {
+    retryTimer = 0
+    if (!disabled.value || document.hidden) return
+    try {
+      // 探测：非 501 即后端已接线 → 全量重放并恢复循环。
+      await api.gatewayTrace.recent(1)
+    } catch (err) {
+      // 探测失败（501/网络/其它）一律退避后再试，直到恢复或组件卸载。
+      retryDelayMs = Math.min(retryDelayMs * 2, RETRY_MAX_MS)
+      scheduleRetry()
+      void err
+      return
+    }
+    disabled.value = false
+    statusNote.value = 'trace 接口已恢复，重新同步事件。'
+    emit('status', statusNote.value)
+    retryDelayMs = RETRY_BASE_MS
+    events.value = []
+    seenSeqs.clear()
+    cursor.value = 0
+    starting.value = true
+    await initialLoad()
+    starting.value = false
+    startLoop()
+  }, retryDelayMs)
+}
 
 function applyPage(page: GatewayTracePage, animate: boolean) {
   // 硬约束 2：游标用响应 last_seq；回退 ⇒ 网关重启，全量重放（不播动画）。
@@ -450,13 +508,15 @@ async function initialLoad() {
 }
 
 function handleTraceError(err: unknown) {
+  if ((err as Error).name === 'AbortError') return // 主动 abort，不是故障
   const status = (err as { status?: number }).status ?? 0
   if (status === 501) {
-    // 未接线：这是「功能未就绪」，不能吞成空页——停循环并让父级呈现。
+    // 未接线：这是「功能未就绪」，不能吞成空页——停循环、通知父级并排低频恢复。
     disabled.value = true
     live.value = false
     generation += 1
     emit('unavailable', '网关 trace 接口未就绪（501）：需要重启 AIWorkGate 让新后端生效。')
+    scheduleRetry()
     return
   }
   emit('status', `trace 连接失败（HTTP ${status}），${Math.round(backoffMs / 1000)}s 后重试。`)
@@ -465,12 +525,15 @@ function handleTraceError(err: unknown) {
 async function pollLoop(myGeneration: number) {
   while (live.value && generation === myGeneration && !disabled.value) {
     try {
-      const page = await api.gatewayTrace.poll(cursor.value, true)
+      pollAbort = new AbortController()
+      const page = await api.gatewayTrace.poll(cursor.value, true, pollAbort.signal)
+      pollAbort = null
       if (generation !== myGeneration) return // 停止/重启期间返回的过期响应，丢弃
       applyPage(page, true)
       backoffMs = 1000
     } catch (err) {
-      if (generation !== myGeneration) return
+      pollAbort = null
+      if ((err as Error).name === 'AbortError' || generation !== myGeneration) return
       handleTraceError(err)
       if (disabled.value) return
       // 退避重试：挂起中的 poll 出错后等一会儿再开下一轮。
@@ -487,15 +550,22 @@ function startLoop() {
 }
 
 function stopLoop() {
-  // 不 abort 在途 fetch（api 层无 signal 透传）：世代令牌使其结果被丢弃，
-  // 后端长轮询 25s 自行超时清理（硬约束 5：abort 安全，不必高频 abort）。
   live.value = false
   generation += 1
+  // 真 abort（修复 4）：停止/页面隐藏时中断在途 poll，后端不必白挂 25s。
+  // 世代令牌仍保留：abort 与令牌双保险，过期响应一律丢弃。
+  pollAbort?.abort()
+  pollAbort = null
 }
 
 function onVisibility() {
-  if (document.hidden) stopLoop()
-  else startLoop()
+  if (document.hidden) {
+    stopLoop()
+    clearRetryTimer() // 隐藏时暂停 501 恢复计时（修复 3）
+  } else {
+    startLoop()
+    scheduleRetry() // 回到前台：若处于未接线态，恢复重试计时
+  }
 }
 
 onMounted(async () => {
@@ -513,6 +583,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibility)
   stopLoop()
+  clearRetryTimer()
   resizeObserver?.disconnect()
   resizeObserver = null
   if (flightRaf) cancelAnimationFrame(flightRaf)

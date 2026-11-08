@@ -3075,18 +3075,20 @@ export const api = {
   /* ------------------------------------------------------------------ */
   gatewayTrace: {
     /** 首屏回放：GET /gateway/trace/recent?limit=N。limit 0/缺省 = 全部保留历史（后端环形上限 500）。 */
-    recent(limit?: number): Promise<GatewayTracePage> {
+    recent(limit?: number, signal?: AbortSignal): Promise<GatewayTracePage> {
       const suffix = limit === undefined ? '' : `?limit=${encodeURIComponent(String(limit))}`
-      return request<GatewayTracePage>(`/gateway/trace/recent${suffix}`)
+      return request<GatewayTracePage>(`/gateway/trace/recent${suffix}`, signal ? { signal } : {})
     },
     /**
      * 增量长轮询：GET /gateway/trace?after=<seq>&wait=1|0。
      * wait=1 时后端挂起至多 25s（封顶 30s）直到有新事件或超时——超时返回
      * events=[] 且 last_seq 为当前值，不是错误。
+     * signal 透传给 request 的 fetch init（RequestInit 原生支持）：
+     * 组件在停止/页面隐藏时 abort 在途 poll，避免后端白挂 25s。
      */
-    poll(after: number, wait = false): Promise<GatewayTracePage> {
+    poll(after: number, wait = false, signal?: AbortSignal): Promise<GatewayTracePage> {
       const query = new URLSearchParams({ after: String(after), wait: wait ? '1' : '0' })
-      return request<GatewayTracePage>(`/gateway/trace?${query.toString()}`)
+      return request<GatewayTracePage>(`/gateway/trace?${query.toString()}`, signal ? { signal } : {})
     },
   },
 }
