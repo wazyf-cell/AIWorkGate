@@ -152,3 +152,71 @@ func TestCtxSamplingHeuristicsGateFeedsComposition(t *testing.T) {
 		}
 	}
 }
+
+// task-74：代码围栏判据——围栏与前 1~2 行内的路径串强关联时整块归 files。
+func TestCtxHeuristicsAssociatedFence(t *testing.T) {
+	// raw string 装不下 ```：围栏段用拼接（\\n 是 JSON 的换行转义）。
+	fence := "```go\\npackage main\\n\\nfunc main() {}\\n" + "```"
+	body := `{"model":"m","messages":[{"role":"user","content":"please fix F:\\Code\\app\\src\\server.go:\n` +
+		fence + `\ndone"}]}`
+	comp, err := AnalyzeCtxCompositionHeuristics([]byte(body))
+	if err != nil {
+		t.Fatalf("heuristics: %v", err)
+	}
+	if ctxBucketEst(t, comp, "files") <= 0 {
+		t.Fatal("files = 0, want the associated fence in the files bucket")
+	}
+	found := false
+	for _, item := range comp.Items {
+		if item.Bucket == "files" && strings.Contains(item.Label, "server.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no fence item labelled with the path: %+v", comp.Items)
+	}
+	// 闭栏后首行的路径也算强关联。
+	fenceJSON := "```json\\n{\\\"a\\\":1}\\n" + "```"
+	bodyAfter := `{"model":"m","messages":[{"role":"user","content":"` + fenceJSON + `\nsaved to /etc/app/config.json"}]}`
+	comp2, err := AnalyzeCtxCompositionHeuristics([]byte(bodyAfter))
+	if err != nil {
+		t.Fatalf("heuristics after: %v", err)
+	}
+	if ctxBucketEst(t, comp2, "files") <= 0 {
+		t.Fatal("files = 0, want the trailing-path association")
+	}
+}
+
+// task-74：无关联的围栏不误归（宽泛猜测被强关联要求挡住）。
+func TestCtxHeuristicsUnassociatedFenceStays(t *testing.T) {
+	fence := "```python\\nprint(1)\\n" + "```"
+	body := `{"model":"m","messages":[{"role":"user","content":"random chat:\n` + fence + `\nthat is all"}]}`
+	comp, err := AnalyzeCtxCompositionHeuristics([]byte(body))
+	if err != nil {
+		t.Fatalf("heuristics: %v", err)
+	}
+	if ctxBucketEst(t, comp, "files") != 0 {
+		t.Fatal("files > 0, want an unassociated fence to stay in conversation")
+	}
+}
+
+// task-74：<file path="..."> 约定标签整块归 files，path 记入 item 名称。
+func TestCtxHeuristicsFileTag(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"<file path=\"src/main.go\">package main</file> review it"}]}`
+	comp, err := AnalyzeCtxCompositionHeuristics([]byte(body))
+	if err != nil {
+		t.Fatalf("heuristics: %v", err)
+	}
+	if ctxBucketEst(t, comp, "files") <= 0 {
+		t.Fatal("files = 0, want the file tag block in the files bucket")
+	}
+	found := false
+	for _, item := range comp.Items {
+		if item.Bucket == "files" && strings.Contains(item.Label, "src/main.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no item labelled with the path attribute: %+v", comp.Items)
+	}
+}

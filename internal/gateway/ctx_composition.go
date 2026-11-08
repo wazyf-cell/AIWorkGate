@@ -163,8 +163,9 @@ func addCtxMessages(buckets map[string]float64, items *[]CtxItem, raw any, heuri
 }
 
 // addCtxText classifies one plain-text turn: with heuristics on, memory-marker
-// blocks go to the memory bucket and path-shaped substrings to files; the rest
-// stays in conversation. Without heuristics this is the verbatim phase-1 path.
+// blocks go to the memory bucket and the file segments (task-74 fences, file
+// tags, bare paths) go to files; the rest stays in conversation. Without
+// heuristics this is the verbatim phase-1 path.
 func addCtxText(buckets map[string]float64, items *[]CtxItem, text string, heuristics bool) {
 	tokens := estimateTextTokens(text)
 	if !heuristics {
@@ -177,15 +178,14 @@ func addCtxText(buckets map[string]float64, items *[]CtxItem, text string, heuri
 		*items = append(*items, CtxItem{Bucket: "memory", Label: ctxLabel("memory-block", text), Tokens: int(math.Ceil(tokens))})
 		return
 	}
-	fileTokens, bestPath := ctxFileTokens(text)
-	conversation := tokens - fileTokens
-	if conversation > 0 {
+	segments, rest := ctxFileSegments(text)
+	for _, segment := range segments {
+		buckets["files"] += segment.tokens
+		*items = append(*items, CtxItem{Bucket: "files", Label: ctxLabel("file", segment.label), Tokens: int(math.Ceil(segment.tokens))})
+	}
+	if conversation := estimateTextTokens(rest); conversation > 0 {
 		buckets["conversation"] += conversation
 		*items = append(*items, CtxItem{Bucket: "conversation", Label: ctxLabel("text", text), Tokens: int(math.Ceil(conversation))})
-	}
-	if fileTokens > 0 {
-		buckets["files"] += fileTokens
-		*items = append(*items, CtxItem{Bucket: "files", Label: ctxLabel("file", bestPath), Tokens: int(math.Ceil(fileTokens))})
 	}
 }
 
@@ -229,18 +229,23 @@ func addCtxMessage(buckets map[string]float64, items *[]CtxItem, index int, mess
 		}
 		return
 	}
-	// 二期启发式：从消息文本里切出文件路径串与记忆标记块；无标记部分留在
-	// conversation，三桶之和恒等于一期 conversation+memory 的口径（无 token 凭空增减）。
-	fileTokens, memoryTokens, bestPath := ctxSplitTextHeuristics(message)
+	// 二期启发式：从消息文本里切出文件段（task-74：路径串/关联围栏/file 标签）
+	// 与记忆标记块；无标记部分留在 conversation，三桶之和恒等于一期
+	// conversation+memory 的口径（无 token 凭空增减）。
+	files, memoryTokens, fileItems := ctxSplitTextHeuristics(message)
+	fileTokens := 0.0
+	for _, item := range fileItems {
+		fileTokens += float64(item.Tokens)
+		*items = append(*items, item)
+	}
+	if fileTokens > 0 {
+		buckets["files"] += fileTokens
+	}
 	if memoryTokens > 0 {
 		buckets["memory"] += memoryTokens
 		*items = append(*items, CtxItem{Bucket: "memory", Label: ctxLabel("memory-block#"+itoa(index), message), Tokens: int(math.Ceil(memoryTokens))})
 	}
-	if fileTokens > 0 {
-		buckets["files"] += fileTokens
-		*items = append(*items, CtxItem{Bucket: "files", Label: ctxLabel("file#"+itoa(index), bestPath), Tokens: int(math.Ceil(fileTokens))})
-	}
-	if conversation := textTokens - fileTokens - memoryTokens + calls; conversation > 0 {
+	if conversation := textTokens - files - memoryTokens + calls; conversation > 0 {
 		buckets["conversation"] += conversation
 		*items = append(*items, CtxItem{Bucket: "conversation", Label: ctxLabel(role+"#"+itoa(index), message), Tokens: int(math.Ceil(conversation))})
 	}

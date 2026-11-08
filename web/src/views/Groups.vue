@@ -8,6 +8,7 @@ import {
   type RoutingGroup,
   type RoutingGroupView,
   type RoutingGroupsResponse,
+  type RoutingIntent,
   type RoutingRule,
   type RoutingTemplate,
   type RoutingWhen,
@@ -34,6 +35,8 @@ interface RuleDraft {
 interface RouteDraft {
   label: string
   target: string
+  /** task-73：intent 选项描述（可空；留空回落 label 名）。 */
+  description: string
 }
 
 interface GroupDraft {
@@ -169,7 +172,11 @@ function toDraft(group: RoutingGroupView): GroupDraft {
     intentUpstream: intent?.upstream ?? '',
     intentProbeChars: numberText(intent?.probe_chars) || '2000',
     intentDefault: intent?.default ?? '',
-    routes: Object.entries(intent?.route ?? {}).map(([label, target]) => ({ label, target })),
+    routes: Object.entries(intent?.route ?? {}).map(([label, target]) => ({
+      label,
+      target,
+      description: (intent as RoutingIntent & { descriptions?: Record<string, string> } | undefined)?.descriptions?.[label] ?? '',
+    })),
   }
 }
 
@@ -260,21 +267,31 @@ function buildGroups(): RoutingGroup[] {
         throw new Error(`路由组「${id}」的意图标签和目标都要填写`)
       }
       const route: Record<string, string> = {}
+      const descriptions: Record<string, string> = {}
       for (const item of routes) {
         if (!ids.has(item.target) && item.target !== id && !drafts.value.some((d) => d.id.trim() === item.target)) {
           throw new Error(`意图目标「${item.target}」不是已定义的路由组`)
         }
         route[item.label] = item.target
+        // task-73：描述取对应草稿行；留空不进 map（后端校验值非空），语义=回落标签名。
+        const text = (draft.routes.find((r) => r.label.trim() === item.label)?.description ?? '').trim()
+        if (text) descriptions[item.label] = text
       }
-      group.intent = {
+      const intent: RoutingIntent = {
         enabled: true,
         labels: routes.map((route) => route.label),
         route,
       }
-      if (draft.intentUpstream) group.intent.upstream = draft.intentUpstream
-      if (draft.intentDefault) group.intent.default = draft.intentDefault
+      if (Object.keys(descriptions).length > 0) {
+        // RoutingIntent 类型暂无 descriptions 字段（api.ts 不在本卡作用域）——
+        // 交集类型旁路，运行时 JSON 照发；后端 task-72 已校验键⊆labels、值非空。
+        ;(intent as RoutingIntent & { descriptions?: Record<string, string> }).descriptions = descriptions
+      }
+      group.intent = intent
+      if (draft.intentUpstream) intent.upstream = draft.intentUpstream
+      if (draft.intentDefault) intent.default = draft.intentDefault
       const probe = optionalNumber(draft.intentProbeChars, '探针字符数')
-      if (probe !== undefined) group.intent.probe_chars = probe
+      if (probe !== undefined) intent.probe_chars = probe
     }
     return group
   })
@@ -347,7 +364,7 @@ function addRule() {
 
 function addRoute() {
   const draft = drafts.value[editing.value]
-  if (draft) draft.routes.push({ label: '', target: '' })
+  if (draft) draft.routes.push({ label: '', target: '', description: '' })
 }
 
 /** 唯一化组 id：模板/自动组名被占用时追加 -2、-3…，避免覆盖已有组。 */
@@ -430,6 +447,12 @@ function membersLabel(id: string): string {
   if (members.length === 0) return '未匹配任何模型'
   const shown = members.slice(0, 3).join('、')
   return members.length > 3 ? `${shown} 等 ${members.length} 个` : shown
+}
+
+/** task-73：custom 连接的成员——后端 universe 以 custom:<conn>/<裸名> 进组、
+ * members 直接给裸名（无 "/" 的裸 id 或带 custom: 前缀都算）。 */
+function customMembersOf(id: string): string[] {
+  return membersOf(id).filter((m) => m.startsWith('custom:') || !m.includes('/'))
 }
 
 /** task-44：自动组的成员摘要（成员列表直接给定，不走已保存组查找）。 */
@@ -552,6 +575,11 @@ onMounted(load)
               {{ lineCount(draft.matchText) }} 条模式 · {{ draft.rules.length }} 条规则<template v-if="draft.intentEnabled"> · 意图规则</template>
             </span>
             <span class="small muted mono">{{ membersLabel(draft.id) }}</span>
+            <span
+              v-if="customMembersOf(draft.id).length"
+              class="badge plain muted"
+              :title="`自定义连接成员：${customMembersOf(draft.id).join('、')}`"
+            >自定义连接 ×{{ customMembersOf(draft.id).length }}</span>
           </button>
         </TransitionGroup>
       </section>
@@ -685,17 +713,26 @@ onMounted(load)
                   <button type="button" class="btn sm" @click="addRoute">添加标签</button>
                 </div>
                 <div v-if="drafts[editing].routes.length === 0" class="small muted">还没有标签路由。</div>
-                <div v-for="(route, routeIndex) in drafts[editing].routes" :key="routeIndex" class="group-route-row">
-                  <input v-model="route.label" class="input mono" type="text" placeholder="标签，如 hard" />
-                  <select v-model="route.target" class="select">
-                    <option value="">选择目标组</option>
-                    <option v-for="draft in drafts" :key="draft.id" :value="draft.id.trim()">{{ draft.id || '未命名' }}</option>
-                  </select>
-                  <button type="button" class="btn sm ghost" @click="drafts[editing].routes.splice(routeIndex, 1)">删除</button>
+                <div v-for="(route, routeIndex) in drafts[editing].routes" :key="routeIndex" class="stack group-route-block">
+                  <div class="group-route-row">
+                    <input v-model="route.label" class="input mono" type="text" placeholder="标签，如 hard" />
+                    <select v-model="route.target" class="select">
+                      <option value="">选择目标组</option>
+                      <option v-for="draft in drafts" :key="draft.id" :value="draft.id.trim()">{{ draft.id || '未命名' }}</option>
+                    </select>
+                    <button type="button" class="btn sm ghost" @click="drafts[editing].routes.splice(routeIndex, 1)">删除</button>
+                  </div>
+                  <input
+                    v-model="route.description"
+                    class="input"
+                    type="text"
+                    placeholder="选项描述（判据提示词补充；留空回落标签名）"
+                    :aria-label="`标签 ${route.label || routeIndex + 1} 的描述`"
+                  />
                 </div>
               </div>
                   <span class="help">
-                    判据请求最多等 3 秒；超时、上游报错或答案无法解析时走兜底组；同一段用户输入的判定结果缓存 10 分钟。
+                    判据请求最多等 3 秒；超时、上游报错或答案无法解析时走兜底组；同一段用户输入的判定结果缓存 10 分钟。每个标签可填一段可选描述，写进判据提示词帮判据模型理解该选项；留空回落标签名。
                   </span>
                 </div>
               </div>
@@ -709,7 +746,14 @@ onMounted(load)
 
           <div class="row between">
             <button type="button" class="btn sm danger" @click="removeDraft(editing)">删除该组</button>
-            <span class="small muted">成员预览：{{ membersLabel(drafts[editing]?.id ?? '') }}</span>
+            <span class="row">
+              <span
+                v-if="customMembersOf(drafts[editing]?.id ?? '').length"
+                class="badge plain muted"
+                :title="`自定义连接成员：${customMembersOf(drafts[editing]?.id ?? '').join('、')}`"
+              >自定义连接 ×{{ customMembersOf(drafts[editing]?.id ?? '').length }}</span>
+              <span class="small muted">成员预览：{{ membersLabel(drafts[editing]?.id ?? '') }}</span>
+            </span>
           </div>
           </div>
         </Transition>
