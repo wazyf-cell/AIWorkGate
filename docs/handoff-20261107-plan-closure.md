@@ -1,5 +1,12 @@
 # AIWorkGate 交接（2026-11-07 计划清零轮 · 给下一个 agent 的唯一入口）
 
+> **2026-11-08 增量（以此为准，更新本文部分结论）**：
+> ① **P6/P11 真实验收已完成**（真实 JEV key，TokenRhythm）：三题型 + 意图分流端到端全 PASS，过程中修复 3 个协议 bug（questions 对象形状 / intent 缺 model 字段 / parseIntentLabel 对象 answers），详见 `docs/变更日志/变更日志-2026-11-08.md` 第 20 轮与 `docs/p6/00-SystemOne路由.md` §3.1——§3.1 的「真实 JEV key 最小请求未跑」与 P11 §「未实现/已知限制 1」**均已过时**。
+> ② §3.1 的「api_logs.attempt 写入侧」实际已随第 8 轮 D-32⑥ 接线（`gateway.go:1866 Attempt: rec.attempt` + `retry_test.go:307`），该条**作废**。
+> ③ **预览实例隔离目录只能用 `APPDATA=<repo>\runtime\preview-appdata` 前缀启动**（§6 命令是对的）——**不存在 `AIWORKGATE_DATA_DIR` 这个 env**，设了无效且会静默落到真实用户数据目录（2026-11-08 实测踩坑）。
+> ④ 第 11~20 轮增量提交（33f0e53…7ca7dec，含市场/热力图/RouteStage/六维一二期/内置表编辑/P6P11 验收）已记录在变更日志第 11~20 轮段并推送 main；custom 连接模型暂不进路由组成员源（路由组二期 task-72 修复中）。
+> ⑤ 剩余外部依赖不变：P7 服务器实跑、P4 实机推送（同一台服务器）、桥 OAuth 回调（可选）。
+
 > 本文取代 `handoff-20261106-aigate-final.md` 成为**唯一入口**（旧文保留作历史）。
 > 更旧的两份（`handoff-20261105-aigate-third-round.md`、`handoff-20261106-aigate-swarm-rounds.md`）只是历史，不要按它们行动。
 > 逐批改动与验证证据在 `docs/变更日志/变更日志-2026-11-05.md` 的「第 7 轮（接手轮）」与「第 8 轮（计划清零轮）」两个段落——**那是事实的原始记录，本文只做索引与导航**。
