@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"sync/atomic"
@@ -72,10 +73,15 @@ func intentBody(question string) string {
 
 func TestIntentRoutesToStrongGroupAndCaches(t *testing.T) {
 	var jevCalls int64
-	jevSrv, _ := newUpstreamServer(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+	var payloadProbe map[string]any
+	jevSrv, _ := newUpstreamServer(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
 		atomic.AddInt64(&jevCalls, 1)
+		// 实测形状断言（task-70）：state 是对象 {"message":...}，questions 是
+		// 对象（键=题id）且文本字段是 instructions；数组/options 形状实测 422。
+		_ = json.Unmarshal(body, &payloadProbe)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"answers":[{"type":"choice","value":2}]}`)
+		// 实测 JEV 响应：answers 是对象（键=题id）。
+		_, _ = io.WriteString(w, `{"model":"NeoHorse-Jev-4B","answers":{"route":{"type":"choice","choice":2}},"usage":{"input_tokens":18,"output_tokens":34}}`)
 	})
 	snap := intentSnapshot(&scheduler.IntentBinding{
 		Labels: []string{"simple", "hard"},
@@ -100,6 +106,26 @@ func TestIntentRoutesToStrongGroupAndCaches(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&jevCalls); got != 1 {
 		t.Fatalf("jev calls = %d, want 1 (the probe fingerprint is cached)", got)
+	}
+	// 请求 payload 是实测对象形状：state={"message":...}；questions={"route":
+	// {type:choice, instructions:...}}；无数组形状、无 options/question 字段。
+	state, _ := payloadProbe["state"].(map[string]any)
+	if state == nil || state["message"] == "" {
+		t.Fatalf("state = %v, want {\"message\":<probe>}", payloadProbe["state"])
+	}
+	questions, _ := payloadProbe["questions"].(map[string]any)
+	if questions == nil {
+		t.Fatalf("questions = %v, want an object keyed by question id", payloadProbe["questions"])
+	}
+	route, _ := questions["route"].(map[string]any)
+	if route == nil || route["instructions"] == "" || route["type"] != "choice" {
+		t.Fatalf("questions.route = %v, want {type:choice, instructions:<labels>}", questions["route"])
+	}
+	if _, hasOptions := route["options"]; hasOptions {
+		t.Fatal("route carries options (实测 422 JEV_INVALID_REQUEST)")
+	}
+	if _, hasQuestion := route["question"]; hasQuestion {
+		t.Fatal("route carries a question field (实测字段是 instructions)")
 	}
 }
 
@@ -177,6 +203,14 @@ func TestParseIntentLabelSpellings(t *testing.T) {
 		{`{"answers":[{"label":"master"}]}`, "", false},
 		{`{"answers":[]}`, "", false},
 		{`not json`, "", false},
+		// 实测 JEV 对象形状（键=题id）：noul 响应与 choice 两种拼写。
+		{`{"answers":{"route":{"type":"noul","noul":0.972}}}`, "", false},
+		{`{"answers":{"route":{"type":"choice","choice":"hard"}}}`, "hard", true},
+		{`{"answers":{"route":{"type":"choice","choice":2}}}`, "hard", true},
+		{`{"answers":{"q1":{"label":"simple"}}}`, "simple", true},
+		{`{"answers":{"q1":{"value":2}}}`, "hard", true},
+		{`{"answers":{"q1":{"answer":"Hard"}}}`, "hard", true},
+		{`{"answers":{"q1":{"type":"noul","noul":0.972}}}`, "", false},
 	}
 	for _, tc := range cases {
 		got, ok := parseIntentLabel([]byte(tc.body), labels)

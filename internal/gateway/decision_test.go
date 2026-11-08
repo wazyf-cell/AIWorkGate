@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -162,6 +163,11 @@ func TestDecisionLocalQuestionLimits(t *testing.T) {
 		{"image null is plain text", `{"image":null,"questions":[{"type":"noul"},{"type":"noul"}]}`, http.StatusOK},
 		{"sixteen text questions ok", multiQuestions(16), http.StatusOK},
 		{"seventeen text questions rejected", multiQuestions(17), http.StatusBadRequest},
+		// 实测 JEV 对象形状（键=题id，task-70）：题数上限与带图单题保护同样生效。
+		{"object image single question ok", `{"image":"iVBOR","questions":{"q1":{"type":"choice","image":"x"}}}`, http.StatusOK},
+		{"object image two questions rejected", `{"image":"iVBOR","questions":{"q1":{"type":"choice"},"q2":{"type":"noul"}}}`, http.StatusBadRequest},
+		{"object sixteen text questions ok", multiQuestionsObject(16), http.StatusOK},
+		{"object seventeen text questions rejected", multiQuestionsObject(17), http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -171,9 +177,19 @@ func TestDecisionLocalQuestionLimits(t *testing.T) {
 			}
 		})
 	}
-	if got := rec.count(); got != 4 {
-		t.Fatalf("upstream calls = %d, want 4 (rejected shapes never forwarded)", got)
+	if got := rec.count(); got != 6 {
+		t.Fatalf("upstream calls = %d, want 6 (rejected shapes never forwarded)", got)
 	}
+}
+
+// multiQuestionsObject builds the object-shaped questions spelling (实测 JEV:
+// 键=题id）with n questions.
+func multiQuestionsObject(n int) string {
+	qs := make([]string, n)
+	for i := range qs {
+		qs[i] = `"q` + strconv.Itoa(i+1) + `":{"type":"noul"}`
+	}
+	return `{"questions":{` + strings.Join(qs, ",") + `}}`
 }
 
 func multiQuestions(n int) string {

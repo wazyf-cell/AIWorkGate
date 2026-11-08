@@ -177,25 +177,50 @@ const decisionMaxTextQuestions = 16
 
 // decisionImageDetection reports whether the request carries an image and how
 // many questions it asks. Images may ride top-level (`image`) or per question
-// (`questions[i].image`); the upstream accepts both shapes.
+// (`questions[i].image`); the upstream accepts both shapes. The JEV upstream
+// also accepts questions as an **object** keyed by question id (实测
+// 2026-11-08, task-70), so both the array and the object spellings are counted.
 func decisionImageDetection(body []byte) (hasImage bool, questions int, ok bool) {
 	var probe struct {
-		Image     json.RawMessage   `json:"image"`
-		Questions []json.RawMessage `json:"questions"`
+		Image     json.RawMessage `json:"image"`
+		Questions json.RawMessage `json:"questions"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
 		return false, 0, false
 	}
 	hasImage = hasImageField(probe.Image)
-	for _, q := range probe.Questions {
+	trimmed := strings.TrimSpace(string(probe.Questions))
+	if len(trimmed) == 0 || trimmed[0] != '[' && trimmed[0] != '{' {
+		return hasImage, 0, true
+	}
+	if trimmed[0] == '{' {
+		// 实测对象形状：键=题id，值带可选 image。
+		var questions map[string]struct {
+			Image json.RawMessage `json:"image"`
+		}
+		if json.Unmarshal([]byte(trimmed), &questions) != nil {
+			return false, 0, false
+		}
+		for _, question := range questions {
+			if hasImageField(question.Image) {
+				hasImage = true
+			}
+		}
+		return hasImage, len(questions), true
+	}
+	var list []json.RawMessage
+	if json.Unmarshal([]byte(trimmed), &list) != nil {
+		return false, 0, false
+	}
+	for _, question := range list {
 		var qProbe struct {
 			Image json.RawMessage `json:"image"`
 		}
-		if json.Unmarshal(q, &qProbe) == nil && hasImageField(qProbe.Image) {
+		if json.Unmarshal(question, &qProbe) == nil && hasImageField(qProbe.Image) {
 			hasImage = true
 		}
 	}
-	return hasImage, len(probe.Questions), true
+	return hasImage, len(list), true
 }
 
 func hasImageField(raw json.RawMessage) bool {

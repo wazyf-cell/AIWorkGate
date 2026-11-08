@@ -677,7 +677,7 @@ const editingOverride = computed(() =>
 /* 目录视图（D-30④⑦）：搜索 / 绿标 / 只选可用 / 三种视图               */
 /* ------------------------------------------------------------------ */
 
-type CatalogView = 'all' | 'enabled' | 'family' | 'usage'
+type CatalogView = 'all' | 'enabled' | 'family' | 'usage' | 'vendor'
 
 /**
  * D-30③ 暴露上限 24（与后端 manyModels 同值）：/v1/models 对插件模型排序后只列
@@ -698,6 +698,11 @@ const CATALOG_VIEWS: { key: CatalogView; label: string; title: string }[] = [
     key: 'usage',
     label: '仅看用量',
     title: '只看最近 30 天有请求的模型（按 /usage/models 聚合）',
+  },
+  {
+    key: 'vendor',
+    label: '按供应商',
+    title: '按厂商分组的模型清单：组头显示供应商 / 模型数 / 已接入数，点组头折叠',
   },
 ]
 
@@ -808,6 +813,70 @@ const visibleCatalogRows = computed<CatalogRow[]>(() => {
     )
   }
   return rows
+})
+
+/* 「按供应商」视图（第20轮本地收尾）：搜索过滤后的行按厂商分组（空厂商归
+ * 「未标注厂商」），组内按模型 id 排序；组头可折叠（默认全展开）。 */
+interface VendorGroup {
+  vendor: string
+  rows: CatalogRow[]
+  enabledCount: number
+}
+
+const searchedCatalogRows = computed<CatalogRow[]>(() => {
+  const needle = catalogSearch.value.trim().toLowerCase()
+  if (!needle) return catalogRows.value
+  return catalogRows.value.filter((row) =>
+    `${row.model.model_id} ${row.displayName} ${row.vendor}`.toLowerCase().includes(needle),
+  )
+})
+
+const vendorGroups = computed<VendorGroup[]>(() => {
+  const groups = new Map<string, CatalogRow[]>()
+  for (const row of searchedCatalogRows.value) {
+    const key = row.vendor?.trim() || '未标注厂商'
+    const list = groups.get(key)
+    if (list) list.push(row)
+    else groups.set(key, [row])
+  }
+  return [...groups.entries()]
+    .map(([vendor, rows]) => ({
+      vendor,
+      rows: [...rows].sort((a, b) => a.model.model_id.localeCompare(b.model.model_id)),
+      enabledCount: rows.filter((row) => row.model.enabled !== false).length,
+    }))
+    .sort((a, b) => a.vendor.localeCompare(b.vendor))
+})
+
+const collapsedVendors = ref<Set<string>>(new Set())
+
+function toggleVendorGroup(vendor: string) {
+  const next = new Set(collapsedVendors.value)
+  if (next.has(vendor)) next.delete(vendor)
+  else next.add(vendor)
+  collapsedVendors.value = next
+}
+
+/** 目录表格的行序列：vendor 视图 = 组头行 + 未折叠组的模型行交错；其余视图 =
+ * 纯模型行。group 与 row 二者恰有一个非空；模型行走单元素 v-for 以获得完整
+ * 的 CatalogRow 作用域（避免模板联合类型收窄），单元格标记零复制。 */
+interface CatalogTableRow {
+  group: VendorGroup | null
+  row: CatalogRow | null
+}
+
+const catalogTableRows = computed<CatalogTableRow[]>(() => {
+  if (catalogView.value !== 'vendor') {
+    return visibleCatalogRows.value.map((row) => ({ group: null, row }))
+  }
+  const out: CatalogTableRow[] = []
+  for (const group of vendorGroups.value) {
+    out.push({ group, row: null })
+    if (!collapsedVendors.value.has(group.vendor)) {
+      for (const row of group.rows) out.push({ group: null, row })
+    }
+  }
+  return out
 })
 
 /**
@@ -1473,7 +1542,17 @@ onBeforeUnmount(() => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in visibleCatalogRows" :key="row.model.model_id">
+                <template v-for="(entry, entryIndex) in catalogTableRows" :key="entry.group ? `vendor-${entry.group.vendor}` : `model-${entryIndex}-${entry.row?.model.model_id}`">
+                  <tr v-if="entry.group" class="vendor-group-row" @click="toggleVendorGroup(entry.group.vendor)">
+                    <td colspan="11">
+                      <span class="vendor-chevron" :class="{ closed: collapsedVendors.has(entry.group.vendor) }">▾</span>
+                      <strong class="mono">{{ entry.group.vendor }}</strong>
+                      <span class="badge plain muted">{{ entry.group.rows.length }} 个模型</span>
+                      <span class="badge plain" :class="entry.group.enabledCount ? 'ok' : 'muted'">已接入 {{ entry.group.enabledCount }}</span>
+                    </td>
+                  </tr>
+                  <template v-else-if="entry.row">
+                    <tr v-for="row in [entry.row]" :key="row.model.model_id">
                   <td class="title-cell mono">
                     {{ row.model.model_id }}
                     <span
@@ -1563,8 +1642,10 @@ onBeforeUnmount(() => {
                       <button type="button" class="btn sm" @click="openOverrideEditor(row.model)">编辑</button>
                     </div>
                   </td>
-                </tr>
-                <tr v-if="visibleCatalogRows.length === 0">
+                  </tr>
+                </template>
+                </template>
+                <tr v-if="catalogTableRows.length === 0">
                   <td colspan="11">
                     <div class="empty">
                       <strong>没有匹配的模型</strong>
@@ -1836,5 +1917,29 @@ onBeforeUnmount(() => {
   line-height: 1;
   vertical-align: 1px;
   cursor: help;
+}
+
+/* 「按供应商」视图（第20轮）：可折叠组头行。 */
+.vendor-group-row {
+  cursor: pointer;
+}
+
+.vendor-group-row td {
+  background: var(--surface-2);
+}
+
+.vendor-group-row:hover td {
+  background: var(--accent-soft);
+}
+
+.vendor-chevron {
+  display: inline-block;
+  margin-right: var(--space-1);
+  color: var(--muted);
+  transition: transform 0.2s;
+}
+
+.vendor-chevron.closed {
+  transform: rotate(-90deg);
 }
 </style>

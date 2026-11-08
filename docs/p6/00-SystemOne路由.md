@@ -40,18 +40,38 @@ AIWORKGATE_DECISION_JEV_API_KEY=sk-...
 ## 3. 调用
 
 ```bash
-# state 可以是字符串或结构化 JSON；questions 支持 choice|noul|score
+# 实测形状（2026-11-08，TokenRhythm 真实 JEV）：state 是对象 {"message":...}，
+# questions 是对象（键=题id），题目文本字段是 instructions。
 curl -sS http://127.0.0.1:7865/v1/systemone \
   -H "Authorization: Bearer <客户端Key>" \
   -H "Content-Type: application/json" \
-  -d '{"state":"选一个","questions":[{"type":"noul"}]}'
+  -d '{"state":{"message":"选一个"},"questions":{"q1":{"type":"noul","instructions":"对这条陈述打分"}}}'
+```
+
+实测 200 响应形状（TokenRhythm `NeoHorse-Jev-4B`）：
+
+```json
+{
+  "model": "NeoHorse-Jev-4B",
+  "answers": {"q1": {"type": "noul", "noul": 0.972}},
+  "usage": {"input_tokens": 18, "output_tokens": 34},
+  "extensions": {"…"}
+}
 ```
 
 - `/v1/decision` 与 `/v1/systemone` 是同一实现：请求体一样，返回形状一样（`answers` 不包装成 chat 消息）。
 - 响应原样透传：上游的 `code/message/traceId` 不改写。
 - **不重试**：超时/429/5xx 直接返回给调用方（D-18⑤）。
-- 体积限制：纯文本 1 MiB、带图（顶层 `image` 非空）8 MiB；超限本地 413，不发上游。
+- 体积限制：纯文本 1 MiB、带图（顶层 `image` 非空）8 MiB；超限本地 413，不发上游。题数上限（纯文本 1..16、带图恰好 1 题）对 questions 的**对象**与**数组**两种形状都生效。
 - `usage.input_tokens/output_tokens` 若上报会进入请求日志；未上报记未知而不是 0。
+
+### 3.1 实测协议与 F-12 设计的差异（2026-11-08 真实 JEV 实测）
+
+- **`questions` 必须是对象**（键=题id）：数组形状实测 422 `JEV_INVALID_REQUEST`。网关的 intent/decision 本地校验兼容两种形状，但转发给 JEV 的 P11 intent payload 已改为对象。
+- **题目文本字段是 `instructions`**：F-12 草案写的 `question` 字段实测不存在。
+- **`answers` 响应是对象**（键=题id）：网关的意图分类解析兼容对象与数组两种拼写（`parseIntentLabel`）。
+- **choice/score 的选项与分档字段尚未确定**：实测 `options`/`criteria`/纯 instructions choice/score+instructions 全部 422 被拒。在拿到 JEV 协议文档前，网关的 intent 把选项语义并入 `instructions` 文本（不写死未确认字段）。
+- **`model_id` 实测为 `NeoHorse-Jev-4B`**：不在 `/models` 列表，是决策模型专属名。
 
 ## 4. 互斥保护
 
@@ -66,8 +86,8 @@ curl -sS http://127.0.0.1:7865/v1/systemone \
 
 ## 5. 验收状态
 
-- 本地可验证（已做，`internal/gateway/decision_test.go`）：原样透传、别名/协议选择、chat 互斥、`structured:true`、体积上限、错误透传且只调用一次。
-- **真实 JEV key 的最小请求未跑**：需要你提供 key；`noul` 应返回 0~1 概率，`choice`/`score` 各需一例。
+- 本地可验证（已做，`internal/gateway/decision_test.go`）：原样透传、别名/协议选择、chat 互斥、`structured:true`、体积上限、错误透传且只调用一次、questions 对象/数组双形状的题数上限与带图单题保护（task-70）。
+- **真实 JEV key 直连已实测（2026-11-08，见 §3.1）**：`noul` 返回 0~1 概率（实测 0.972）；`choice` 的选项字段实测未确认（`options`/`criteria` 全 422），需 JEV 协议文档后补一例；P11 intent payload 已按实测形状修正。
 
 ## 6. Gemini 入站（含工具调用）
 

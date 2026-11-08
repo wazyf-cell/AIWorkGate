@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,14 +56,20 @@ func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBindin
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// 实测 JEV 形状（2026-11-08 TokenRhythm，task-70 卡内实测记录）：
+	// state 是对象 {"message":...}，questions 是**对象**（键=题id，文本字段是
+	// instructions）；questions 数组、choice 的 options/criteria 字段全部实测
+	// 422 被拒——choice 的选项字段待 JEV 协议文档确认，选项语义暂并入
+	// instructions 文本（待确认后结构化，勿提前写死）。
 	payload, err := json.Marshal(map[string]any{
-		"state": probe,
-		"questions": []any{map[string]any{
-			"id":       "route",
-			"type":     "choice",
-			"question": "判断这条用户请求的类型，并从选项中选择一项：" + strings.Join(intent.Labels, " / "),
-			"options":  intent.Labels,
-		}},
+		"state": map[string]any{"message": probe},
+		"questions": map[string]any{
+			"route": map[string]any{
+				"type": "choice",
+				"instructions": "判断这条用户请求的类型，并从选项中选择一项：" +
+					strings.Join(intent.Labels, " / "),
+			},
+		},
 	})
 	if err != nil {
 		return "", false
@@ -170,9 +177,59 @@ func (g *Gateway) intentCachePut(fingerprint, label string) {
 	g.intentCache[fingerprint] = intentCacheEntry{label: label, expires: g.now().Add(ttl)}
 }
 
+// intentAnswer is one structured-decision answer entry. The JEV upstream
+// answers with an **object** keyed by question id (实测 2026-11-08); the array
+// spelling is kept for backwards compatibility with the earlier mock contract.
+// choice carries either the label string or a 1-based index (JSON number);
+// both are matched against the intent labels.
+type intentAnswer struct {
+	Type   string          `json:"type"`
+	Label  string          `json:"label"`
+	Answer string          `json:"answer"`
+	Choice json.RawMessage `json:"choice"`
+	Value  json.RawMessage `json:"value"`
+}
+
+// matchIntentAnswer tries label / answer / choice (string or 1-based index) /
+// value in that order against the intent labels.
+func matchIntentAnswer(answer intentAnswer, labels []string, match func(string) (string, bool)) (string, bool) {
+	if label, ok := match(answer.Label); ok {
+		return label, true
+	}
+	if label, ok := match(answer.Answer); ok {
+		return label, true
+	}
+	if len(answer.Choice) > 0 {
+		var text string
+		if json.Unmarshal(answer.Choice, &text) == nil {
+			if label, ok := match(text); ok {
+				return label, true
+			}
+		}
+		var index int
+		if json.Unmarshal(answer.Choice, &index) == nil && index >= 1 && index <= len(labels) {
+			return labels[index-1], true
+		}
+	}
+	if len(answer.Value) > 0 {
+		var text string
+		if json.Unmarshal(answer.Value, &text) == nil {
+			if label, ok := match(text); ok {
+				return label, true
+			}
+		}
+		var index int
+		if json.Unmarshal(answer.Value, &index) == nil && index >= 1 && index <= len(labels) {
+			return labels[index-1], true
+		}
+	}
+	return "", false
+}
+
 // parseIntentLabel accepts the spellings a structured-decision upstream may
-// answer with: a top-level label/answer, or answers[] carrying a label, an
-// answer string, a 1-based choice index, or a string value.
+// answer with: a top-level label/answer, answers as an **object** keyed by
+// question id (实测 JEV 形状), or answers[] carrying a label, an answer string,
+// a 1-based choice index, or a string value.
 func parseIntentLabel(body []byte, labels []string) (string, bool) {
 	match := func(candidate string) (string, bool) {
 		candidate = strings.TrimSpace(candidate)
@@ -183,45 +240,55 @@ func parseIntentLabel(body []byte, labels []string) (string, bool) {
 		}
 		return "", false
 	}
-	var payload struct {
-		Label   string `json:"label"`
-		Answer  string `json:"answer"`
-		Answers []struct {
-			Label  string          `json:"label"`
-			Answer string          `json:"answer"`
-			Choice int             `json:"choice"`
-			Value  json.RawMessage `json:"value"`
-		} `json:"answers"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(body, &probe); err != nil {
 		return "", false
 	}
-	if label, ok := match(payload.Label); ok {
+	readString := func(key string) string {
+		var text string
+		if raw, ok := probe[key]; ok && json.Unmarshal(raw, &text) == nil {
+			return text
+		}
+		return ""
+	}
+	if label, ok := match(readString("label")); ok {
 		return label, true
 	}
-	if label, ok := match(payload.Answer); ok {
+	if label, ok := match(readString("answer")); ok {
 		return label, true
 	}
-	for _, answer := range payload.Answers {
-		if label, ok := match(answer.Label); ok {
-			return label, true
+	raw, ok := probe["answers"]
+	if !ok {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	// 实测 JEV：answers 是对象（键=题id）。键序无意义（单题路由），按键排序
+	// 保证多题时结果确定。
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var answers map[string]intentAnswer
+		if json.Unmarshal([]byte(trimmed), &answers) != nil {
+			return "", false
 		}
-		if label, ok := match(answer.Answer); ok {
-			return label, true
+		keys := make([]string, 0, len(answers))
+		for key := range answers {
+			keys = append(keys, key)
 		}
-		if answer.Choice >= 1 && answer.Choice <= len(labels) {
-			return labels[answer.Choice-1], true
-		}
-		if len(answer.Value) > 0 {
-			var text string
-			if json.Unmarshal(answer.Value, &text) == nil {
-				if label, ok := match(text); ok {
-					return label, true
-				}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if label, ok := matchIntentAnswer(answers[key], labels, match); ok {
+				return label, true
 			}
-			var index int
-			if json.Unmarshal(answer.Value, &index) == nil && index >= 1 && index <= len(labels) {
-				return labels[index-1], true
+		}
+		return "", false
+	}
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var answers []intentAnswer
+		if json.Unmarshal([]byte(trimmed), &answers) != nil {
+			return "", false
+		}
+		for _, answer := range answers {
+			if label, ok := matchIntentAnswer(answer, labels, match); ok {
+				return label, true
 			}
 		}
 	}
