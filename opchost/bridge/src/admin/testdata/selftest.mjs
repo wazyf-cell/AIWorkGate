@@ -553,6 +553,38 @@ let pluginModeSid = ''
   delete process.env.MAGPIE_AUTH_FILE
 }
 
+// task-77: the api-key public-credential shape (opencode-zen-free free channel)
+// imports too, keeps its record verbatim, and stays idempotent/opt-out-able.
+{
+  const authPath = join(dataDir, 'magpie-plugin-auth-api.json')
+  writeFileSync(
+    authPath,
+    JSON.stringify({
+      zen: { type: 'api', key: 'public' },
+      zen_empty: { type: 'api', key: '' },
+      zen_null_key: { type: 'api', key: null },
+      zen_no_type: { key: 'public' },
+    }),
+  )
+  process.env.MAGPIE_AUTH_FILE = authPath
+  const store = createFileCredentialStore(join(dataDir, 'import-store-api'))
+  const creds = bridgeCredentialStore(store, 'magpie-bridge')
+  const imported = await importMagpieAuth(creds, ['zen', 'zen_empty', 'zen_null_key', 'zen_no_type'])
+  check('magpie_import_api_key', imported.length === 1 && imported[0] === 'zen', JSON.stringify(imported))
+  const record = store.get('magpie-bridge', 'zen')?.secret
+  check('magpie_import_api_key_verbatim', record?.type === 'api' && record?.key === 'public', JSON.stringify(record))
+  const again = await importMagpieAuth(creds, ['zen'])
+  check('magpie_import_api_idempotent', again.length === 0, JSON.stringify(again))
+  process.env.AIWORKGATE_MAGPIE_AUTH_IMPORT = '0'
+  const disabled = await importMagpieAuth(
+    bridgeCredentialStore(createFileCredentialStore(join(dataDir, 'import-store-api-2')), 'magpie-bridge'),
+    ['zen'],
+  )
+  check('magpie_import_api_optout', disabled.length === 0, JSON.stringify(disabled))
+  delete process.env.AIWORKGATE_MAGPIE_AUTH_IMPORT
+  delete process.env.MAGPIE_AUTH_FILE
+}
+
 // ---- 14. D-58 hooks controlled surface --------------------------------------------
 {
   // A throwaway plugin dir: mock shape with config + models fn + loader +

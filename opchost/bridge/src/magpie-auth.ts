@@ -45,7 +45,13 @@ export async function importMagpieAuth(
     const entry = file[provider];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const record = entry as Record<string, unknown>;
-    if (!record.access && !record.refresh) continue;
+    // Two importable shapes: the OAuth pair (access/refresh) and the api-key
+    // public-credential form `{"type":"api","key":"…"}` used by free channels
+    // like opencode-zen-free (task-77). Anything else is not a login.
+    const hasOAuth = !!record.access || !!record.refresh;
+    const hasApiKey =
+      record.type === "api" && typeof record.key === "string" && record.key.trim() !== "";
+    if (!hasOAuth && !hasApiKey) continue;
     await credentials.save(provider, record);
     imported.push(provider);
   }
