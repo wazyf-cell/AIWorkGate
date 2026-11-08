@@ -118,6 +118,13 @@ func (a *App) webOptions() webui.Options {
 		GatewayTraceRecent: a.gatewayTraceRecent,
 		GatewayTracePoll:   a.gatewayTracePoll,
 
+		// 六维上下文采样查询（task-62）：按 req_id 读独立表
+		GatewayCtxComposition: a.ctxCompositionPayload,
+
+		// 六维采样 sticky 开关（task-62）：进程级门控，开启即对下一请求生效
+		CtxSamplingGet: gateway.CtxSamplingEnabled,
+		CtxSamplingSet: gateway.SetCtxSamplingEnabled,
+
 		Proxies:     a.listProxies,
 		SaveProxy:   a.saveProxy,
 		DeleteProxy: a.deleteProxy,

@@ -214,6 +214,16 @@ type Options struct {
 	GatewayTraceRecent func(limit int) (any, error)
 	GatewayTracePoll   func(after int64, wait bool) (any, error)
 
+	// 六维上下文采样查询（task-62）：按 req_id 读独立表 ctx_compositions。
+	// 返回 {"req_id","sampled":true,"sections":…,"items":…,…} 信封；未采样
+	// 回调返回 nil，端点答 {"req_id","sampled":false}。nil 回调答 501。
+	GatewayCtxComposition func(reqID string) (any, error)
+
+	// 六维采样开关（task-62）：sticky 门控（trace.go 同模式），开启后网关在
+	// 改写前的 body 上分析并落独立表；关闭即停。nil 答答 501。
+	CtxSamplingGet func() bool
+	CtxSamplingSet func(on bool)
+
 	Proxies     func() []model.Proxy
 	SaveProxy   func(model.Proxy) error
 	DeleteProxy func(id string) error
@@ -462,6 +472,8 @@ func New(opts Options) http.Handler {
 	// 问题6A 地基（task-48）：逐请求 trace 长轮询 + 首屏回放
 	mux.HandleFunc("/api/gateway/trace", s.handleGatewayTrace)
 	mux.HandleFunc("/api/gateway/trace/recent", s.handleGatewayTrace)
+	mux.HandleFunc("/api/gateway/ctx", s.handleGatewayCtx)
+	mux.HandleFunc("/api/gateway/ctx-sampling", s.handleGatewayCtxSampling)
 	mux.HandleFunc("/api/proxies", s.handleProxies)
 	mux.HandleFunc("/api/proxies/{id}", s.handleProxy)
 	mux.HandleFunc("/api/proxies/{id}/check", s.handleProxyCheck)

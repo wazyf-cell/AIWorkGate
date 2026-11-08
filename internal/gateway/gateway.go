@@ -504,6 +504,9 @@ type reqRecord struct {
 	// toolReverse 是工具别名正向改写产出的逆映射（别名→原名，问题6A/task-43）：
 	// forward() 据此包响应回改 writer；nil = 本请求未改写（零开销直通）。
 	toolReverse map[string]string
+	// ctxComp 是六维上下文采样的产物（task-62）：门控开启时在改写前的 body 上
+	// 算一次，emit 收束时交宿主 sink 落独立表并按上游 usage 分摊；nil = 未采样。
+	ctxComp *CtxComposition
 }
 
 // sseKeepAliveInterval is how long a streaming reply may stay silent before the
@@ -1519,6 +1522,9 @@ func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *req
 			"request body must be a JSON object")
 		return
 	}
+	// 六维采样（task-62）：rewriteModel 只改 model 字段不影响内容归类，取改写前
+	// 的原始 body；只读不改写，与随后的别名/脱敏钩子无顺序耦合。
+	body = g.sampleCtxComposition(rec, body)
 	// P10：入站脱敏（Route=插件 id），审计进 rec
 	red := NewWiring(g.redact)
 	// 问题6A：工具别名正向改写（与脱敏同位；命中产出逆映射挂 rec）
@@ -1881,6 +1887,8 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 		row.BodyResp = truncateUTF8(rec.bodyResp, g.bodyCap)
 	}
 	g.logs.Write(row)
+	// 六维采样收束（task-62）：估算挂 rec，此处按上游 usage 分摊后交宿主落库。
+	emitCtxComposition(rec, g.now().Unix())
 	// 问题6A 地基（task-48）：旁路观察者——sticky 门控未开启时只付一次原子读。
 	if g.trace != nil && g.trace.active.Load() {
 		g.trace.emit(traceEventOf(rec, latency.Milliseconds()))

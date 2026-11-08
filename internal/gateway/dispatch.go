@@ -481,6 +481,8 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 		route = plugin
 	}
 	// 问题6A：工具别名正向改写（与脱敏同位；命中产出逆映射挂 rec，供响应回改）
+	// 六维采样（task-62）在其前：只读改写前的原始 body，与两个改写钩子无顺序耦合。
+	body = g.sampleCtxComposition(rec, body)
 	body = g.applyToolAliasForward(rec, body)
 	body = red.MaskJSONBody(body, route)
 	rec.redactLine = red.AuditLine()

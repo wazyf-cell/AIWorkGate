@@ -390,6 +390,9 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 		return nil
 	}
 	a.timeline = logging.NewTimeline(st, dataDir, a.pluginIDs)
+	// 六维上下文采样（task-62）：gateway 收束 → 独立表落库；采样本身在网关内
+	// 门控（SetCtxSampling），关闭时 sink 永不被调用。
+	a.installCtxSink()
 
 	a.logger.Info("app", "AIWorkGate starting", map[string]any{
 		"version":  Version,

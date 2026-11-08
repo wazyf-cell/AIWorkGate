@@ -744,6 +744,28 @@ var migrations = []migrationStep{
 			{"model_catalog", "source", "TEXT"},
 		},
 	},
+	{ // version 30: task-62 六维上下文采样（独立表，api_logs 不加宽）
+		sql: []string{
+			// One row per sampled request (sticky-gated: only written while the
+			// admin sampling switch is on). req_id joins api_logs; the JSON
+			// columns carry the gateway's six-bucket sections (est/share/
+			// allocated) and per-message / per-tool drill-down rows verbatim.
+			// upstream_prompt_tokens + usage_known keep both accounting sides
+			// (local estimate vs upstream total) so the endpoint can present
+			// either without re-deriving the allocation.
+			`CREATE TABLE IF NOT EXISTS ctx_compositions (
+				req_id TEXT PRIMARY KEY,
+				ts INTEGER NOT NULL,
+				total_est INTEGER NOT NULL,
+				sections_json TEXT NOT NULL,
+				items_json TEXT,
+				upstream_prompt_tokens INTEGER,
+				usage_known INTEGER NOT NULL DEFAULT 0,
+				sampled_reason TEXT
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_ctx_compositions_ts ON ctx_compositions(ts)`,
+		},
+	},
 }
 
 // Migrate applies pending schema steps using PRAGMA user_version. It is
