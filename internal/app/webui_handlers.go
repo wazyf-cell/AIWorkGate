@@ -125,6 +125,10 @@ func (a *App) webOptions() webui.Options {
 		CtxSamplingStatus: a.ctxSamplingStatus,
 		CtxSamplingSet:    a.setCtxSamplingPersisted,
 
+		// task-90：宿主→桥凭据转发回调（读 extra + 取插件端点）
+		BridgeCredentials:    a.bridgeCredentialsFor,
+		PluginBridgeEndpoint: a.pluginBridgeEndpoint,
+
 		Proxies:     a.listProxies,
 		SaveProxy:   a.saveProxy,
 		DeleteProxy: a.deleteProxy,
@@ -3032,4 +3036,29 @@ func positiveInt(raw string) int {
 		return 0
 	}
 	return n
+}
+
+// ── task-90：宿主→桥凭据转发的宿主侧回调 ─────────────────────────────
+
+// bridgeCredentialsFor 实现 webui.Options.BridgeCredentials：读 extra 里
+// 该插件的凭据（credential.<plugin_id>.<account_id> 键，P4 写入），
+// 转为桥 /admin/credentials 注入形状。
+func (a *App) bridgeCredentialsFor(pluginID string) ([]webui.BridgeCredentialItem, error) {
+	perPlugin := a.localSyncCredentials(pluginID)
+	items, ok := perPlugin[pluginID]
+	if !ok || len(items) == 0 {
+		return nil, nil
+	}
+	out := make([]webui.BridgeCredentialItem, len(items))
+	copy(out, items)
+	return out, nil
+}
+
+// pluginBridgeEndpoint 实现 webui.Options.PluginBridgeEndpoint：取插件管理器
+// 的动态端口 + bearer token（桥作为插件由宿主管理，token 即桥的 admin token）。
+func (a *App) pluginBridgeEndpoint(pluginID string) (baseURL, bearerToken string, ok bool) {
+	if a.pluginMgr == nil {
+		return "", "", false
+	}
+	return a.pluginMgr.Endpoint(pluginID)
 }

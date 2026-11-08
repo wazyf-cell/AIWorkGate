@@ -214,6 +214,12 @@ type Options struct {
 	GatewayTraceRecent func(limit int) (any, error)
 	GatewayTracePoll   func(after int64, wait bool) (any, error)
 
+	// task-90：宿主→桥凭据转发。BridgeCredentials 读宿主 extra 里该插件的
+	// 凭据（按渠道拆好）；PluginBridgeEndpoint 返回桥的动态端口 + bearer token。
+	// 两 nil = 端点 501。
+	BridgeCredentials    func(pluginID string) ([]BridgeCredentialItem, error)
+	PluginBridgeEndpoint func(pluginID string) (baseURL string, bearerToken string, ok bool)
+
 	// 六维上下文采样查询（task-62）：按 req_id 读独立表 ctx_compositions。
 	// 返回 {"req_id","sampled":true,"sections":…,"items":…,…} 信封；未采样
 	// 回调返回 nil，端点答 {"req_id","sampled":false}。nil 回调答 501。
@@ -470,6 +476,8 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/rules/{name}/reset", s.handleRulePackReset)
 	// 问题6A（task-43）：工具别名指纹清洗（GET/PUT，保存即热替换）
 	mux.HandleFunc("/api/tool-alias", s.handleToolAlias)
+	// task-90：宿主→桥凭据转发
+	mux.HandleFunc("/api/plugins/{id}/credentials/sync", s.handleBridgeCredentialSync)
 	// 问题6A 地基（task-48）：逐请求 trace 长轮询 + 首屏回放
 	mux.HandleFunc("/api/gateway/trace", s.handleGatewayTrace)
 	mux.HandleFunc("/api/gateway/trace/recent", s.handleGatewayTrace)
