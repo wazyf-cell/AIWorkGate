@@ -19,7 +19,9 @@ param(
     # PATH 上的 `bun` 是 npm shim（1.3.14），不是它。
     [string]$BunPath = "$env:USERPROFILE\.cache\magpie\bun\1.4.4\magpie-bun.exe",
     [switch]$Verify,
-    [switch]$Force
+    [switch]$Force,
+    # task-78：跳过源码/exe mtime 守卫（默认拒绝在源码比产物新时构建）。
+    [switch]$SkipStaleCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +35,32 @@ $shaFile = Join-Path $dist 'magpie-bridge.sha256'
 
 function Get-BridgeSha256([string]$Path) {
     (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+}
+
+# ---- task-78：源码/exe mtime 守卫 ----
+# 防「旧 exe 静默缺新功能」坑（task-75 实测：dist exe 早于 magpie-auth.ts 提交，
+# 桥缺 magpie 登录导入且无任何报错）。产物存在且最新源码 mtime 比它新时：
+# 默认拒绝构建并提示 -Force；-SkipStaleCheck 显式跳过（必须回显）。
+function Test-BridgeSourceStale {
+    if (-not (Test-Path $exe)) { return $false }
+    $exeTime = (Get-Item $exe).LastWriteTimeUtc
+    $newest = Get-ChildItem (Join-Path $bridge 'src') -Recurse -File -Include '*.ts', '*.mjs' |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($null -eq $newest) { return $false }
+    return $newest.LastWriteTimeUtc -gt $exeTime
+}
+
+if (-not $Verify -and -not $SkipStaleCheck -and (Test-BridgeSourceStale)) {
+    $newest = Get-ChildItem (Join-Path $bridge 'src') -Recurse -File -Include '*.ts', '*.mjs' |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    Write-Error ("STALE BUILD REFUSED: 源码比 exe 新，请 -Force 重建`n" +
+        "  newest source : $($newest.FullName) ($($newest.LastWriteTimeUtc.ToString('s')))`n" +
+        "  existing exe  : $exe ($((Get-Item $exe).LastWriteTimeUtc.ToString('s')))`n" +
+        "  跳过本守卫：-SkipStaleCheck（须自证产物可接受）")
+    exit 1
+}
+if ($SkipStaleCheck) {
+    Write-Host "WARNING: -SkipStaleCheck 生效，源码/exe mtime 守卫已跳过"
 }
 
 # ---- -Verify：只复核 ----

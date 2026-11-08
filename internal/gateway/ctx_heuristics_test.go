@@ -220,3 +220,127 @@ func TestCtxHeuristicsFileTag(t *testing.T) {
 		t.Fatalf("no item labelled with the path attribute: %+v", comp.Items)
 	}
 }
+
+// task-80：<artifact path="..."> 约定标签整块归 files，label 取 path 属性。
+func TestCtxHeuristicsArtifactWithPath(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"<artifact path=\"src/main.go\">package main</artifact> review it"}]}`
+	comp, err := AnalyzeCtxCompositionHeuristics([]byte(body))
+	if err != nil {
+		t.Fatalf("heuristics: %v", err)
+	}
+	if ctxBucketEst(t, comp, "files") <= 0 {
+		t.Fatal("files = 0, want the artifact tag block in the files bucket")
+	}
+	found := false
+	for _, item := range comp.Items {
+		if item.Bucket == "files" && strings.Contains(item.Label, "src/main.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no item labelled with the artifact path: %+v", comp.Items)
+	}
+}
+
+// task-80：无属性 <artifact> → label 回落 `<artifact>` 固定名。
+func TestCtxHeuristicsArtifactNoAttrs(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"<artifact>some code here</artifact> done"}]}`
+	comp, err := AnalyzeCtxCompositionHeuristics([]byte(body))
+	if err != nil {
+		t.Fatalf("heuristics: %v", err)
+	}
+	if ctxBucketEst(t, comp, "files") <= 0 {
+		t.Fatal("files = 0, want the bare artifact in the files bucket")
+	}
+	found := false
+	for _, item := range comp.Items {
+		if item.Bucket == "files" && strings.Contains(item.Label, "<artifact>") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no item with the fallback <artifact> label: %+v", comp.Items)
+	}
+}
+
+// task-80：<artifact title="..."> → label 取 title 属性（path 缺失时的回落）。
+func TestCtxHeuristicsArtifactTitleFallback(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"<artifact title=\"my-artifact\">content</artifact>"}]}`
+	comp, err := AnalyzeCtxCompositionHeuristics([]byte(body))
+	if err != nil {
+		t.Fatalf("heuristics: %v", err)
+	}
+	if ctxBucketEst(t, comp, "files") <= 0 {
+		t.Fatal("files = 0, want the artifact title in the files bucket")
+	}
+	found := false
+	for _, item := range comp.Items {
+		if item.Bucket == "files" && strings.Contains(item.Label, "my-artifact") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no item labelled with the title attribute: %+v", comp.Items)
+	}
+}
+
+// task-80：<artifact> 与 <file> 共存时各归各桶不重复计数（token 守恒）。
+func TestCtxHeuristicsArtifactAndFileCoexist(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"<file path=\"a.go\">file body</file> <artifact path=\"b.ts\">artifact body</artifact> rest"}]}`
+	comp, err := AnalyzeCtxCompositionHeuristics([]byte(body))
+	if err != nil {
+		t.Fatalf("heuristics: %v", err)
+	}
+	if ctxBucketEst(t, comp, "files") <= 0 {
+		t.Fatal("files = 0, want both tags in the files bucket")
+	}
+	fileLabels := map[string]bool{}
+	for _, item := range comp.Items {
+		if item.Bucket == "files" {
+			fileLabels[item.Label] = true
+		}
+	}
+	// ctxLabel 会给 label 加前缀（如 "file: a.go"），用 strings.Contains 判定。
+	hasA, hasB := false, false
+	for label := range fileLabels {
+		if strings.Contains(label, "a.go") {
+			hasA = true
+		}
+		if strings.Contains(label, "b.ts") {
+			hasB = true
+		}
+	}
+	if !hasA || !hasB {
+		t.Fatalf("both tags should appear: %v", fileLabels)
+	}
+	// token 守恒：两标签独立（不合并/不重复计数）——两条 item 而非一条。
+	if len(fileLabels) != 2 {
+		t.Fatalf("expected 2 distinct file labels, got %d: %v", len(fileLabels), fileLabels)
+	}
+}
+
+// task-80：默认关回归——artifact 判据不影响关闭态的六桶输出。
+func TestCtxHeuristicsArtifactOffRegression(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"<artifact path=\"src/main.go\">code</artifact>"}]}`
+	phase1, err := AnalyzeCtxComposition([]byte(body))
+	if err != nil {
+		t.Fatalf("phase-1: %v", err)
+	}
+	off, err := analyzeCtxComposition([]byte(body), false)
+	if err != nil {
+		t.Fatalf("off: %v", err)
+	}
+	if len(phase1.Sections) != len(off.Sections) {
+		t.Fatalf("section count %d != %d", len(phase1.Sections), len(off.Sections))
+	}
+	for i := range phase1.Sections {
+		if phase1.Sections[i].Key != off.Sections[i].Key || phase1.Sections[i].Est != off.Sections[i].Est {
+			t.Fatalf("section %d = %+v vs %+v", i, phase1.Sections[i], off.Sections[i])
+		}
+	}
+	for _, section := range phase1.Sections {
+		if section.Key == "files" {
+			t.Fatal("files bucket present with heuristics off (artifact)")
+		}
+	}
+}

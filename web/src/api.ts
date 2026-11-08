@@ -872,6 +872,11 @@ export interface RoutingIntent {
   /** Group used when classification fails. */
   default?: string
   probe_chars?: number
+  /**
+   * label → 选项描述（task-73，后端 config.RoutingIntentConfig.Descriptions）：
+   * 键 ⊆ labels、值非空；判据提示词的选项说明，缺省回落 label 名。
+   */
+  descriptions?: Record<string, string>
 }
 
 export interface RoutingGroup {

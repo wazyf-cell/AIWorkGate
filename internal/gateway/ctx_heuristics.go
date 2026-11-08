@@ -54,6 +54,30 @@ type ctxFileSegment struct {
 // (task-74). The path attribute becomes the drill-down label.
 var ctxFileTagRe = regexp.MustCompile(`(?s)<file\s+path="([^"]{1,200})"\s*>(.*?)</file\s*>`)
 
+// ctxArtifactBlockRe matches the `<artifact …>…</artifact>` convention block
+// (task-80). Group 1 = the optional attribute string, group 2 = content.
+// The attribute string is scanned for path/title to build the drill-down label.
+var ctxArtifactBlockRe = regexp.MustCompile(`(?s)<artifact(\s[^>]*)?>(.*?)</artifact\s*>`)
+
+// ctxArtifactPathRe / ctxArtifactTitleRe extract the drill-down label from
+// the artifact tag's attribute string: path wins, title is the fallback.
+var (
+	ctxArtifactPathRe  = regexp.MustCompile(`\bpath="([^"]{1,200})"`)
+	ctxArtifactTitleRe = regexp.MustCompile(`\btitle="([^"]{1,200})"`)
+)
+
+// ctxArtifactLabel picks the drill-down label from an artifact tag's
+// attribute string: path > title > the literal `<artifact>` fallback.
+func ctxArtifactLabel(attrs string) string {
+	if m := ctxArtifactPathRe.FindStringSubmatch(attrs); m != nil {
+		return m[1]
+	}
+	if m := ctxArtifactTitleRe.FindStringSubmatch(attrs); m != nil {
+		return m[1]
+	}
+	return "<artifact>"
+}
+
 // ctxFenceBlockRe matches one code fence (``` or ~~~) with its body, up to the
 // nearest closing fence of either marker. The non-greedy body keeps nested-ish
 // inputs from swallowing the whole message; imperfect fences degrade to the
@@ -122,6 +146,23 @@ func ctxFileSegments(text string) (segments []ctxFileSegment, rest string) {
 		segments = append(segments, ctxFileSegment{
 			tokens: estimateTextTokens(content),
 			label:  path,
+		})
+		rest = rest[:loc[0]] + " " + rest[loc[1]:]
+	}
+	// 1b. `<artifact>` 约定标签整块（task-80）：label = path > title > `<artifact>`。
+	for {
+		loc := ctxArtifactBlockRe.FindStringSubmatchIndex(rest)
+		if loc == nil {
+			break
+		}
+		attrs := ""
+		if loc[2] >= 0 {
+			attrs = rest[loc[2]:loc[3]]
+		}
+		content := rest[loc[4]:loc[5]]
+		segments = append(segments, ctxFileSegment{
+			tokens: estimateTextTokens(content),
+			label:  ctxArtifactLabel(attrs),
 		})
 		rest = rest[:loc[0]] + " " + rest[loc[1]:]
 	}

@@ -175,7 +175,7 @@ function toDraft(group: RoutingGroupView): GroupDraft {
     routes: Object.entries(intent?.route ?? {}).map(([label, target]) => ({
       label,
       target,
-      description: (intent as RoutingIntent & { descriptions?: Record<string, string> } | undefined)?.descriptions?.[label] ?? '',
+      description: intent?.descriptions?.[label] ?? '',
     })),
   }
 }
@@ -283,9 +283,8 @@ function buildGroups(): RoutingGroup[] {
         route,
       }
       if (Object.keys(descriptions).length > 0) {
-        // RoutingIntent 类型暂无 descriptions 字段（api.ts 不在本卡作用域）——
-        // 交集类型旁路，运行时 JSON 照发；后端 task-72 已校验键⊆labels、值非空。
-        ;(intent as RoutingIntent & { descriptions?: Record<string, string> }).descriptions = descriptions
+        // 键⊆labels、值非空（后端 task-72 已校验）；缺省回落 label 名。
+        intent.descriptions = descriptions
       }
       group.intent = intent
       if (draft.intentUpstream) intent.upstream = draft.intentUpstream
