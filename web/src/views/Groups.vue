@@ -443,7 +443,7 @@ onMounted(load)
       <div class="card-body tight">
         <div class="row between">
           <span class="field-label">一键模板</span>
-          <span class="small muted">按当前目录的费率与上下文自动挑模型，预填一个组草稿——不直接保存，检查后点「保存全部」。</span>
+          <span class="small muted">按当前目录的费率与上下文自动挑模型，预填一个组草稿——不直接保存，检查后点「保存全部」。三张模板本身是内置默认值、不可编辑；但点「使用模板」生成的组草稿完全可编辑：改名、成员、权重、规则都可以改，保存后就是你自己的组。</span>
         </div>
         <div class="stack">
           <div v-for="t in templates" :key="t.kind" class="row between rs-in">

@@ -143,16 +143,48 @@ async function check(proxy: Proxy) {
   }
 }
 
+/* ── task-51 3A：错误文案归类（纯显示层，不改检测逻辑/端点）──
+ * 根因：502 来自用户自配上游代理拒绝 CONNECT api.ipify.org
+ * （internal/egress/forwarder.go connectRefusedError），不是网关白名单拒绝；
+ * 「Windows 未开启系统代理」是信息性状态，不该标红加「失败：」。 */
+const proxyDisabledMarks = ['Windows 未开启系统代理', '未开启系统代理', '未启用系统代理']
+const proxyRefusedMarks = ['forwarder refused CONNECT', '502 Bad Gateway']
+
+function proxyErrorView(text: string): { line: string; title: string } {
+  if (proxyDisabledMarks.some((mark) => text.includes(mark))) {
+    return { line: `未启用：${text}`, title: text }
+  }
+  if (proxyRefusedMarks.some((mark) => text.toLowerCase().includes(mark.toLowerCase()))) {
+    return {
+      line: '失败：上游代理拒绝连接检测地址（api.ipify.org），请检查代理规则或换节点。',
+      title: text,
+    }
+  }
+  return { line: `失败：${text}`, title: text }
+}
+
+/** 是否按「失败」呈现（标红）：未启用类不算失败。 */
+function proxyHasFailure(proxy: Proxy): boolean {
+  const text = checkResults[proxy.id]?.error ?? proxy.last_error
+  if (!text) return false
+  return !proxyDisabledMarks.some((mark) => text.includes(mark))
+}
+
+/** 原始错误全文，挂到悬停 title，不丢。 */
+function checkLineTitle(proxy: Proxy): string {
+  return checkResults[proxy.id]?.error ?? proxy.last_error ?? ''
+}
+
 function checkLine(proxy: Proxy): string {
   const result = checkResults[proxy.id]
   if (result) {
-    if (result.error) return `失败：${result.error}`
+    if (result.error) return proxyErrorView(result.error).line
     const parts = []
     if (result.exit_ip) parts.push(`出口 ${result.exit_ip}`)
     if (result.latency_ms) parts.push(`${result.latency_ms} ms`)
     return parts.length > 0 ? parts.join(' · ') : '检测完成'
   }
-  if (proxy.last_error) return `失败：${proxy.last_error}`
+  if (proxy.last_error) return proxyErrorView(proxy.last_error).line
   return '—'
 }
 </script>
@@ -276,7 +308,12 @@ function checkLine(proxy: Proxy): string {
               <td class="small">
                 <span v-if="proxy.last_exit_ip" class="mono">{{ proxy.last_exit_ip }}</span>
                 <span v-else class="muted">—</span>
-                <div v-if="checkLine(proxy) !== '—'" class="small" :style="{ color: (checkResults[proxy.id]?.error || proxy.last_error) ? 'var(--danger)' : 'var(--muted)' }">
+                <div
+                  v-if="checkLine(proxy) !== '—'"
+                  class="small"
+                  :title="checkLineTitle(proxy)"
+                  :style="{ color: proxyHasFailure(proxy) ? 'var(--danger)' : 'var(--muted)' }"
+                >
                   {{ checkLine(proxy) }}
                 </div>
               </td>

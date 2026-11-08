@@ -270,6 +270,10 @@ type Gateway struct {
 	intentTTL     time.Duration
 	intentMu      sync.Mutex
 	intentCache   map[string]intentCacheEntry
+
+	// trace 是问题6A 地基（task-48）的逐请求事件流：旁路观察者，
+	// sticky 采集门控，环形缓冲最近 500 条，长轮询经 webui 回调消费。
+	trace *traceLog
 }
 
 type pluginModels struct {
@@ -372,13 +376,15 @@ func newGateway(opts Options) *Gateway {
 		client:            &http.Client{Transport: transport, CheckRedirect: doNotFollowRedirects},
 		transport:         transport,
 		lim:               newLimiter(),
-		limiter:           newRateLimiter(),		decisionUpstreams: opts.DecisionUpstreams,
+		limiter:           newRateLimiter(),
+		decisionUpstreams: opts.DecisionUpstreams,
 		priceFor:          opts.PriceFor,
 		poolRateFor:       opts.PoolRateFor,
 		pCache:            make(map[string]pluginModels),
 		intentTimeout:     defaultIntentTimeout,
 		intentTTL:         defaultIntentTTL,
 		intentCache:       make(map[string]intentCacheEntry),
+		trace:             newTraceLog(),
 	}
 	g.debugBody.Store(opts.DebugBody)
 	g.SetCorsOrigins(opts.CorsAllowOrigins)
@@ -1875,4 +1881,8 @@ func (g *Gateway) emit(rec *reqRecord, latency time.Duration) {
 		row.BodyResp = truncateUTF8(rec.bodyResp, g.bodyCap)
 	}
 	g.logs.Write(row)
+	// 问题6A 地基（task-48）：旁路观察者——sticky 门控未开启时只付一次原子读。
+	if g.trace != nil && g.trace.active.Load() {
+		g.trace.emit(traceEventOf(rec, latency.Milliseconds()))
+	}
 }

@@ -208,6 +208,12 @@ type Options struct {
 	ToolAliasGet func() (ToolAliasStatus, error)
 	ToolAliasSet func(file tool_alias.File) error
 
+	// 问题6A 地基（task-48）：逐请求 trace 事件流。Recent 回放最近 limit 条
+	// （0 = 全部保留历史）；Poll 为 after 游标增量，wait=true 时挂起至多 25s
+	// 再空返回。两者返回 {"events":[…],"last_seq":N} 信封。nil 答答 501。
+	GatewayTraceRecent func(limit int) (any, error)
+	GatewayTracePoll   func(after int64, wait bool) (any, error)
+
 	Proxies     func() []model.Proxy
 	SaveProxy   func(model.Proxy) error
 	DeleteProxy func(id string) error
@@ -453,6 +459,9 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/rules/{name}/reset", s.handleRulePackReset)
 	// 问题6A（task-43）：工具别名指纹清洗（GET/PUT，保存即热替换）
 	mux.HandleFunc("/api/tool-alias", s.handleToolAlias)
+	// 问题6A 地基（task-48）：逐请求 trace 长轮询 + 首屏回放
+	mux.HandleFunc("/api/gateway/trace", s.handleGatewayTrace)
+	mux.HandleFunc("/api/gateway/trace/recent", s.handleGatewayTrace)
 	mux.HandleFunc("/api/proxies", s.handleProxies)
 	mux.HandleFunc("/api/proxies/{id}", s.handleProxy)
 	mux.HandleFunc("/api/proxies/{id}/check", s.handleProxyCheck)

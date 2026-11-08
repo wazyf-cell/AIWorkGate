@@ -3083,6 +3083,8 @@ export interface MarketSearchResult {
   links?: Record<string, string>
   /** 周下载量（npm downloads API 补取失败时为空）。 */
   downloads?: number
+  /** npm search score.detail.popularity（0..1 热度分，task-50）；缺 score 按 0，不作绝对下载量展示。 */
+  popularity?: number
 }
 
 export interface MarketSearchResponse {
@@ -3148,6 +3150,7 @@ export function normalizeMarketSearch(
       description: item.description ?? "",
       links: item.links,
       downloads: item.downloads,
+      popularity: item.popularity,
     }))
     .filter((item) => Boolean(item.name))
 }

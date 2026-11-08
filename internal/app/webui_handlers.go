@@ -114,6 +114,10 @@ func (a *App) webOptions() webui.Options {
 		ToolAliasGet: a.toolAliasStatus,
 		ToolAliasSet: a.saveToolAlias,
 
+		// 问题6A 地基（task-48）：逐请求 trace 长轮询 + 首屏回放
+		GatewayTraceRecent: a.gatewayTraceRecent,
+		GatewayTracePoll:   a.gatewayTracePoll,
+
 		Proxies:     a.listProxies,
 		SaveProxy:   a.saveProxy,
 		DeleteProxy: a.deleteProxy,

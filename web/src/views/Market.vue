@@ -4,7 +4,7 @@
 // /api/market/updates 派生（id=包名、from=已装版本、to=最新版、available=是否有更新）——
 // 后端没有独立的 /installed 路由，也不存在「执行更新」端点（task-23 更新由宿主定时器
 // 按 prompt/auto 策略处理），因此行内「更新」按钮做「重查 + 说明」，真执行留给宿主。
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   api,
   errorMessage,
@@ -27,6 +27,18 @@ const sourceOptions: { value: MarketSource; label: string }[] = [
 ]
 
 const results = ref<MarketSearchResult[]>([])
+/* task-50：按 npm 热度（score.detail.popularity，0..1）降序；缺热度（GitHub/
+ * 本地源、旧后端）按 0 处理并保持原相对顺序（稳定排序），不显示绝对下载量。 */
+const HOT_POPULARITY = 0.6
+const sortedResults = computed(() =>
+  results.value
+    .map((pkg, index) => ({ pkg, index }))
+    .sort((a, b) => (b.pkg.popularity ?? 0) - (a.pkg.popularity ?? 0) || a.index - b.index)
+    .map((entry) => entry.pkg),
+)
+function isHot(pkg: MarketSearchResult): boolean {
+  return (pkg.popularity ?? 0) >= HOT_POPULARITY
+}
 /** magpie 官方社区包前缀（对齐 magpie plugin/updates.go:77 的 Official()）：启用/更新策略只认这批。 */
 const OFFICIAL_PREFIX = '@magpie-community/'
 function isOfficial(name: string): boolean {
@@ -240,7 +252,7 @@ onMounted(() => void checkUpdates())
     <section v-if="results.length" class="card">
       <div class="card-head">
         <h2>搜索结果</h2>
-        <span class="sub">{{ results.length }} 个结果{{ results.length >= 100 ? '（单次最多返回 100 条，可加关键词缩小范围）' : '' }}</span>
+        <span class="sub">{{ sortedResults.length }} 个结果{{ sortedResults.length >= 100 ? '（单次最多返回 100 条，可加关键词缩小范围）' : '' }} · 按 npm 热度排序，非绝对下载量</span>
       </div>
       <div class="table-wrap">
         <table class="table">
@@ -254,10 +266,11 @@ onMounted(() => void checkUpdates())
             </tr>
           </thead>
           <tbody>
-            <tr v-for="pkg in results" :key="pkg.name">
+            <tr v-for="pkg in sortedResults" :key="pkg.name">
               <td class="mono">
                 {{ pkg.name }}
                 <span v-if="isOfficial(pkg.name)" class="badge">官方</span>
+                <span v-if="isHot(pkg)" class="badge" title="npm search 热度分 ≥ 0.6">热门</span>
               </td>
               <td><span class="badge">{{ pkg.version }}</span></td>
               <td class="truncate" :title="pkg.description || ''">{{ pkg.description || '—' }}</td>

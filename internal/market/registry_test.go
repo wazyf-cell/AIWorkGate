@@ -122,3 +122,45 @@ func TestRegistryNotFound(t *testing.T) {
 		t.Fatalf("error text = %q, want it to say not found", err)
 	}
 }
+
+// TestRegistrySearchPopularity 钉住 task-50：npm search 的
+// score.detail.popularity 进 SearchPackage.Popularity；三种形态——
+// 正常数值 / 整个 score 缺失 / score 为 null——缺的按 0，命中不丢。
+func TestRegistrySearchPopularity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 用原始 JSON 而不是 struct 编码：struct 表达不出「score 键存在但为 null」。
+		body := `{"total":3,"objects":[` +
+			`{"package":{"name":"with-score","version":"1.0.0"},"score":{"detail":{"popularity":0.9,"final":1}}},` +
+			`{"package":{"name":"no-score","version":"1.1.0"}},` +
+			`{"package":{"name":"null-score","version":"1.2.0"},"score":null}]}`
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	reg, err := NewRegistry(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits, err := reg.Search(context.Background(), "opencode", 3)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("hits = %d, want 3", len(hits))
+	}
+	want := []struct {
+		name       string
+		popularity float64
+	}{
+		{"with-score", 0.9},
+		{"no-score", 0},
+		{"null-score", 0},
+	}
+	for i, tc := range want {
+		if hits[i].Name != tc.name {
+			t.Fatalf("hits[%d].name = %q, want %q", i, hits[i].Name, tc.name)
+		}
+		if hits[i].Popularity != tc.popularity {
+			t.Fatalf("hits[%d] (%s) popularity = %v, want %v", i, tc.name, hits[i].Popularity, tc.popularity)
+		}
+	}
+}

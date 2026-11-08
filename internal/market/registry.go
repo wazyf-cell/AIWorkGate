@@ -59,9 +59,23 @@ type SearchResponse struct {
 	Total   int            `json:"total"`
 }
 
-// SearchObject is one hit of the search envelope.
+// SearchObject is one hit of the search envelope. Score carries npm's search
+// ranking; Detail.Popularity is the 0..1 popularity signal the market list
+// sorts by (task-50). Either nesting level may be missing or null — a missing
+// score reads as 0, and Search keeps the hit rather than dropping it.
 type SearchObject struct {
 	Package SearchPackage `json:"package"`
+	Score   *SearchScore  `json:"score"`
+}
+
+// SearchScore is the npm search score envelope; Detail may be absent or null.
+type SearchScore struct {
+	Detail *SearchScoreDetail `json:"detail"`
+}
+
+// SearchScoreDetail holds the three 0..1 sub-scores; only Popularity is used.
+type SearchScoreDetail struct {
+	Popularity float64 `json:"popularity"`
 }
 
 // SearchPackage carries the display fields of one npm search hit.
@@ -70,6 +84,11 @@ type SearchPackage struct {
 	Version     string            `json:"version"`
 	Description string            `json:"description,omitempty"`
 	Links       map[string]string `json:"links,omitempty"`
+	// Popularity is npm search's score.detail.popularity (0..1), copied from
+	// the enclosing SearchObject by Search (task-50). omitempty keeps the
+	// wire clean when the registry returned no score; 0 is never shown as a
+	// download count anywhere.
+	Popularity float64 `json:"popularity,omitempty"`
 }
 
 // Registry is the injected npm HTTP client. All network access of the market
@@ -144,7 +163,12 @@ func (r *Registry) Search(ctx context.Context, query string, limit int) ([]Searc
 	}
 	hits := make([]SearchPackage, 0, len(out.Objects))
 	for _, o := range out.Objects {
-		hits = append(hits, o.Package)
+		pkg := o.Package
+		// 缺 score / detail / popularity 一律按 0（指针为零值即未命中）。
+		if o.Score != nil && o.Score.Detail != nil {
+			pkg.Popularity = o.Score.Detail.Popularity
+		}
+		hits = append(hits, pkg)
 	}
 	return hits, nil
 }
