@@ -7,6 +7,14 @@
 > ④ 第 11~20 轮增量提交（33f0e53…7ca7dec，含市场/热力图/RouteStage/六维一二期/内置表编辑/P6P11 验收）已记录在变更日志第 11~20 轮段并推送 main；custom 连接模型暂不进路由组成员源（路由组二期 task-72 修复中）。
 > ⑤ 剩余外部依赖不变：P7 服务器实跑、P4 实机推送（同一台服务器）、桥 OAuth 回调（可选）。
 
+> **2026-11-09 增量（最新，优先于上面 ①~⑤）**：
+> ⑥ **插件体系已整体切换**：11 个半成品原生 Go 插件全部卸载、保留 aichat；改由 **magpie 生态真包 × 共享桥** 接入 7 渠道（trae/workbuddy/zcode/zen-free/raccoon/codearts/loomy）——预览与正式双实例均 8 插件 healthy、15 账号（含 4 个 `#` 后缀备用账号）、magpie 登录态自动导入。安装配方在 `scripts/install-bridge-plugin.ps1`（`-Target preview|formal`），备份在 `runtime/backups/`。上面 ④ 的「custom 连接模型暂不进路由组成员源」**已作废**：task-72 已让 custom 进组 universe/members，task-83 实现全 custom 组直发（调度层零改动）+ 混合组保存校验 400。
+> ⑦ **桥凭据导入三形态**：OAuth（access/refresh）、`type=api`+key 公共凭据（zen-free）、`#` 后缀多账号（task-84，selftest 105/105）；边界复核 8/8 PASS + 14/14 exe/manifest 一致性。
+> ⑧ **构建链**：`scripts/build-bridge.ps1 -Target <windows|linux|linux-arm64|all>`（bun 1.4.4 交叉编译 ELF，x64/arm64 已落产物 + sha256 + e_machine 字节校验）；mtime 守卫防「旧 exe 静默缺功能」（Go 宿主 exe 同坑，见变更日志第 23 轮）；**Linux ELF 未实机跑过**，首次部署需先 /health + 一条 chat。
+> ⑨ **宿主→桥凭据转发已打通**：`POST /api/plugins/{id}/credentials/sync`（task-90，P4 库按渠道拆出 → 桥 /admin/credentials），P7 部署文档 §2.5 已固化布局与注入链路。
+> ⑩ **正式实例端口 17865（非 7865）**，宿主有单实例 mutex——预览在跑时启正式会静默退出；验证需先停预览再恢复。
+> ⑪ **本地项已清零、只差服务器**：剩余 = P7 实跑 + P4 实推（需用户 6 项：OS/架构、SSH user@host、域名+DNS、安全组、出口代理、githubToken 确认）、zcode 的 Kaspersky `*.z.ai` 扫描排除（用户本机杀软设置）、zen-free 公共额度（订阅或等恢复）。上面 ⑤ 的「桥 OAuth 回调」不再是阻塞项（存量凭据有效）。详见变更日志第 22~24 轮与 `docs/p7/00-部署演练.md` §2.5/§10。
+
 > 本文取代 `handoff-20261106-aigate-final.md` 成为**唯一入口**（旧文保留作历史）。
 > 更旧的两份（`handoff-20261105-aigate-third-round.md`、`handoff-20261106-aigate-swarm-rounds.md`）只是历史，不要按它们行动。
 > 逐批改动与验证证据在 `docs/变更日志/变更日志-2026-11-05.md` 的「第 7 轮（接手轮）」与「第 8 轮（计划清零轮）」两个段落——**那是事实的原始记录，本文只做索引与导航**。
