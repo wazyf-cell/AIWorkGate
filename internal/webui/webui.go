@@ -219,10 +219,11 @@ type Options struct {
 	// 回调返回 nil，端点答 {"req_id","sampled":false}。nil 回调答 501。
 	GatewayCtxComposition func(reqID string) (any, error)
 
-	// 六维采样开关（task-62）：sticky 门控（trace.go 同模式），开启后网关在
-	// 改写前的 body 上分析并落独立表；关闭即停。nil 答答 501。
-	CtxSamplingGet func() bool
-	CtxSamplingSet func(on bool)
+	// 六维采样开关（task-67：持久化到 config.json）：GET 回读 (enabled,
+	// heuristics) 双态；POST 落 config 并即时生效（heuristics=nil = 保持原值）。
+	// nil 回调答 501。
+	CtxSamplingStatus func() (enabled bool, heuristics bool)
+	CtxSamplingSet    func(enabled bool, heuristics *bool) error
 
 	Proxies     func() []model.Proxy
 	SaveProxy   func(model.Proxy) error

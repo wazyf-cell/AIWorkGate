@@ -84,6 +84,32 @@ withDefaults(defineProps<{ name: string; size?: number }>(), { size: 18 })
     <template v-else-if="name === 'zap'">
       <path d="M13 2.5 4.5 13.5H11l-1 8L19.5 10H13l0-7.5z" />
     </template>
+    <!-- 六维上下文专属图标（task-68 修复 3，feather 风格同 stroke 参数） -->
+    <template v-else-if="name === 'ctx-system'">
+      <rect x="5" y="3.5" width="14" height="17" rx="1.6" />
+      <path d="M8.5 8h7M8.5 11.5h7M8.5 15h4.5" />
+    </template>
+    <template v-else-if="name === 'ctx-tools'">
+      <path d="M14.7 6.3a4 4 0 0 1 5.4 5.3l-3.5-3.5-2 2-2-2 2-2z" />
+      <path d="M15.5 9.4 6.8 18a2.1 2.1 0 0 1-3-3l8.7-8.7" />
+    </template>
+    <template v-else-if="name === 'ctx-tool-results'">
+      <path d="M22 12.5h-5.5l-2 2.5h-5l-2-2.5H2" />
+      <path d="M5.4 5.6 2 12.5V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.5L18.6 5.6A2 2 0 0 0 16.8 4.5H7.2A2 2 0 0 0 5.4 5.6z" />
+    </template>
+    <template v-else-if="name === 'ctx-conversation'">
+      <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 12.5 3h.5a8.5 8.5 0 0 1 8 8z" />
+    </template>
+    <template v-else-if="name === 'ctx-memory'">
+      <ellipse cx="12" cy="5.5" rx="8.5" ry="2.8" />
+      <path d="M3.5 5.5V18.5c0 1.6 3.8 2.8 8.5 2.8s8.5-1.2 8.5-2.8V5.5" />
+      <path d="M3.5 12c0 1.6 3.8 2.8 8.5 2.8s8.5-1.2 8.5-2.8" />
+    </template>
+    <template v-else-if="name === 'ctx-other'">
+      <circle cx="5" cy="12" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.1" fill="currentColor" stroke="none" />
+    </template>
   </svg>
 </template>
 

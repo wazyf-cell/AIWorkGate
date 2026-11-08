@@ -9,27 +9,35 @@ import (
 	"net/http"
 )
 
-// handleGatewayCtxSampling serves GET/POST /api/gateway/ctx-sampling（sticky
-// 门控开关；POST body {"enabled":true|false}，GET 回读当前态）。
+// handleGatewayCtxSampling serves GET/POST /api/gateway/ctx-sampling（task-67：
+// 双开关持久化到 config.json）。GET 回读 {"enabled","heuristics"}；POST body
+// {"enabled":bool,"heuristics":bool?}——heuristics 缺省保持存储值；两开关均
+// 即时生效且重启保持。
 func (s *server) handleGatewayCtxSampling(w http.ResponseWriter, r *http.Request) {
-	if s.opts.CtxSamplingGet == nil || s.opts.CtxSamplingSet == nil {
+	if s.opts.CtxSamplingStatus == nil || s.opts.CtxSamplingSet == nil {
 		s.unavailable(w)
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": s.opts.CtxSamplingGet()})
+		enabled, heuristics := s.opts.CtxSamplingStatus()
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled, "heuristics": heuristics})
 		return
 	case http.MethodPost:
 		var body struct {
-			Enabled bool `json:"enabled"`
+			Enabled    *bool `json:"enabled"`
+			Heuristics *bool `json:"heuristics"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, "body 必须是 {\"enabled\":bool}", "invalid_json")
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Enabled == nil {
+			writeError(w, http.StatusBadRequest, "body 必须是 {\"enabled\":bool,\"heuristics\":bool?}（enabled 必填）", "invalid_json")
 			return
 		}
-		s.opts.CtxSamplingSet(body.Enabled)
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": body.Enabled})
+		if err := s.opts.CtxSamplingSet(*body.Enabled, body.Heuristics); err != nil {
+			writeError(w, http.StatusInternalServerError, "ctx sampling persist failed: "+err.Error(), "internal_error")
+			return
+		}
+		enabled, heuristics := s.opts.CtxSamplingStatus()
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled, "heuristics": heuristics})
 		return
 	default:
 		w.Header().Set("Allow", "GET, POST")

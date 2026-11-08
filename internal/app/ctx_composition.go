@@ -6,10 +6,13 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
+	"aiworkgate/internal/config"
 	"aiworkgate/internal/gateway"
+	"aiworkgate/internal/model"
 	"aiworkgate/internal/store"
 )
 
@@ -78,4 +81,41 @@ func (a *App) ctxCompositionPayload(reqID string) (any, error) {
 		"usage_known":            rec.UsageKnown,
 		"sampled_reason":         rec.SampledReason,
 	}, nil
+}
+
+// applyCtxSamplingConfig pushes the persisted config switches into the
+// gateway's process-level gate (task-67: sampling + phase-2 heuristics survive
+// a restart). Called from New and after every settings save.
+func (a *App) applyCtxSamplingConfig(cfg config.Config) {
+	gateway.SetCtxSamplingEnabled(cfg.Gateway.CtxSampling)
+	gateway.SetCtxHeuristicsEnabled(cfg.Gateway.CtxHeuristics)
+}
+
+// setCtxSamplingPersisted writes the sticky switches into config.json and
+// applies them live. A nil heuristics keeps the stored value (the admin
+// endpoint's POST {enabled} form). Failure returns an error to the endpoint
+// without flipping the in-memory gate.
+func (a *App) setCtxSamplingPersisted(enabled bool, heuristics *bool) error {
+	next := a.configSnapshot()
+	next.Gateway.CtxSampling = enabled
+	if heuristics != nil {
+		next.Gateway.CtxHeuristics = *heuristics
+	}
+	if err := config.Save(a.dataDir, next); err != nil {
+		return err
+	}
+	a.cfgMu.Lock()
+	a.cfg = next
+	a.cfgMu.Unlock()
+	gateway.SetCtxSamplingEnabled(next.Gateway.CtxSampling)
+	gateway.SetCtxHeuristicsEnabled(next.Gateway.CtxHeuristics)
+	a.writeAudit(model.AuditConfig, "ctx_sampling", "config.json",
+		fmt.Sprintf("sampling=%v heuristics=%v", next.Gateway.CtxSampling, next.Gateway.CtxHeuristics))
+	return nil
+}
+
+// ctxSamplingStatus reads the persisted/live switch pair for the admin endpoint.
+func (a *App) ctxSamplingStatus() (bool, bool) {
+	cfg := a.configSnapshot()
+	return cfg.Gateway.CtxSampling, cfg.Gateway.CtxHeuristics
 }

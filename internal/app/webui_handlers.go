@@ -121,9 +121,9 @@ func (a *App) webOptions() webui.Options {
 		// 六维上下文采样查询（task-62）：按 req_id 读独立表
 		GatewayCtxComposition: a.ctxCompositionPayload,
 
-		// 六维采样 sticky 开关（task-62）：进程级门控，开启即对下一请求生效
-		CtxSamplingGet: gateway.CtxSamplingEnabled,
-		CtxSamplingSet: gateway.SetCtxSamplingEnabled,
+		// 六维采样开关（task-67）：双态持久化到 config.json，重启保持
+		CtxSamplingStatus: a.ctxSamplingStatus,
+		CtxSamplingSet:    a.setCtxSamplingPersisted,
 
 		Proxies:     a.listProxies,
 		SaveProxy:   a.saveProxy,
@@ -430,6 +430,9 @@ func (a *App) saveSettings(raw json.RawMessage) error {
 	// P10 收尾：redact 段没有运行期 setter，变化时整体重建网关（见
 	// applyRedactLive）。值未变的保存不重建，缓存与限速窗口保持温热。
 	a.applyRedactLive(old, next)
+	// task-67：六维采样/启发式双开关随 settings 保存即时生效（config 已在
+	// 上方 config.Save 落盘，这里只推运行态门控）。
+	a.applyCtxSamplingConfig(next)
 	// Direct egress accounting is a listener decision, not a plugin one: apply
 	// it before the files are rewritten, so switching it on puts the listener URL
 	// into egress.json right away. Running children keep the environment they

@@ -393,6 +393,8 @@ func NewWithOptions(opts NewOptions) (a *App, err error) {
 	// 六维上下文采样（task-62）：gateway 收束 → 独立表落库；采样本身在网关内
 	// 门控（SetCtxSampling），关闭时 sink 永不被调用。
 	a.installCtxSink()
+	// task-67：采样/启发式开关从 config 持久化读入（缺省关；重启保持）。
+	a.applyCtxSamplingConfig(cfg)
 
 	a.logger.Info("app", "AIWorkGate starting", map[string]any{
 		"version":  Version,

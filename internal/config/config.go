@@ -279,6 +279,20 @@ type GatewayConfig struct {
 	// DefaultPlugin serves bare model names (no "id/" prefix). Empty means a
 	// bare name is answered with 404 model_not_found.
 	DefaultPlugin string `json:"default_plugin"`
+
+	// CtxSampling enables the six-bucket context sampling of /v1 requests
+	// (task-62; sticky gate, see gateway.SetCtxSamplingEnabled). Default off:
+	// each sampled request pays a 2-5ms body analysis and only the admin
+	// treemap page reads the result.
+	CtxSampling bool `json:"ctx_sampling"`
+
+	// CtxHeuristics enables the phase-2 heuristic buckets (files / memory,
+	// task-67) on top of CtxSampling: path-shaped substrings inside
+	// conversation text land in a separate "files" bucket and
+	// <memory>/CLAUDE.md-marked blocks land in "memory". Default off — the
+	// heuristic is best-effort and may mis-assign; the exact buckets are
+	// unchanged while this is off.
+	CtxHeuristics bool `json:"ctx_heuristics"`
 }
 
 // ProxyConfig holds the optional upstream proxy used by plugins.

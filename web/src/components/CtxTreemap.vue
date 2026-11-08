@@ -8,6 +8,7 @@
 // 已按 tokens 降序）。点类别块展开类内 Top-8；悬浮 title 给类内 Top 5。
 import { computed, ref } from 'vue'
 import type { GatewayCtxItem, GatewayCtxSection } from '../api'
+import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{
   sections: GatewayCtxSection[]
@@ -23,16 +24,59 @@ const BUCKET_LABELS: Record<string, string> = {
   other: '其它',
 }
 
+/** 六维专属图标名（task-68 修复 3，AppIcon.vue 提供，无图标库依赖）。 */
+const BUCKET_ICONS: Record<string, string> = {
+  system: 'ctx-system',
+  tools: 'ctx-tools',
+  tool_results: 'ctx-tool-results',
+  conversation: 'ctx-conversation',
+  memory: 'ctx-memory',
+  other: 'ctx-other',
+}
+
+function iconOf(key: string): string {
+  return BUCKET_ICONS[key] ?? 'ctx-other'
+}
+
 const TOP_TITLE = 5
-const TOP_DETAIL = 8
 /** tile 短边低于该百分比时不画文字（色块靠 title 表达）。 */
 const TILE_TEXT_MIN = 16
 
 const expanded = ref('')
 
-/** 渲染口径：优先上游分摊（allocated），无则本地估算（est）。 */
+/** 双口径视图（task-68 修复 2）：allocated = 上游分摊，est = 本地估算。 */
+const viewMode = ref<'allocated' | 'est'>('allocated')
+
+/** 渲染口径：allocated 视图下无上游口径的 section 回落 est。 */
 function tileValue(section: GatewayCtxSection): number {
-  return section.allocated ?? section.est
+  if (viewMode.value === 'allocated') return section.allocated ?? section.est
+  return section.est
+}
+
+/** item 无独立 allocated 字段——按所在 section 的分摊比例推导（后端
+ * section 级 allocated 本就是比例分摊，同法推导到条级；est 视图直接用
+ * item.tokens）。无上游口径（section.allocated 缺省）时回落 est。 */
+function itemValue(item: GatewayCtxItem): number {
+  if (viewMode.value === 'est') return item.tokens
+  const section = sectionOf(item.bucket)
+  if (!section || section.allocated === undefined || !section.est) return item.tokens
+  return Math.round(item.tokens * (section.allocated / section.est))
+}
+
+/** item 的上游分摊推导值：按所在 section 的 allocated/est 比例放大；
+ * section 无上游口径时返回 undefined（调用方回落 est）。 */
+function itemAllocated(item: GatewayCtxItem): number | undefined {
+  const section = sectionOf(item.bucket)
+  if (!section || section.allocated === undefined || !section.est) return undefined
+  return Math.round(item.tokens * (section.allocated / section.est))
+}
+
+/** 悬浮同显两值：est 与 allocated（缺省标「无上游口径」）。 */
+function itemBothText(item: GatewayCtxItem): string {
+  const allocated = itemAllocated(item)
+  return allocated === undefined
+    ? `本地估算 ${fmtCompact(item.tokens)}（无上游口径）`
+    : `本地估算 ${fmtCompact(item.tokens)} · 上游分摊 ${fmtCompact(allocated)}`
 }
 
 interface CtxTile {
@@ -137,9 +181,9 @@ function topItems(bucket: string, limit: number): GatewayCtxItem[] {
 function tileTitle(key: string): string {
   const section = sectionOf(key)
   if (!section) return labelOf(key)
-  const lines = [`类内 Top 项（${labelOf(key)}）`]
+  const lines = [`类内 Top 项（${labelOf(key)}）· 本地估算 ${fmtCompact(section.est)}${section.allocated !== undefined ? ` · 上游分摊 ${fmtCompact(section.allocated)}` : ' · 无上游口径'}`]
   for (const item of topItems(key, TOP_TITLE)) {
-    lines.push(`${item.label}：${fmtCompact(item.tokens)}`)
+    lines.push(`${item.label}：${itemBothText(item)}`)
   }
   if (lines.length === 1) lines.push('（无条级明细）')
   return lines.join('\n')
@@ -150,13 +194,43 @@ function toggle(key: string) {
 }
 
 const detailBucket = computed<string>(() => expanded.value)
+/** 修复 1（二期）：钻取展示该类**全部**条级明细（一期只 Top-8），
+ * 每行带当前口径 tokens 与类内占比（分母 = 该类已加载明细的 est 合计）。 */
 const detailItems = computed<GatewayCtxItem[]>(() =>
-  detailBucket.value ? topItems(detailBucket.value, TOP_DETAIL) : [],
+  detailBucket.value ? (props.items ?? []).filter((item) => item.bucket === detailBucket.value) : [],
 )
+
+const detailShareBase = computed<number>(() =>
+  detailItems.value.reduce((sum, item) => sum + item.tokens, 0),
+)
+
+function itemShare(item: GatewayCtxItem): string {
+  const base = detailShareBase.value
+  if (base <= 0) return '—'
+  return `${((item.tokens / base) * 100).toFixed(1)}%`
+}
 </script>
 
 <template>
   <div class="ctx-treemap">
+    <div class="row between">
+      <span class="field-label">上下文构成（六维）</span>
+      <!-- 双口径切换（task-68 修复 2） -->
+      <div class="seg">
+        <button
+          type="button"
+          class="seg-btn"
+          :class="{ active: viewMode === 'allocated' }"
+          @click="viewMode = 'allocated'"
+        >上游分摊</button>
+        <button
+          type="button"
+          class="seg-btn"
+          :class="{ active: viewMode === 'est' }"
+          @click="viewMode = 'est'"
+        >本地估算</button>
+      </div>
+    </div>
     <div class="ctx-treemap-canvas">
       <div
         v-for="tile in tiles"
@@ -178,16 +252,19 @@ const detailItems = computed<GatewayCtxItem[]>(() =>
     </div>
     <div v-if="detailBucket" class="ctx-treemap-detail">
       <span class="field-label">
-        {{ labelOf(detailBucket) }} · 条级明细（Top {{ detailItems.length }}）
+        {{ labelOf(detailBucket) }} · 条级明细（{{ detailItems.length }} 条 · 全量）
       </span>
       <div v-if="detailItems.length === 0" class="small muted">该类没有条级明细。</div>
-      <div v-for="item in detailItems" :key="item.label" class="ctx-item-row">
+      <div v-for="item in detailItems" :key="item.label" class="ctx-item-row" :title="itemBothText(item)">
         <span class="ctx-item-label mono" :title="item.label">{{ item.label }}</span>
-        <span class="ctx-item-tokens">{{ fmtCompact(item.tokens) }}</span>
+        <span class="ctx-item-tokens">
+          {{ fmtCompact(itemValue(item)) }} · {{ itemShare(item) }}
+        </span>
       </div>
     </div>
     <div class="ctx-treemap-legend">
       <span v-for="section in sections" :key="section.key" class="ctx-legend-item">
+        <AppIcon :name="iconOf(section.key)" :size="12" />
         <span class="ctx-legend-swatch" :class="`ctx-legend--${section.key}`"></span>
         {{ labelOf(section.key) }} {{ fmtCompact(tileValue(section)) }}
       </span>

@@ -10,8 +10,9 @@ import (
 
 // ctxSink 是宿主注入的落库回调（InstallCtxSink 包级安装，gateway 不 import store）。
 var (
-	ctxSinkMu   atomic.Value // func(CtxEmit)
-	ctxSampling atomic.Bool
+	ctxSinkMu       atomic.Value // func(CtxEmit)
+	ctxSampling     atomic.Bool
+	ctxHeuristicsOn atomic.Bool
 )
 
 // InstallCtxSink wires the host's persistence callback. Nil disables the sink
@@ -39,18 +40,34 @@ func SetCtxSamplingEnabled(on bool) { ctxSampling.Store(on) }
 // CtxSamplingEnabled reports the current gate state for the admin endpoint.
 func CtxSamplingEnabled() bool { return ctxSampling.Load() }
 
+// SetCtxHeuristicsEnabled flips the phase-2 files/memory heuristic buckets
+// (task-67). Only meaningful while sampling is on; default off keeps the
+// phase-1 six-bucket output byte-identical.
+func SetCtxHeuristicsEnabled(on bool) { ctxHeuristicsOn.Store(on) }
+
+// CtxHeuristicsEnabled reports the current heuristic state.
+func CtxHeuristicsEnabled() bool { return ctxHeuristicsOn.Load() }
+
 // ctxSamplingOn reports whether the gate is open; callers pay one atomic read
 // per request when it is closed.
 func ctxSamplingOn() bool { return ctxSampling.Load() }
 
 // sampleCtxComposition analyzes the pre-rewrite body when the gate is open.
 // It is read-only: the returned body is the input unchanged, so this hook
-// composes freely with the tool-alias / redact rewrites that follow.
+// composes freely with the tool-alias / redact rewrites that follow. With the
+// phase-2 heuristic switch on, the files/memory buckets join the breakdown.
 func (g *Gateway) sampleCtxComposition(rec *reqRecord, body []byte) []byte {
 	if !ctxSamplingOn() || rec == nil || len(body) == 0 {
 		return body
 	}
-	if comp, err := AnalyzeCtxComposition(body); err == nil {
+	var comp CtxComposition
+	var err error
+	if ctxHeuristicsOn.Load() {
+		comp, err = AnalyzeCtxCompositionHeuristics(body)
+	} else {
+		comp, err = AnalyzeCtxComposition(body)
+	}
+	if err == nil {
 		rec.ctxComp = &comp
 	}
 	return body
@@ -73,12 +90,16 @@ func emitCtxComposition(rec *reqRecord, nowUnix int64) {
 	if rec.prompt > 0 {
 		comp.Sections = AllocatePromptTokens(comp, rec.prompt)
 	}
+	reason := "sampling_enabled"
+	if ctxHeuristicsOn.Load() {
+		reason = "sampling_enabled+heuristics"
+	}
 	sink(CtxEmit{
 		ReqID:          rec.reqID,
 		TS:             nowUnix,
 		Comp:           comp,
 		UpstreamPrompt: rec.prompt,
 		UsageKnown:     rec.usageKnown,
-		Reason:         "sampling_enabled",
+		Reason:         reason,
 	})
 }

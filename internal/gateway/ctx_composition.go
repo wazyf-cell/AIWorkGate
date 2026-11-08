@@ -65,8 +65,23 @@ const ctxItemLabelCap = 40
 
 // AnalyzeCtxComposition splits a request body into the six exact buckets with
 // per-message / per-tool drill-down rows. Unknown top-level fields land in
-// other, so the buckets always cover the whole body.
+// other, so the buckets always cover the whole body. The heuristic buckets
+// (files / memory block-level, task-67) stay off here — this is the phase-1
+// contract; the sampling gate uses AnalyzeCtxCompositionHeuristics.
 func AnalyzeCtxComposition(body []byte) (CtxComposition, error) {
+	return analyzeCtxComposition(body, false)
+}
+
+// AnalyzeCtxCompositionHeuristics is the phase-2 variant: path-shaped
+// substrings inside conversation text land in a separate "files" bucket and
+// <memory>/CLAUDE.md-marked blocks land in "memory". Best-effort by design.
+func AnalyzeCtxCompositionHeuristics(body []byte) (CtxComposition, error) {
+	return analyzeCtxComposition(body, true)
+}
+
+// analyzeCtxComposition is the shared core; heuristics switches the bucket set
+// (six exact buckets vs seven with "files") and the per-block splitting.
+func analyzeCtxComposition(body []byte, heuristics bool) (CtxComposition, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return CtxComposition{}, err
@@ -91,7 +106,7 @@ func AnalyzeCtxComposition(body []byte) (CtxComposition, error) {
 			consumed[key] = true
 		}
 	}
-	// 3. memory：一期只认顶层字段（启发式默认关，二期）。
+	// 3. memory：一期精确桶（顶层字段）；二期启发式的块级判定在消息遍历里叠加。
 	for _, key := range []string{"memory", "memories"} {
 		if value, ok := obj[key]; ok {
 			buckets["memory"] += estimateJSONTokens(value)
@@ -101,7 +116,7 @@ func AnalyzeCtxComposition(body []byte) (CtxComposition, error) {
 	// 4. 消息面（messages / contents / input / prompt）。
 	for _, key := range []string{"messages", "contents", "input"} {
 		if value, ok := obj[key]; ok {
-			addCtxMessages(buckets, &items, value)
+			addCtxMessages(buckets, &items, value, heuristics)
 			consumed[key] = true
 		}
 	}
@@ -122,17 +137,16 @@ func AnalyzeCtxComposition(body []byte) (CtxComposition, error) {
 		buckets["other"] += estimateJSONTokens(rest)
 	}
 
-	return buildCtxComposition(buckets, items), nil
+	return buildCtxComposition(buckets, items, heuristics), nil
 }
 
 // addCtxMessages routes every message (or Responses input item) to its bucket
 // and appends one drill-down row per message (split rows when a single message
-// carries both text and tool_result blocks).
-func addCtxMessages(buckets map[string]float64, items *[]CtxItem, raw any) {
+// carries both text and tool_result blocks). heuristics enables the phase-2
+// files/memory block-level splitting.
+func addCtxMessages(buckets map[string]float64, items *[]CtxItem, raw any, heuristics bool) {
 	if text, ok := raw.(string); ok {
-		tokens := estimateTextTokens(text)
-		buckets["conversation"] += tokens
-		*items = append(*items, CtxItem{Bucket: "conversation", Label: ctxLabel("text", text), Tokens: int(math.Ceil(tokens))})
+		addCtxText(buckets, items, text, heuristics)
 		return
 	}
 	list, ok := raw.([]any)
@@ -144,7 +158,34 @@ func addCtxMessages(buckets map[string]float64, items *[]CtxItem, raw any) {
 	}
 	for i, rawMessage := range list {
 		message, _ := rawMessage.(map[string]any)
-		addCtxMessage(buckets, items, i, message)
+		addCtxMessage(buckets, items, i, message, heuristics)
+	}
+}
+
+// addCtxText classifies one plain-text turn: with heuristics on, memory-marker
+// blocks go to the memory bucket and path-shaped substrings to files; the rest
+// stays in conversation. Without heuristics this is the verbatim phase-1 path.
+func addCtxText(buckets map[string]float64, items *[]CtxItem, text string, heuristics bool) {
+	tokens := estimateTextTokens(text)
+	if !heuristics {
+		buckets["conversation"] += tokens
+		*items = append(*items, CtxItem{Bucket: "conversation", Label: ctxLabel("text", text), Tokens: int(math.Ceil(tokens))})
+		return
+	}
+	if ctxMemoryBlockHit(text) {
+		buckets["memory"] += tokens
+		*items = append(*items, CtxItem{Bucket: "memory", Label: ctxLabel("memory-block", text), Tokens: int(math.Ceil(tokens))})
+		return
+	}
+	fileTokens, bestPath := ctxFileTokens(text)
+	conversation := tokens - fileTokens
+	if conversation > 0 {
+		buckets["conversation"] += conversation
+		*items = append(*items, CtxItem{Bucket: "conversation", Label: ctxLabel("text", text), Tokens: int(math.Ceil(conversation))})
+	}
+	if fileTokens > 0 {
+		buckets["files"] += fileTokens
+		*items = append(*items, CtxItem{Bucket: "files", Label: ctxLabel("file", bestPath), Tokens: int(math.Ceil(fileTokens))})
 	}
 }
 
@@ -154,7 +195,7 @@ func addCtxMessages(buckets map[string]float64, items *[]CtxItem, raw any) {
 // with the remaining blocks staying conversation; everything else →
 // conversation. tool_calls parameters are part of the assistant turn, so they
 // stay in conversation.
-func addCtxMessage(buckets map[string]float64, items *[]CtxItem, index int, message map[string]any) {
+func addCtxMessage(buckets map[string]float64, items *[]CtxItem, index int, message map[string]any, heuristics bool) {
 	role := strings.ToLower(jsonStringValue(message["role"]))
 	// Responses input items carry their own type spelling.
 	itemType := strings.ToLower(jsonStringValue(message["type"]))
@@ -174,13 +215,32 @@ func addCtxMessage(buckets map[string]float64, items *[]CtxItem, index int, mess
 
 	// 普通消息：content 块级拆分（Anthropic 的 text + tool_result 混排——
 	// tool_result 块进 tool_results 桶，其余块与 tool_calls 参数进 conversation）。
+	// heuristics 开时文本部分再拆 files/memory（ctxSplitTextHeuristics）。
 	textTokens, resultTokens := splitMessageBlocks(message)
 	calls := toolCallTokens(message)
 	if resultTokens > 0 {
 		buckets["tool_results"] += resultTokens
 		*items = append(*items, CtxItem{Bucket: "tool_results", Label: ctxLabel("tool_result#"+itoa(index), message), Tokens: int(math.Ceil(resultTokens))})
 	}
-	if conversation := textTokens + calls; conversation > 0 {
+	if !heuristics {
+		if conversation := textTokens + calls; conversation > 0 {
+			buckets["conversation"] += conversation
+			*items = append(*items, CtxItem{Bucket: "conversation", Label: ctxLabel(role+"#"+itoa(index), message), Tokens: int(math.Ceil(conversation))})
+		}
+		return
+	}
+	// 二期启发式：从消息文本里切出文件路径串与记忆标记块；无标记部分留在
+	// conversation，三桶之和恒等于一期 conversation+memory 的口径（无 token 凭空增减）。
+	fileTokens, memoryTokens, bestPath := ctxSplitTextHeuristics(message)
+	if memoryTokens > 0 {
+		buckets["memory"] += memoryTokens
+		*items = append(*items, CtxItem{Bucket: "memory", Label: ctxLabel("memory-block#"+itoa(index), message), Tokens: int(math.Ceil(memoryTokens))})
+	}
+	if fileTokens > 0 {
+		buckets["files"] += fileTokens
+		*items = append(*items, CtxItem{Bucket: "files", Label: ctxLabel("file#"+itoa(index), bestPath), Tokens: int(math.Ceil(fileTokens))})
+	}
+	if conversation := textTokens - fileTokens - memoryTokens + calls; conversation > 0 {
 		buckets["conversation"] += conversation
 		*items = append(*items, CtxItem{Bucket: "conversation", Label: ctxLabel(role+"#"+itoa(index), message), Tokens: int(math.Ceil(conversation))})
 	}
@@ -284,10 +344,16 @@ func estimateToolsBucket(value any) (float64, []CtxItem) {
 	return total, items
 }
 
-// buildCtxComposition materializes the fixed six-bucket output and shares.
-func buildCtxComposition(buckets map[string]float64, items []CtxItem) CtxComposition {
-	comp := CtxComposition{Sections: make([]CtxSection, 0, len(ctxSections))}
-	for _, key := range ctxSections {
+// buildCtxComposition materializes the fixed bucket output and shares. With
+// heuristics on, the "files" bucket joins the fixed order (between tool_results
+// and conversation); off, the phase-1 six-bucket order is kept verbatim.
+func buildCtxComposition(buckets map[string]float64, items []CtxItem, heuristics bool) CtxComposition {
+	order := ctxSections
+	if heuristics {
+		order = ctxSectionsHeuristics
+	}
+	comp := CtxComposition{Sections: make([]CtxSection, 0, len(order))}
+	for _, key := range order {
 		tokens := int(math.Ceil(buckets[key]))
 		comp.TotalEst += tokens
 		comp.Sections = append(comp.Sections, CtxSection{Key: key, Est: tokens})
