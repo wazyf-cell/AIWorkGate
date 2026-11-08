@@ -68,3 +68,4 @@ docs/变更日志-*.md
 /dist/*
 !/dist/magpie-bridge.sha256
 !/dist/magpie-bridge-linux.sha256
+!/dist/magpie-bridge-linux-arm64.sha256

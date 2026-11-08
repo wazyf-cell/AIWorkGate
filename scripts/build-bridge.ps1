@@ -1,21 +1,27 @@
-# build-bridge.ps1 — P1/P8 收尾（task-18）+ 多目标构建链（task-88）
+# build-bridge.ps1 — P1/P8 收尾（task-18）+ 多目标构建链（task-88/91）
 #
 # 把 opchost/bridge（bun/TypeScript 插件宿主桥）编译成单文件二进制，并记录 SHA256
 # （对齐 P8-⑥「bun 二进制随包内置并记录哈希，禁止运行时下载」）。
 #
 # 用法:
 #   pwsh scripts/build-bridge.ps1                                # windows 目标构建 + 写哈希记录
-#   pwsh scripts/build-bridge.ps1 -Target linux -Force           # Linux 交叉编译（ELF）
-#   pwsh scripts/build-bridge.ps1 -Target all -Force             # 两目标都构建
+#   pwsh scripts/build-bridge.ps1 -Target linux -Force           # Linux amd64 交叉编译（ELF）
+#   pwsh scripts/build-bridge.ps1 -Target linux-arm64 -Force     # Linux arm64 交叉编译（ELF）
+#   pwsh scripts/build-bridge.ps1 -Target all -Force             # 三目标都构建
 #   pwsh scripts/build-bridge.ps1 -Verify                        # 只校验已有产物与哈希记录
 #   pwsh scripts/build-bridge.ps1 -Force                         # 产物已存在时强制覆盖
 #   pwsh scripts/build-bridge.ps1 -BunPath <路径>                 # 指定 bun 实体（默认 magpie 自带 1.4.4）
 #
-# 产物（task-88 起分目标）:
-#   windows: dist/magpie-bridge.exe        单文件（约 110MB，.gitignore 忽略）
-#            dist/magpie-bridge.sha256     哈希记录（入库：.gitignore 里用 ! 排除了它）
-#   linux:   dist/magpie-bridge-linux      单文件 ELF（bun-linux-x64，.gitignore 忽略）
-#            dist/magpie-bridge-linux.sha256  哈希记录（入库）
+# 产物（task-88/91 起分目标）:
+#   windows:     dist/magpie-bridge.exe            单文件（约 110MB，.gitignore 忽略）
+#                dist/magpie-bridge.sha256         哈希记录（入库：.gitignore 里用 ! 排除了它）
+#   linux:       dist/magpie-bridge-linux          单文件 ELF（bun-linux-x64，.gitignore 忽略）
+#                dist/magpie-bridge-linux.sha256   哈希记录（入库）
+#   linux-arm64: dist/magpie-bridge-linux-arm64    单文件 ELF（bun-linux-arm64，.gitignore 忽略）
+#                dist/magpie-bridge-linux-arm64.sha256  哈希记录（入库）
+#
+# 部署命名（task-89 结论：桥 manifest 与 Windows 逐字节一致）：Linux 部署时统一
+# 改名为 magpie-bridge.exe（Linux 文件名带 .exe 合法），构建产物名 ≠ 部署名。
 #   mtime 守卫（task-85 收窄：排除 testdata）对两目标共用——源码比任一**已存在**
 #   产物新即拒绝构建（自判依据：缺一个产物不该让另一个目标的守卫失效）。
 
@@ -24,7 +30,7 @@ param(
     # magpie 自带的 bun 实体（F-11：~/.cache/magpie/bun/ 1.4.4，110MB 运行时）。
     # PATH 上的 `bun` 是 npm shim（1.3.14），不是它。
     [string]$BunPath = "$env:USERPROFILE\.cache\magpie\bun\1.4.4\magpie-bun.exe",
-    [ValidateSet('windows', 'linux', 'all')]
+    [ValidateSet('windows', 'linux', 'linux-arm64', 'all')]
     [string]$Target = 'windows',
     [switch]$Verify,
     [switch]$Force,
@@ -55,9 +61,14 @@ $targets = @{
         shaFile = Join-Path $dist 'magpie-bridge-linux.sha256'
         bunTarget = '--target=bun-linux-x64'
     }
+    'linux-arm64' = @{
+        outFile = Join-Path $dist 'magpie-bridge-linux-arm64'
+        shaFile = Join-Path $dist 'magpie-bridge-linux-arm64.sha256'
+        bunTarget = '--target=bun-linux-arm64'
+    }
 }
 $targetNames = switch ($Target) {
-    'all' { @('windows', 'linux') }
+    'all' { @('windows', 'linux', 'linux-arm64') }
     default { @($Target) }
 }
 
