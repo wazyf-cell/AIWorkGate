@@ -113,6 +113,9 @@ type SessionItem struct {
 	ConversationID   string   `json:"conversation_id"`
 	PromptTokens     int64    `json:"prompt_tokens"`
 	CompletionTokens int64    `json:"completion_tokens"`
+	// CachedTokens 是本请求命中的缓存 token 数（0 = 未命中或上游未报）；
+	// 单条命中率 = cached_tokens / prompt_tokens（prompt=0 时无意义）。
+	CachedTokens     int64    `json:"cached_tokens"`
 	Credits          *float64 `json:"credits"`
 	TTFBMS           int64    `json:"ttfb_ms"`
 	LatencyMS        int64    `json:"latency_ms"`
@@ -407,6 +410,7 @@ func (s *Service) Sessions(q Query) (SessionsResponse, error) {
 			ConversationID:   row.ConversationID,
 			PromptTokens:     row.PromptTokens,
 			CompletionTokens: row.CompletionTokens,
+			CachedTokens:     row.CachedTokens,
 			Credits:          row.Credits,
 			TTFBMS:           row.TTFBMS,
 			LatencyMS:        row.LatencyMS,

@@ -3,10 +3,10 @@
 //
 // 数据源（复用现有 api.usage.*，不碰 api.ts）：
 //   sessions({page:1, page_size:20}) → 最近 20 条请求流水；
-//   summary({})                      → 区间级 cache_hit_rate（UsageSession
-//                                      无单条 cached_tokens 字段，缓存只在
-//                                      摘要卡显示区间命中率，不造假数据）；
+//   summary({})                      → 区间级 cache_hit_rate 摘要卡；
 //   credits({})                      → 账号池 credit 卡（按 plugin 分组）。
+// task-60：UsageSession 现带单条 cached_tokens——流水加「缓存」列
+// （cached/prompt 百分比）+ 行点击面板内展开该请求详情（不跳页）。
 // 与 RouteStage 的区别：那是逐请求实时观察流（trace），本组件是服务端聚合
 // 统计的紧凑视图，页面可见时 20s 轮询一次。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
@@ -27,11 +27,19 @@ const error = ref('')
 const sessions = ref<UsageSession[]>([])
 const summary = ref<UsageSummary | null>(null)
 const credits = ref<UsageAccountCredit[]>([])
-const selectedReqId = ref('')
+const expandedReqId = ref('')
 
-function touchRow(row: UsageSession) {
-  // 点击高亮：本卡不做详情下钻（Usage 页负责），只标选中行。
-  selectedReqId.value = selectedReqId.value === (row.req_id ?? '') ? '' : (row.req_id ?? '')
+/** task-60：行点击下钻——同一行再点收回（面板内展开，不跳页）。 */
+function toggleRow(row: UsageSession) {
+  expandedReqId.value = expandedReqId.value === (row.req_id ?? '') ? '' : (row.req_id ?? '')
+}
+
+/** 单条缓存命中率：cached/prompt 百分比；prompt=0 或 cached=0 显示「—」。 */
+function cachePercent(row: UsageSession): string {
+  const cached = row.cached_tokens ?? 0
+  const prompt = row.prompt_tokens ?? 0
+  if (prompt <= 0 || cached <= 0) return '—'
+  return `${((cached / prompt) * 100).toFixed(0)}%`
 }
 
 /* 时间/耗时/token/过期统一走 ../format 标准函数（task-58 契约第 8 条）：
@@ -184,7 +192,7 @@ onBeforeUnmount(() => {
             <span class="badge" :class="statusBadge(latest).cls">{{ statusBadge(latest).text }}</span>
           </div>
           <div class="rs-monitor-kv">
-            <span class="muted" title="区间级缓存命中率（summary.cache_hit_rate）；单条请求无缓存字段">缓存命中（区间）</span>
+            <span class="muted" title="区间级缓存命中率（summary.cache_hit_rate = cached/prompt）；单条命中率看流水「缓存」列">缓存命中（区间）</span>
             <span>{{ cacheHitRate }}</span>
           </div>
         </div>
@@ -213,26 +221,50 @@ onBeforeUnmount(() => {
                   <th>耗时</th>
                   <th>首字</th>
                   <th>token</th>
+                  <th>缓存</th>
                   <th>状态</th>
                 </tr>
               </thead>
               <tbody>
-                <tr
-                  v-for="row in sessions"
-                  :key="`${row.ts ?? ''}-${row.req_id ?? ''}`"
-                  :class="{ 'rs-monitor-selected': row.req_id && row.req_id === selectedReqId }"
-                  @click="touchRow(row)"
-                >
-                  <td class="mono small">{{ formatTimeOnly(row.ts) }}</td>
-                  <td class="mono small" :title="row.logical_model || ''">{{ row.logical_model || row.model || '—' }}</td>
-                  <td class="small" :title="row.account_name || ''">{{ row.account_name || row.account_id || '—' }}</td>
-                  <td class="small">{{ formatLatency(row.latency_ms) }}</td>
-                  <td class="small">{{ formatLatency(row.ttfb_ms) }}</td>
-                  <td class="small">{{ formatTokens(row.prompt_tokens, row.completion_tokens) }}</td>
-                  <td>
-                    <span class="badge" :class="statusBadge(row).cls">{{ statusBadge(row).text }}</span>
-                  </td>
-                </tr>
+                <template v-for="row in sessions" :key="`${row.ts ?? ''}-${row.req_id ?? ''}`">
+                  <tr
+                    :class="{ 'rs-monitor-selected': expandedReqId !== '' && row.req_id === expandedReqId }"
+                    @click="toggleRow(row)"
+                  >
+                    <td class="mono small">{{ formatTimeOnly(row.ts) }}</td>
+                    <td class="mono small" :title="row.logical_model || ''">{{ row.logical_model || row.model || '—' }}</td>
+                    <td class="small" :title="row.account_name || ''">{{ row.account_name || row.account_id || '—' }}</td>
+                    <td class="small">{{ formatLatency(row.latency_ms) }}</td>
+                    <td class="small">{{ formatLatency(row.ttfb_ms) }}</td>
+                    <td class="small">{{ formatTokens(row.prompt_tokens, row.completion_tokens) }}</td>
+                    <td class="small">{{ cachePercent(row) }}</td>
+                    <td>
+                      <span class="badge" :class="statusBadge(row).cls">{{ statusBadge(row).text }}</span>
+                    </td>
+                  </tr>
+                  <tr v-if="expandedReqId !== '' && row.req_id === expandedReqId">
+                    <td colspan="8">
+                      <div class="rs-monitor-detail">
+                        <span><span class="muted">req_id：</span><span class="mono">{{ row.req_id || '—' }}</span></span>
+                        <span><span class="muted">时间：</span>{{ formatTimeOnly(row.ts) }}</span>
+                        <span><span class="muted">模型：</span><span class="mono">{{ row.logical_model || row.model || '—' }}</span></span>
+                        <span><span class="muted">账号：</span>{{ row.account_name || row.account_id || '—' }}</span>
+                        <span><span class="muted">状态：</span>{{ statusBadge(row).text }}</span>
+                        <span><span class="muted">耗时：</span>{{ formatLatency(row.latency_ms) }}</span>
+                        <span><span class="muted">首字：</span>{{ formatLatency(row.ttfb_ms) }}</span>
+                        <span>
+                          <span class="muted">token：</span>{{ formatTokens(row.prompt_tokens, row.completion_tokens) }}
+                        </span>
+                        <span>
+                          <span class="muted">缓存：</span>{{ cachePercent(row) }}
+                          <span v-if="cachePercent(row) !== '—'" class="muted">
+                            （{{ row.cached_tokens }} / {{ row.prompt_tokens }} tokens）
+                          </span>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
               </tbody>
             </table>
           </div>
@@ -309,6 +341,22 @@ onBeforeUnmount(() => {
 
 .rs-monitor-selected {
   background: var(--accent-soft);
+}
+
+/* task-60：请求流水行可点击下钻 + 展开详情行 */
+.rs-monitor-flow tbody tr {
+  cursor: pointer;
+}
+
+.rs-monitor-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm, 13px);
 }
 
 @media (max-width: 900px) {

@@ -1007,6 +1007,8 @@ export interface UsageSession {
   conversation_id?: string
   prompt_tokens?: number
   completion_tokens?: number
+  /** task-60：本请求命中的缓存 token 数（0 = 未命中或上游未报）。 */
+  cached_tokens?: number
   credits?: number
   ttfb_ms?: number
   latency_ms?: number

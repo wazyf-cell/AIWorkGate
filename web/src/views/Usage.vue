@@ -1424,7 +1424,13 @@ onBeforeUnmount(() => {
           <strong>暂无按日汇总</strong>
           <span>产生请求后这里会出现按天着色的年历。</span>
         </div>
-        <div v-else class="heat-grid" role="img" aria-label="近 26 周每日请求次数热力图">
+        <div
+          v-else
+          class="heat-grid"
+          role="img"
+          aria-label="近 26 周每日请求次数热力图"
+          :style="{ gridTemplateColumns: `repeat(${heatmapWeeks.length}, minmax(0, 1fr))` }"
+        >
           <div v-for="(week, wi) in heatmapWeeks" :key="`week-${wi}`" class="heat-week">
             <span
               v-for="cell in week"
@@ -2344,25 +2350,33 @@ onBeforeUnmount(() => {
   background: var(--chart-2);
 }
 
-/* D-32① 近 26 周日历热力图：纯 CSS 网格，每列一周、周日开头。 */
+/* D-32① 近 26 周日历热力图：纯 CSS 网格，每列一周、周日开头。
+   第17轮①：列数 = heatmapWeeks.length（26 整周 + 当前不完整周 = 26~27 列，
+   随星期几浮动），逐列 minmax(0,1fr) 随容器宽度自适应铺满整行（不再固定
+   18px、不再横向滚动）；列数经内联 style 数据驱动（style-debt 的
+   PROPS 清单不含几何属性）。格子用 aspect-ratio 保持近方形。 */
 .heat-grid {
-  display: flex;
+  display: grid;
   gap: 4px;
-  overflow-x: auto;
-  padding-bottom: var(--space-1);
 }
 
 .heat-week {
   display: grid;
-  grid-template-rows: repeat(7, 18px);
+  grid-template-rows: repeat(7, auto);
   gap: 4px;
+  min-width: 0;
 }
 
 .heat-cell {
-  width: 18px;
-  height: 18px;
+  width: 100%;
+  aspect-ratio: 1;
   border-radius: 2px;
   background: var(--surface-3, rgba(127, 127, 127, 0.15));
+}
+
+.heat-legend .heat-cell {
+  width: 12px;
+  height: 12px;
 }
 
 .heat-cell.lv0 {
@@ -2392,7 +2406,9 @@ onBeforeUnmount(() => {
 }
 
 .heat-skeleton {
-  height: 132px;
+  /* 与铺满后的网格同形（26 列 × 7 行近方形），宽度随容器铺满。 */
+  width: 100%;
+  aspect-ratio: 26 / 7;
   border-radius: 4px;
 }
 </style>
