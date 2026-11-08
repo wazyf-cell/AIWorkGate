@@ -56,11 +56,20 @@ func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBindin
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// 实测 JEV 形状（2026-11-08 TokenRhythm，task-70 卡内实测记录）：
+	// 实测 JEV 形状（2026-11-08 TokenRhythm，task-70/71 卡内实测记录）：
 	// state 是对象 {"message":...}，questions 是**对象**（键=题id，文本字段是
-	// instructions）；questions 数组、choice 的 options/criteria 字段全部实测
-	// 422 被拒——choice 的选项字段待 JEV 协议文档确认，选项语义暂并入
-	// instructions 文本（待确认后结构化，勿提前写死）。
+	// instructions）；questions 数组、choice 的 options 字段实测 422 被拒。
+	// choice 的选项字段**已实测确认**（task-71）：criteria=选项名→描述的对象
+	// （1~255 项，值必须非空字符串，null 被拒）——完整口径见 docs/p6 §3.1。
+	criteria := make(map[string]string, len(intent.Labels))
+	for _, label := range intent.Labels {
+		trimmed := strings.TrimSpace(label)
+		if trimmed == "" {
+			continue // criteria 的值必须非空；空 label 本就无法匹配路由
+		}
+		// 描述先用 label 名本身；intent 配置将来扩展描述字段时在此替换。
+		criteria[trimmed] = trimmed
+	}
 	payload, err := json.Marshal(map[string]any{
 		"state": map[string]any{"message": probe},
 		"questions": map[string]any{
@@ -68,6 +77,7 @@ func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBindin
 				"type": "choice",
 				"instructions": "判断这条用户请求的类型，并从选项中选择一项：" +
 					strings.Join(intent.Labels, " / "),
+				"criteria": criteria,
 			},
 		},
 	})

@@ -65,12 +65,15 @@ curl -sS http://127.0.0.1:7865/v1/systemone \
 - 体积限制：纯文本 1 MiB、带图（顶层 `image` 非空）8 MiB；超限本地 413，不发上游。题数上限（纯文本 1..16、带图恰好 1 题）对 questions 的**对象**与**数组**两种形状都生效。
 - `usage.input_tokens/output_tokens` 若上报会进入请求日志；未上报记未知而不是 0。
 
-### 3.1 实测协议与 F-12 设计的差异（2026-11-08 真实 JEV 实测）
+### 3.1 实测协议与 F-12 设计的差异（2026-11-08 真实 JEV 实测 + 官方文档）
 
 - **`questions` 必须是对象**（键=题id）：数组形状实测 422 `JEV_INVALID_REQUEST`。网关的 intent/decision 本地校验兼容两种形状，但转发给 JEV 的 P11 intent payload 已改为对象。
 - **题目文本字段是 `instructions`**：F-12 草案写的 `question` 字段实测不存在。
 - **`answers` 响应是对象**（键=题id）：网关的意图分类解析兼容对象与数组两种拼写（`parseIntentLabel`）。
-- **choice/score 的选项与分档字段尚未确定**：实测 `options`/`criteria`/纯 instructions choice/score+instructions 全部 422 被拒。在拿到 JEV 协议文档前，网关的 intent 把选项语义并入 `instructions` 文本（不写死未确认字段）。
+- **choice 选项字段已实测确认（官方文档 + 真 key 双 200）**：`criteria` = 选项名→描述的**对象**（1~255 项，值必须非空字符串，null 被拒）。响应含 `choice`（选中的选项名）、`probabilities`（选项→概率）、`confidence`。网关 intent payload 已带 criteria（值先用 label 名，intent 配置将来扩展描述）。
+- **score 分档字段已实测确认**：`criteria` = 等级描述**数组**（2~10 档）；响应含 `score`（**从 0 编号**的等级期望，如 3.585）、`legend`（`{"0":"日常",...}` 编号→描述）、`probabilities`、`confidence`。
+- **noul**：`criteria` 可省略（实测 200），也可给 false/true 两描述。
+- **官方口径**：推荐端点 `/v1/decision`（`/v1/systemone` 同请求体）；`state` 建议字符串（也可结构化）；纯文本 1~16 题 ≤1MiB、图片顶层 `image` 单题 ≤8MiB；上游**编码后**输入 token 超限同样 422 不静默截断；choice/score 的概率**不保证校准**，`confidence` 仅参考。
 - **`model_id` 实测为 `NeoHorse-Jev-4B`**：不在 `/models` 列表，是决策模型专属名。
 
 ## 4. 互斥保护

@@ -127,6 +127,20 @@ func TestIntentRoutesToStrongGroupAndCaches(t *testing.T) {
 	if _, hasQuestion := route["question"]; hasQuestion {
 		t.Fatal("route carries a question field (实测字段是 instructions)")
 	}
+	// task-71：criteria 已实测确认——键=labels 全集，值为非空字符串描述。
+	criteria, _ := route["criteria"].(map[string]any)
+	if criteria == nil {
+		t.Fatalf("route.criteria = %v, want an object keyed by the labels", route["criteria"])
+	}
+	if len(criteria) != 2 {
+		t.Fatalf("criteria keys = %v, want exactly the label set", criteria)
+	}
+	for _, label := range []string{"simple", "hard"} {
+		desc, ok := criteria[label].(string)
+		if !ok || desc == "" {
+			t.Fatalf("criteria[%q] = %v, want a non-empty description", label, criteria[label])
+		}
+	}
 }
 
 func TestIntentTimeoutFallsBackToDefaultGroup(t *testing.T) {
@@ -207,6 +221,8 @@ func TestParseIntentLabelSpellings(t *testing.T) {
 		{`{"answers":{"route":{"type":"noul","noul":0.972}}}`, "", false},
 		{`{"answers":{"route":{"type":"choice","choice":"hard"}}}`, "hard", true},
 		{`{"answers":{"route":{"type":"choice","choice":2}}}`, "hard", true},
+		// task-71 官方实测响应形状：choice 带 probabilities + confidence。
+		{`{"answers":{"q":{"type":"choice","choice":"hard","probabilities":{"simple":0.31,"hard":0.69},"confidence":0.685}}}`, "hard", true},
 		{`{"answers":{"q1":{"label":"simple"}}}`, "simple", true},
 		{`{"answers":{"q1":{"value":2}}}`, "hard", true},
 		{`{"answers":{"q1":{"answer":"Hard"}}}`, "hard", true},
