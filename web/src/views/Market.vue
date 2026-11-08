@@ -33,6 +33,20 @@ function isOfficial(name: string): boolean {
   return (name || '').startsWith(OFFICIAL_PREFIX)
 }
 
+/** npm search 返回的 links：优先 GitHub/仓库地址，其次主页，最后 npm 包页。 */
+function marketLink(pkg: MarketSearchResult): string {
+  const l = pkg.links || {}
+  const raw = l.repository || l.homepage || l.npm || ''
+  return raw.replace(/^git\+/, '').replace(/\.git$/, '').replace(/^git:\/\//, 'https://')
+}
+function marketLinkLabel(pkg: MarketSearchResult): string {
+  const url = marketLink(pkg)
+  if (!url) return '—'
+  if (url.includes('github.com')) return 'GitHub'
+  if (url.includes('npmjs.com')) return 'npm'
+  return '主页'
+}
+
 const searching = ref(false)
 /** 已安装市场包：由 /api/market/updates 派生（一行一包，含 from→to）。 */
 const installed = ref<MarketInstalledRow[]>([])
@@ -235,6 +249,7 @@ onMounted(() => void checkUpdates())
               <th>包名</th>
               <th>最新版</th>
               <th>描述</th>
+              <th>地址</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -246,6 +261,17 @@ onMounted(() => void checkUpdates())
               </td>
               <td><span class="badge">{{ pkg.version }}</span></td>
               <td class="truncate" :title="pkg.description || ''">{{ pkg.description || '—' }}</td>
+              <td>
+                <a
+                  v-if="marketLink(pkg)"
+                  :href="marketLink(pkg)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="mono small"
+                  :title="marketLink(pkg) || ''"
+                >{{ marketLinkLabel(pkg) }}</a>
+                <span v-else class="muted">—</span>
+              </td>
               <td>
                 <button
                   type="button"

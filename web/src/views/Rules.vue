@@ -20,7 +20,7 @@ const aliasLoading = ref(false)
 const aliasSaving = ref(false)
 const aliasStatus = ref<ToolAliasStatus | null>(null)
 const aliasEnabled = ref(false)
-const showDefaults = ref(false)
+const showDefaults = ref(true)
 const aliasRules = ref<Array<{ id: number; from: string; to: string }>>([])
 let aliasRowSeq = 0
 
@@ -413,7 +413,7 @@ async function reloadPlugins() {
 
           <div class="field">
             <button type="button" class="btn sm ghost" @click="showDefaults = !showDefaults">
-              {{ showDefaults ? '收起内置默认表' : `查看内置默认表（${aliasStatus?.defaults ?? 0} 条，只读）` }}
+              {{ showDefaults ? '收起内置默认表' : `展开内置默认表（${aliasStatus?.defaults ?? 0} 条，只读）` }}
             </button>
             <div v-if="showDefaults" class="table-wrap">
               <table class="table">

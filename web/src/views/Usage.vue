@@ -2347,20 +2347,20 @@ onBeforeUnmount(() => {
 /* D-32① 近 26 周日历热力图：纯 CSS 网格，每列一周、周日开头。 */
 .heat-grid {
   display: flex;
-  gap: 3px;
+  gap: 4px;
   overflow-x: auto;
   padding-bottom: var(--space-1);
 }
 
 .heat-week {
   display: grid;
-  grid-template-rows: repeat(7, 12px);
-  gap: 3px;
+  grid-template-rows: repeat(7, 18px);
+  gap: 4px;
 }
 
 .heat-cell {
-  width: 12px;
-  height: 12px;
+  width: 18px;
+  height: 18px;
   border-radius: 2px;
   background: var(--surface-3, rgba(127, 127, 127, 0.15));
 }
@@ -2392,7 +2392,7 @@ onBeforeUnmount(() => {
 }
 
 .heat-skeleton {
-  height: 84px;
+  height: 132px;
   border-radius: 4px;
 }
 </style>

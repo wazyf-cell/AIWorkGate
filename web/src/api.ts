@@ -3079,6 +3079,10 @@ export interface MarketSearchResult {
   name: string
   version: string
   description?: string
+  /** npm search 返回的 links（npm/homepage/repository/bugs），透传给结果行展示。 */
+  links?: Record<string, string>
+  /** 周下载量（npm downloads API 补取失败时为空）。 */
+  downloads?: number
 }
 
 export interface MarketSearchResponse {
@@ -3142,6 +3146,8 @@ export function normalizeMarketSearch(
       name: item.name,
       version: item.version,
       description: item.description ?? "",
+      links: item.links,
+      downloads: item.downloads,
     }))
     .filter((item) => Boolean(item.name))
 }
