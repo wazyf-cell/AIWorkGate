@@ -3093,6 +3093,36 @@ export const api = {
       return request<GatewayTracePage>(`/gateway/trace?${query.toString()}`, signal ? { signal } : {})
     },
   },
+
+  /* ------------------------------------------------------------------ */
+  /* 六维上下文采样（task-62 后端 / task-63 前端契约层）                  */
+  /* sticky 门控（trace.go 同模式）：开关开启后网关在改写前的 body 上分析  */
+  /* 并落独立表；查询端点未采样返回 sampled=false，不是错误。             */
+  /* ------------------------------------------------------------------ */
+  gatewayCtx: {
+    /** GET /gateway/ctx?id=<req_id>：该请求的六维结构；未采样 sampled=false。 */
+    async composition(id: string, signal?: AbortSignal): Promise<GatewayCtxComposition> {
+      return request<GatewayCtxComposition>(
+        `/gateway/ctx?id=${encodeURIComponent(id)}`,
+        signal ? { signal } : {},
+      )
+    },
+    /** GET /gateway/ctx-sampling：回读 sticky 开关当前态。 */
+    async samplingEnabled(signal?: AbortSignal): Promise<boolean> {
+      const state = await request<{ enabled: boolean }>('/gateway/ctx-sampling', signal ? { signal } : {})
+      return state?.enabled === true
+    },
+    /** POST /gateway/ctx-sampling：切换 sticky 开关（下一请求即生效）。 */
+    async setSampling(enabled: boolean, signal?: AbortSignal): Promise<boolean> {
+      const state = await request<{ enabled: boolean }>('/gateway/ctx-sampling', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+        signal,
+      })
+      return state?.enabled === true
+    },
+  },
 }
 
 
@@ -3258,4 +3288,49 @@ export interface GatewayTracePage {
   events: GatewayTraceEvent[]
   /** 网关当前最后一条事件的 seq；调用方把它存为下一次 poll 的 after。 */
   last_seq: number
+}
+
+/* ------------------------------------------------------------------ */
+/* 六维上下文采样契约（task-62 后端 gateway/ctx_composition.go）        */
+/* 六桶 key 固定序 system/tools/tool_results/conversation/memory/other；*/
+/* est = 本地 char-weighted 估算，allocated = 按上游 prompt_tokens 比例 */
+/* 分摊后的口径（上游未报 usage 时缺省）。items 已按 tokens 降序，      */
+/* 前端取 Top-N 聚合其余。                                              */
+/* ------------------------------------------------------------------ */
+
+export type GatewayCtxBucket =
+  | 'system'
+  | 'tools'
+  | 'tool_results'
+  | 'conversation'
+  | 'memory'
+  | 'other'
+
+export interface GatewayCtxSection {
+  key: GatewayCtxBucket | string
+  /** 本地估算 tokens。 */
+  est: number
+  /** est / total_est，0–1；total=0 时为 0。 */
+  share?: number
+  /** 按上游 prompt_tokens 比例分摊后的 tokens；无上游口径时缺省。 */
+  allocated?: number
+}
+
+export interface GatewayCtxItem {
+  bucket: string
+  label: string
+  tokens: number
+}
+
+export interface GatewayCtxComposition {
+  req_id: string
+  /** false = 该请求未被采样（sticky 门控关闭 / 解析失败 / 早于本功能）。 */
+  sampled: boolean
+  ts?: number
+  total_est?: number
+  sections?: GatewayCtxSection[]
+  items?: GatewayCtxItem[]
+  upstream_prompt_tokens?: number
+  usage_known?: boolean
+  sampled_reason?: string
 }

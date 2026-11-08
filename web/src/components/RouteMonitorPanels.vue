@@ -13,11 +13,13 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   api,
   errorMessage,
+  type GatewayCtxComposition,
   type UsageAccountCredit,
   type UsageSession,
   type UsageSummary,
 } from '../api'
 import { formatDate, formatLatency, formatTimeOnly, formatTokens } from '../format'
+import CtxTreemap from './CtxTreemap.vue'
 
 const REFRESH_MS = 20_000
 const ROWS = 20
@@ -31,7 +33,101 @@ const expandedReqId = ref('')
 
 /** task-60：行点击下钻——同一行再点收回（面板内展开，不跳页）。 */
 function toggleRow(row: UsageSession) {
-  expandedReqId.value = expandedReqId.value === (row.req_id ?? '') ? '' : (row.req_id ?? '')
+  const reqId = row.req_id ?? ''
+  expandedReqId.value = expandedReqId.value === reqId ? '' : reqId
+  if (expandedReqId.value !== '') loadCtx(reqId)
+}
+
+/* task-63：六维上下文采样（task-62 后端）。per-req 懒加载缓存：
+ * 'loading' = 在途；null = 未采样（含端点 501/失败——呈现为未采样而非报错，
+ * 采样是增强信息不是主数据）；GatewayCtxComposition = 有数据。 */
+const ctxCache = ref(new Map<string, GatewayCtxComposition | null | 'loading'>())
+
+async function loadCtx(reqId: string) {
+  if (!reqId || ctxCache.value.has(reqId)) return
+  ctxCache.value.set(reqId, 'loading')
+  try {
+    const data = await api.gatewayCtx.composition(reqId)
+    ctxCache.value.set(reqId, data?.sampled ? data : null)
+  } catch {
+    ctxCache.value.set(reqId, null)
+  }
+}
+
+function ctxState(reqId: string): 'loading' | 'none' | 'data' {
+  const value = ctxCache.value.get(reqId)
+  if (value === 'loading') return 'loading'
+  if (value) return 'data'
+  return 'none'
+}
+
+function ctxData(reqId: string): GatewayCtxComposition | null {
+  const value = ctxCache.value.get(reqId)
+  return value && value !== 'loading' ? value : null
+}
+
+/* 采样 sticky 开关（trace.go 同模式：开启后对下一请求生效，重启复位）。 */
+const samplingOn = ref<boolean | null>(null)
+const samplingBusy = ref(false)
+
+async function refreshSampling() {
+  try {
+    samplingOn.value = await api.gatewayCtx.samplingEnabled()
+  } catch {
+    samplingOn.value = null
+  }
+}
+
+async function toggleSampling() {
+  if (samplingOn.value === null || samplingBusy.value) return
+  samplingBusy.value = true
+  try {
+    samplingOn.value = await api.gatewayCtx.setSampling(!samplingOn.value)
+  } catch {
+    /* 开关失败保持原态；下次 refresh 回读 */
+  } finally {
+    samplingBusy.value = false
+  }
+}
+
+/* 最近一次请求的采样：迷你色条（折叠态）↔ 完整 treemap（展开态）。 */
+const latestCtx = ref<GatewayCtxComposition | null | 'loading' | undefined>(undefined)
+const latestCtxOpen = ref(false)
+
+async function loadLatestCtx() {
+  const reqId = latest.value?.req_id
+  if (!reqId) {
+    latestCtx.value = undefined
+    return
+  }
+  latestCtx.value = 'loading'
+  try {
+    const data = await api.gatewayCtx.composition(reqId)
+    latestCtx.value = data?.sampled ? data : null
+  } catch {
+    latestCtx.value = null
+  }
+}
+
+function ctxMiniSegments(composition: GatewayCtxComposition | null): { key: string; share: number }[] {
+  return (composition?.sections ?? []).map((section) => ({
+    key: section.key,
+    share: Math.max(0, Math.min(100, (section.share ?? 0) * 100)),
+  }))
+}
+
+/** latest 的三态 helper（模板收窄跨 v-else-if 链不可靠，与行下钻同款）。 */
+function latestCtxState(): 'loading' | 'none' | 'data' | 'idle' {
+  const value = latestCtx.value
+  if (value === undefined) return 'idle'
+  if (value === 'loading') return 'loading'
+  if (value) return 'data'
+  return 'none'
+}
+
+function latestCtxData(): GatewayCtxComposition | null {
+  const value = latestCtx.value
+  return value && value !== 'loading' ? value : null
 }
 
 /** 单条缓存命中率：cached/prompt 百分比；prompt=0 或 cached=0 显示「—」。 */
@@ -98,12 +194,20 @@ async function refresh() {
     summary.value = summaryData ?? null
     credits.value = creditData.accounts ?? []
     error.value = ''
+    // 最近一次请求换了才重新拉它的采样（轮询节流）。
+    const reqId = latest.value?.req_id ?? ''
+    if (reqId !== latestCtxReqId.value) {
+      latestCtxReqId.value = reqId
+      void loadLatestCtx()
+    }
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
     loading.value = false
   }
 }
+
+const latestCtxReqId = ref('')
 
 /* 轮询：页面可见时每 20s 刷新；隐藏暂停；卸载清理。 */
 let timer = 0
@@ -134,6 +238,8 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', onVisibility)
   await refresh()
   startPolling()
+  void refreshSampling()
+  void loadLatestCtx()
 })
 
 onBeforeUnmount(() => {
@@ -200,6 +306,55 @@ onBeforeUnmount(() => {
           <strong>还没有请求记录</strong>
           <span>发一条真实请求后，这里会显示最近一次路由的摘要。</span>
         </div>
+
+        <!-- task-63：六维上下文分布（最近一次请求）——迷你色条 ⇄ 展开 treemap；
+             采样开关（sticky，下一请求生效，重启复位）。 -->
+        <div v-if="latest" class="rs-monitor-ctx">
+          <div class="row between">
+            <span class="field-label">上下文分布（最近一次请求）</span>
+            <label class="ctx-sampling-switch">
+              <input
+                type="checkbox"
+                :checked="samplingOn === true"
+                :disabled="samplingOn === null || samplingBusy"
+                title="开启后网关在改写前的 body 上做六维 token 采样（sticky：下一请求生效，重启复位）"
+                @change="toggleSampling"
+              />
+              <span class="small muted">
+                {{ samplingOn === true ? '采样已开启' : samplingOn === false ? '采样已关闭' : '采样状态未知' }}
+              </span>
+            </label>
+          </div>
+          <div v-if="latestCtxState() === 'loading'" class="small muted">加载上下文采样中…</div>
+          <div v-else-if="latestCtxState() === 'none'" class="small muted">
+            该请求未做上下文采样（开启采样后对下一请求生效）。
+          </div>
+          <div v-else-if="latestCtxState() === 'idle'" class="small muted">还没有请求记录。</div>
+          <template v-else-if="latestCtxOpen">
+            <CtxTreemap :sections="latestCtxData()?.sections ?? []" :items="latestCtxData()?.items" />
+            <button type="button" class="btn sm ghost" @click="latestCtxOpen = false">收起</button>
+          </template>
+          <template v-else>
+            <button
+              type="button"
+              class="ctx-mini-bar"
+              title="点击展开六维 Treemap"
+              @click="latestCtxOpen = true"
+            >
+              <span
+                v-for="segment in ctxMiniSegments(latestCtxData())"
+                :key="segment.key"
+                class="ctx-mini-seg"
+                :class="`ctx-mini-seg--${segment.key}`"
+                :style="{ width: `${segment.share}%` }"
+              ></span>
+            </button>
+            <span class="small muted">
+              估算 {{ latestCtxData()?.total_est ?? '—' }} tokens · 上游
+              {{ latestCtxData()?.upstream_prompt_tokens ?? '—' }} tokens · 点击展开
+            </span>
+          </template>
+        </div>
       </div>
 
       <!-- ② 请求流水 + ③ 账号池：左右两列。 -->
@@ -261,6 +416,21 @@ onBeforeUnmount(() => {
                             （{{ row.cached_tokens }} / {{ row.prompt_tokens }} tokens）
                           </span>
                         </span>
+                        <!-- task-63：六维上下文采样（懒加载，未采样显示提示）。 -->
+                        <div class="rs-monitor-ctx-detail">
+                          <span class="field-label">上下文分布</span>
+                          <div v-if="ctxState(row.req_id ?? '') === 'loading'" class="small muted">
+                            加载上下文采样中…
+                          </div>
+                          <div v-else-if="ctxState(row.req_id ?? '') === 'none'" class="small muted">
+                            该请求未做上下文采样。
+                          </div>
+                          <CtxTreemap
+                            v-else
+                            :sections="ctxData(row.req_id ?? '')?.sections ?? []"
+                            :items="ctxData(row.req_id ?? '')?.items"
+                          />
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -357,6 +527,66 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm, 13px);
+}
+
+/* task-63：六维上下文采样区（摘要迷你条 + 下钻详情） */
+.rs-monitor-ctx {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ctx-sampling-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.ctx-mini-bar {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.ctx-mini-seg--system {
+  background: color-mix(in srgb, var(--chart-1) 18%, var(--surface));
+}
+
+.ctx-mini-seg--tools {
+  background: color-mix(in srgb, var(--chart-2) 18%, var(--surface));
+}
+
+.ctx-mini-seg--tool_results {
+  background: color-mix(in srgb, var(--chart-3) 18%, var(--surface));
+}
+
+.ctx-mini-seg--conversation {
+  background: color-mix(in srgb, var(--chart-4) 18%, var(--surface));
+}
+
+.ctx-mini-seg--memory {
+  background: color-mix(in srgb, var(--chart-5) 18%, var(--surface));
+}
+
+.ctx-mini-seg--other {
+  background: var(--surface-2);
+}
+
+.rs-monitor-ctx-detail {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 @media (max-width: 900px) {
