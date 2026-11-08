@@ -12,6 +12,7 @@ import (
 
 	"aiworkgate/internal/config"
 	"aiworkgate/internal/scheduler"
+	"aiworkgate/internal/store"
 )
 
 // resolveRoutingGroups expands the configured groups against the current model
@@ -57,11 +58,12 @@ func resolveRoutingGroups(groups []config.RoutingGroupConfig, universe []string)
 		}
 		if intent := group.Intent; intent != nil {
 			binding.Intent = &scheduler.IntentBinding{
-				Upstream:   intent.Upstream,
-				Labels:     append([]string(nil), intent.Labels...),
-				Route:      intent.Route,
-				Default:    intent.Default,
-				ProbeChars: intent.ProbeChars,
+				Upstream:     intent.Upstream,
+				Labels:       append([]string(nil), intent.Labels...),
+				Descriptions: intent.Descriptions,
+				Route:        intent.Route,
+				Default:      intent.Default,
+				ProbeChars:   intent.ProbeChars,
 			}
 		}
 		out[group.ID] = binding
@@ -75,7 +77,15 @@ func resolveGroupMatch(match []string, universe []string) []scheduler.Source {
 	for _, pattern := range match {
 		for _, id := range universe {
 			if seen[id] || !routingPatternMatch(pattern, id) {
-				continue
+				// task-72：custom 条目（custom:<conn>/<name>）额外支持裸名
+				// 匹配——组 match 用与 /v1/models 一致的裸名（deepseek-flash）。
+				if plugin, model, ok := strings.Cut(id, "/"); ok && strings.HasPrefix(plugin, "custom:") {
+					if !routingPatternMatch(pattern, model) {
+						continue
+					}
+				} else {
+					continue
+				}
 			}
 			plugin, model, ok := strings.Cut(id, "/")
 			if !ok || strings.TrimSpace(plugin) == "" || strings.TrimSpace(model) == "" {
@@ -292,7 +302,10 @@ func globMatch(pattern, id string) bool {
 }
 
 // routingGroupBindings reads the current config and expands the groups against
-// the snapshot's own pools.
+// the snapshot's own pools. Custom-connection models (task-72) join the
+// universe as "custom:<conn>/<name>" even though they bypass the scheduler's
+// pools: the resolver emits their CustomModelPluginID source, and a group whose
+// members are all custom keeps working through the custom direct path.
 func (a *App) routingGroupBindings(snap *scheduler.Snapshot) map[string]scheduler.Binding {
 	if a == nil || snap == nil {
 		return nil
@@ -313,6 +326,21 @@ func (a *App) routingGroupBindings(snap *scheduler.Snapshot) map[string]schedule
 				continue
 			}
 			universe = append(universe, id+"/"+modelID)
+		}
+	}
+	if a.store != nil {
+		if models, err := a.store.ListCustomModels(); err == nil {
+			for _, model := range models {
+				if !model.Enabled || (model.ConnectionID != "" && !model.ConnectionEnabled) {
+					continue
+				}
+				name := strings.TrimSpace(model.Name)
+				connectionID := strings.TrimSpace(model.ConnectionID)
+				if name == "" {
+					continue
+				}
+				universe = append(universe, store.CustomModelPluginID(connectionID)+"/"+name)
+			}
 		}
 	}
 	return mergeAutoBindings(resolveRoutingGroups(groups, universe), universe)

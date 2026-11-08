@@ -328,3 +328,77 @@ func TestBuildRoutingTemplatesNeedModels(t *testing.T) {
 		}
 	}
 }
+
+// task-72：custom 连接模型纳入成员源——universe 条目 custom:<conn>/<name>，
+// 组 match 用与 /v1/models 一致的裸名（deepseek-flash）也能精确命中；成员
+// Source 的 PluginID 即 CustomModelPluginID(conn)（直连路径不受调度池影响）。
+func TestResolveGroupMatchCustomBareName(t *testing.T) {
+	universe := []string{
+		"trae/gpt-4o",
+		"custom:conn1/deepseek-flash",
+		"custom:conn1/deepseek-v4-pro",
+		"custom:conn2/deepseek-flash",
+	}
+	groups := []config.RoutingGroupConfig{
+		{ID: "deepseek", Match: []string{"deepseek-flash"}},
+		{ID: "deepseek-glob", Match: []string{"deepseek-*"}},
+		{ID: "namespaced", Match: []string{"custom:conn1/*"}},
+		{ID: "everything", Match: []string{"*"}},
+	}
+	out := resolveRoutingGroups(groups, universe)
+
+	exact := out["deepseek"]
+	if len(exact.Items) != 2 {
+		t.Fatalf("bare-name match = %+v, want both custom connections", exact.Items)
+	}
+	for _, item := range exact.Items {
+		if item.Model != "deepseek-flash" {
+			t.Fatalf("model = %q, want deepseek-flash", item.Model)
+		}
+		if item.PluginID != "custom:conn1" && item.PluginID != "custom:conn2" {
+			t.Fatalf("plugin = %q, want a custom connection namespace", item.PluginID)
+		}
+	}
+	if glob := out["deepseek-glob"]; len(glob.Items) != 3 {
+		t.Fatalf("glob = %+v, want all three custom rows", glob.Items)
+	}
+	if ns := out["namespaced"]; len(ns.Items) != 2 {
+		t.Fatalf("namespaced = %+v, want only conn1 rows", ns.Items)
+	}
+	if all := out["everything"]; len(all.Items) != 4 {
+		t.Fatalf("everything = %+v, want the plugin row too", all.Items)
+	}
+}
+
+// task-72：descriptions 校验——键必须 ⊆ labels、值非空。
+func TestValidateRoutingIntentDescriptions(t *testing.T) {
+	base := func(descriptions map[string]string) []config.RoutingGroupConfig {
+		return []config.RoutingGroupConfig{{
+			ID: "grp", Match: []string{"trae/*"},
+			Intent: &config.RoutingIntentConfig{
+				Enabled:      true,
+				Labels:       []string{"simple", "hard"},
+				Route:        map[string]string{"simple": "grp", "hard": "grp"},
+				Descriptions: descriptions,
+			},
+		}}
+	}
+	// 合法：键 ⊆ labels、值非空。
+	if err := validateRoutingGroups(base(map[string]string{
+		"simple": "日常闲聊或简单问答", "hard": "复杂技术设计",
+	})); err != nil {
+		t.Fatalf("valid descriptions rejected: %v", err)
+	}
+	// 键不在 labels。
+	if err := validateRoutingGroups(base(map[string]string{"unknown": "x"})); err == nil {
+		t.Fatal("description key outside labels accepted")
+	}
+	// 空描述。
+	if err := validateRoutingGroups(base(map[string]string{"simple": "   "})); err == nil {
+		t.Fatal("empty description accepted")
+	}
+	// 描述可以只覆盖部分标签（缺省回落 label 名）。
+	if err := validateRoutingGroups(base(map[string]string{"hard": "复杂任务"})); err != nil {
+		t.Fatalf("partial descriptions rejected: %v", err)
+	}
+}

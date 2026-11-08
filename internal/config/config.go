@@ -170,6 +170,11 @@ type RoutingIntentConfig struct {
 	Upstream string `json:"upstream,omitempty"`
 	// Labels are the choice options in question order.
 	Labels []string `json:"labels"`
+	// Descriptions optionally maps a label to the short description sent to the
+	// classifier as its choice criteria (task-72; JEV requires a non-empty
+	// string per option). Missing or empty descriptions fall back to the label
+	// name itself.
+	Descriptions map[string]string `json:"descriptions,omitempty"`
 	// Route maps a label to a routing group id.
 	Route map[string]string `json:"route"`
 	// Default is the group used when classification fails; empty stays on this
@@ -940,6 +945,20 @@ func normalizeRoutingIntent(in *RoutingIntentConfig) *RoutingIntentConfig {
 	}
 	intent.Labels = labels
 	intent.Route = route
+	// Descriptions：trim 键值，空描述删条目（回落 label 名，task-72），键不在
+	// 标签集合里的条目丢弃。
+	if len(intent.Descriptions) > 0 {
+		descriptions := make(map[string]string, len(intent.Descriptions))
+		for label, description := range intent.Descriptions {
+			label = strings.TrimSpace(label)
+			description = strings.TrimSpace(description)
+			if label == "" || description == "" || !seen[label] {
+				continue
+			}
+			descriptions[label] = description
+		}
+		intent.Descriptions = descriptions
+	}
 	if intent.ProbeChars <= 0 {
 		intent.ProbeChars = 2000
 	}

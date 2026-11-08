@@ -74,8 +74,13 @@ func (g *Gateway) intentLabel(ctx context.Context, intent scheduler.IntentBindin
 		if trimmed == "" {
 			continue // criteria 的值必须非空；空 label 本就无法匹配路由
 		}
-		// 描述先用 label 名本身；intent 配置将来扩展描述字段时在此替换。
-		criteria[trimmed] = trimmed
+		// task-72：intent 配置的 descriptions 提供语义更强的判据描述；缺省
+		// （无配置/空描述）回落 label 名本身。
+		description := strings.TrimSpace(intent.Descriptions[trimmed])
+		if description == "" {
+			description = trimmed
+		}
+		criteria[trimmed] = description
 	}
 	payload, err := json.Marshal(map[string]any{
 		"model": upstream.ModelID,

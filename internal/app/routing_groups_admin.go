@@ -15,6 +15,7 @@ import (
 	"aiworkgate/internal/config"
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/scheduler"
+	"aiworkgate/internal/store"
 	"aiworkgate/internal/webui"
 )
 
@@ -41,8 +42,11 @@ type routingRuleMembers struct {
 	Members []string `json:"members"`
 }
 
-// routingGroupUniverse lists the model ids a pattern can match, as
-// "plugin/model", from the enabled rows of every installed plugin's catalog.
+// routingGroupUniverse lists the model ids a pattern can match: "plugin/model"
+// from the enabled rows of every installed plugin's catalog, plus the enabled
+// custom-connection models (task-72) as "custom:<conn>/<name>" — the D-37
+// catalog namespace their rows already live in. Members surface the bare name
+// (deepseek-flash), matching /v1/models.
 func (a *App) routingGroupUniverse() []string {
 	universe := make([]string, 0)
 	if a == nil || a.store == nil || a.pluginMgr == nil {
@@ -67,6 +71,28 @@ func (a *App) routingGroupUniverse() []string {
 				continue
 			}
 			entry := id + "/" + modelID
+			if seen[entry] {
+				continue
+			}
+			seen[entry] = true
+			universe = append(universe, entry)
+		}
+	}
+	// task-72：custom 连接的启用模型（不落插件目录的 model_catalog 插件命名
+	// 空间，而走 D-37 的 custom:<conn> 折叠命名空间）。成员 Source 的 PluginID
+	// 即 CustomModelPluginID(conn)——直连路径不受调度池影响。
+	models, err := a.store.ListCustomModels()
+	if err == nil {
+		for _, model := range models {
+			if !model.Enabled || (model.ConnectionID != "" && !model.ConnectionEnabled) {
+				continue
+			}
+			name := strings.TrimSpace(model.Name)
+			connectionID := strings.TrimSpace(model.ConnectionID)
+			if name == "" {
+				continue
+			}
+			entry := store.CustomModelPluginID(connectionID) + "/" + name
 			if seen[entry] {
 				continue
 			}
@@ -478,6 +504,16 @@ func validateRoutingGroups(groups []config.RoutingGroupConfig) error {
 					return fmt.Errorf("%w: 路由组 %q 的意图标签不能为空", webui.ErrInvalidRequest, group.ID)
 				}
 				labels[label] = true
+			}
+			// task-72：descriptions 键必须 ⊆ labels，值必须非空字符串（JEV
+			// criteria 的官方约束）；空描述由 normalize 直接删条目（回落 label）。
+			for label, description := range intent.Descriptions {
+				if !labels[strings.TrimSpace(label)] {
+					return fmt.Errorf("%w: 路由组 %q 的意图描述 %q 不在标签列表中", webui.ErrInvalidRequest, group.ID, label)
+				}
+				if strings.TrimSpace(description) == "" {
+					return fmt.Errorf("%w: 路由组 %q 的意图描述 %q 不能为空（留空请直接省略该条目）", webui.ErrInvalidRequest, group.ID, label)
+				}
 			}
 			for label, target := range intent.Route {
 				if !labels[strings.TrimSpace(label)] {

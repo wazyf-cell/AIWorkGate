@@ -259,11 +259,15 @@ type Binding struct {
 
 // IntentBinding is the scheduler-side form of a config routing intent.
 type IntentBinding struct {
-	Upstream   string
-	Labels     []string
-	Route      map[string]string
-	Default    string
-	ProbeChars int
+	Upstream string
+	Labels   []string
+	// Descriptions optionally carries the per-label choice criteria text
+	// (task-72); a missing/empty description falls back to the label name in
+	// the gateway's payload builder.
+	Descriptions map[string]string
+	Route        map[string]string
+	Default      string
+	ProbeChars   int
 }
 
 // BindingRule is one feature-gated member set of a group.
