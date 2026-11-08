@@ -2395,6 +2395,30 @@ select.select-compact {
   overflow-y: auto;
 }
 
+/* Centered modal window (task-46)：居中窗口，替代右侧抽屉；
+   与 .drawer 同一层级（z-index 70），头部/体复用 .drawer-head/.drawer-body。 */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: var(--overlay);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, calc(100vw - 32px));
+  max-height: 85vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-up);
+  overflow: hidden;
+}
+
 .login-state-list {
   display: flex;
   flex-direction: column;
@@ -2723,7 +2747,7 @@ select.select-compact {
 /* KPI + loading ---------------------------------------------------- */
 
 .kpi-grid {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(5, 1fr);
 }
 
 .kpi-grid .stat {

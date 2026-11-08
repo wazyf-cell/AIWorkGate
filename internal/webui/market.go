@@ -21,12 +21,31 @@ import (
 //	POST /api/market/install           body {"spec","source","localPath"?}
 //	                                   -> {"ok":true,"id","version"}
 //	GET  /api/market/updates           -> {"updates":[{id,from,to,available}]}
+//	POST /api/market/update            body {"id"}
+//	                                   -> {"ok":true,"from","to","rolledBack":false}
 
 // marketInstallRequest is the POST /api/market/install body.
 type marketInstallRequest struct {
 	Spec      string `json:"spec"`
 	Source    string `json:"source"`
 	LocalPath string `json:"localPath,omitempty"`
+}
+
+// marketUpdateRequest is the POST /api/market/update body.
+type marketUpdateRequest struct {
+	ID string `json:"id"`
+}
+
+// MarketUpdateResult is the POST /api/market/update response. rolledBack is
+// always false on a successful update: the rollback primitive only reports
+// it when the health check of the new version failed and the previous tree
+// was restored, in which case the update itself failed and the host returns
+// an error instead of this payload.
+type MarketUpdateResult struct {
+	OK         bool   `json:"ok"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+	RolledBack bool   `json:"rolledBack"`
 }
 
 // handleMarketSearch runs the npm search through the host callback.
@@ -88,6 +107,39 @@ func (s *server) handleMarketInstall(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(body.Source),
 		strings.TrimSpace(body.LocalPath),
 	)
+	if err != nil {
+		s.marketError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// handleMarketUpdate applies one prepared market update for a plugin id. The
+// chain (check diff → prepare → rollback-capable apply → advance the record)
+// lives in the host callback; the handler only validates the body and shapes
+// the result.
+func (s *server) handleMarketUpdate(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodPost) {
+		return
+	}
+	if s.opts.MarketUpdate == nil {
+		s.unavailable(w)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var body marketUpdateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error(), "invalid_request_error")
+		return
+	}
+	id := strings.TrimSpace(body.ID)
+	if id == "" {
+		writeError(w, http.StatusBadRequest, `field "id" is required`, "invalid_request_error")
+		return
+	}
+	payload, err := s.opts.MarketUpdate(id)
 	if err != nil {
 		s.marketError(w, err)
 		return

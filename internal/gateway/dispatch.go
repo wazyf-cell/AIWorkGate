@@ -480,6 +480,8 @@ func (g *Gateway) forwardScheduled(w http.ResponseWriter, r *http.Request, rec *
 	if plugin, _, ok := strings.Cut(rec.model, "/"); ok && plugin != "" {
 		route = plugin
 	}
+	// 问题6A：工具别名正向改写（与脱敏同位；命中产出逆映射挂 rec，供响应回改）
+	body = g.applyToolAliasForward(rec, body)
 	body = red.MaskJSONBody(body, route)
 	rec.redactLine = red.AuditLine()
 
@@ -1422,6 +1424,12 @@ func (g *Gateway) deliver(w http.ResponseWriter, rec *reqRecord, resp *http.Resp
 		w, finish = NewWiring(g.redact).RespWriter(w)
 		defer finish()
 	}
+	// 问题6A：工具别名响应回改（scheduled 流式/非流式必经点）
+	if rec.toolReverse != nil {
+		aw := newToolAliasWriter(w, rec.toolReverse)
+		w = aw
+		defer aw.Finish()
+	}
 
 	w.WriteHeader(resp.StatusCode)
 	headerAt := time.Now()
@@ -1513,6 +1521,12 @@ func (g *Gateway) writeAttempt(w http.ResponseWriter, rec *reqRecord, res *upstr
 		var finish func()
 		w, finish = NewWiring(g.redact).RespWriter(w)
 		defer finish()
+	}
+	// 问题6A：工具别名响应回改（缓冲重放路径）
+	if rec.toolReverse != nil {
+		aw := newToolAliasWriter(w, rec.toolReverse)
+		w = aw
+		defer aw.Finish()
 	}
 	rec.status = res.status
 	if res.errText != "" && rec.errText == "" {

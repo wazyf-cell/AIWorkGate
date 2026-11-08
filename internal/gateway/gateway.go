@@ -28,6 +28,7 @@ import (
 
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/scheduler"
+	"aiworkgate/internal/gateway/tool_alias"
 )
 
 // PluginRegistry is the host-side view of installed plugins. It mirrors the
@@ -174,6 +175,10 @@ type Options struct {
 	// (MaskJSON, Route=provider) and responses restored to the client
 	// (NewWriter). The zero value leaves forwarding untouched.
 	Redact RedactOptions
+
+	// ToolAlias 是问题6A 工具别名指纹清洗的启动表（nil = 停用）。运行期经
+	// SetToolAlias 热替换（atomic，保存即生效）。
+	ToolAlias *tool_alias.Table
 }
 
 const (
@@ -239,6 +244,7 @@ type Gateway struct {
 	corsOrigins       atomic.Value // []string, set by SetCorsOrigins
 	allowIPs          atomic.Value // ipAllowlist, set by SetAllowIPs
 	trustedProxies    atomic.Value // ipAllowlist, set by SetTrustedProxies
+	toolAlias         atomic.Value // *tool_alias.Table, set by SetToolAlias（问题6A）
 	serviceMode       atomic.Int32 // serviceOpen / servicePaused / serviceWhitelist
 	ratePerKey        atomic.Int64 // P5-5 per-key requests per minute
 	ratePerIP         atomic.Int64 // P5-5 per-IP requests per minute
@@ -282,6 +288,14 @@ func (g *Gateway) SetCorsOrigins(origins []string) {
 		return
 	}
 	g.corsOrigins.Store(append([]string(nil), origins...))
+}
+
+// SetToolAlias 热替换工具别名生效表（问题6A，保存即生效；nil = 整表停用）。
+func (g *Gateway) SetToolAlias(t *tool_alias.Table) {
+	if g == nil {
+		return
+	}
+	g.toolAlias.Store(t)
 }
 
 func (g *Gateway) corsList() []string {
@@ -358,8 +372,7 @@ func newGateway(opts Options) *Gateway {
 		client:            &http.Client{Transport: transport, CheckRedirect: doNotFollowRedirects},
 		transport:         transport,
 		lim:               newLimiter(),
-		limiter:           newRateLimiter(),
-		decisionUpstreams: opts.DecisionUpstreams,
+		limiter:           newRateLimiter(),		decisionUpstreams: opts.DecisionUpstreams,
 		priceFor:          opts.PriceFor,
 		poolRateFor:       opts.PoolRateFor,
 		pCache:            make(map[string]pluginModels),
@@ -370,6 +383,7 @@ func newGateway(opts Options) *Gateway {
 	g.debugBody.Store(opts.DebugBody)
 	g.SetCorsOrigins(opts.CorsAllowOrigins)
 	g.SetAllowIPs(opts.AllowIPs)
+	g.SetToolAlias(opts.ToolAlias)
 	g.SetTrustedProxies(opts.TrustedProxies)
 	g.SetServiceMode(opts.ServiceMode)
 	g.SetRateLimits(opts.RateLimitPerMinute, opts.RateLimitPerIPPerMinute)
@@ -481,6 +495,9 @@ type reqRecord struct {
 	// 1 = the first try, 2+ = a retry switched to another account/round.
 	// Non-scheduled paths (forwardPlugin/forwardA) leave it 0 = "unknown".
 	attempt int
+	// toolReverse 是工具别名正向改写产出的逆映射（别名→原名，问题6A/task-43）：
+	// forward() 据此包响应回改 writer；nil = 本请求未改写（零开销直通）。
+	toolReverse map[string]string
 }
 
 // sseKeepAliveInterval is how long a streaming reply may stay silent before the
@@ -1498,6 +1515,8 @@ func (g *Gateway) forwardPlugin(w http.ResponseWriter, r *http.Request, rec *req
 	}
 	// P10：入站脱敏（Route=插件 id），审计进 rec
 	red := NewWiring(g.redact)
+	// 问题6A：工具别名正向改写（与脱敏同位；命中产出逆映射挂 rec）
+	rewritten = g.applyToolAliasForward(rec, rewritten)
 	rewritten = red.MaskJSONBody(rewritten, id)
 	rec.redactLine = red.AuditLine()
 
@@ -1658,6 +1677,14 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, rec *reqRecord
 		var finish func()
 		w, finish = red.RespWriter(w)
 		defer finish()
+	}
+	// 问题6A：工具别名响应回改——请求侧改写过的请求（rec.toolReverse 非空）
+	// 才包 writer，四个客户端协议面（OpenAI 直传 / anthropicWriter /
+	// geminiStreamWriter / envelopeWriter）都在这里消费字节流，一处覆盖。
+	if rec.toolReverse != nil {
+		aw := newToolAliasWriter(w, rec.toolReverse)
+		w = aw
+		defer aw.Finish()
 	}
 	w.WriteHeader(resp.StatusCode)
 	headerAt := time.Now()

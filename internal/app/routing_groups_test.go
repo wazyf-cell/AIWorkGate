@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"sort"
 	"testing"
 
 	"aiworkgate/internal/config"
@@ -151,5 +152,179 @@ func TestResolveRoutingGroupsIntentAndTokens(t *testing.T) {
 	when := out["rules"].Rules[0].When
 	if when.MinTokens != 2000 || when.MaxTokens != 9000 {
 		t.Fatalf("rule when = %+v", when)
+	}
+}
+
+// ── task-44：自动分组（sameModel 归一 + follow）──
+
+func TestAutoGroupsSameModelAcrossPlugins(t *testing.T) {
+	universe := []string{"pa/deepseek-v4.1-flash", "pa/glm", "pb/deepseek-v4-1-flash", "pb/glm", "pc/other"}
+	auto := autoGroupsOf(universe)
+	binding, ok := auto["auto-deepseek-v4-1-flash"]
+	if !ok {
+		t.Fatalf("auto groups = %v, want auto-deepseek-v4-1-flash", idsOf(auto))
+	}
+	// 拼写归一（v4.1 / v4-1）后两插件同键成组；同插件只占一名（pa/glm 与
+	// pb/glm 也同键，但 glm 只有两家且按 universe 序）。
+	if len(binding.Items) != 2 ||
+		binding.Items[0] != (scheduler.Source{PluginID: "pa", Model: "deepseek-v4.1-flash"}) ||
+		binding.Items[1] != (scheduler.Source{PluginID: "pb", Model: "deepseek-v4-1-flash"}) {
+		t.Fatalf("binding = %+v", binding)
+	}
+	if _, ok := auto["auto-other"]; ok {
+		t.Fatalf("single-provider model must not form a group")
+	}
+	glm, ok := auto["auto-glm"]
+	if !ok || len(glm.Items) != 2 {
+		t.Fatalf("glm auto group = %+v ok=%v", glm, ok)
+	}
+}
+
+func TestAutoGroupsDedupePluginSpellings(t *testing.T) {
+	// 同一插件上报同一模型的三种拼写：只占一名。
+	universe := []string{"pa/DeepSeek-V4.1-Flash", "pa/deepseek-v4.1-flash", "pa/deepseek_v4.1_flash"}
+	auto := autoGroupsOf(universe)
+	if len(auto) != 0 {
+		t.Fatalf("one plugin alone must not form groups, got %v", idsOf(auto))
+	}
+}
+
+func TestMergeAutoBindingsUserGroupWinsAndFollows(t *testing.T) {
+	universe := []string{"pa/glm-5", "pb/glm-5", "pc/glm-5"}
+	user := map[string]scheduler.Binding{
+		// 用户改过的自动组：只留 pa，pc 是后来接入的 → 尾随加入。
+		"auto-glm-5": {Logical: "auto-glm-5", Display: "GLM", Items: []scheduler.Source{
+			{PluginID: "pa", Model: "glm-5"},
+		}},
+		// 用户自己的非 auto 组：原样保留。
+		"mine": {Logical: "mine", Items: []scheduler.Source{{PluginID: "pb", Model: "glm-5"}}},
+	}
+	out := mergeAutoBindings(user, universe)
+	// pb 与 pc 都是用户保存后才出现的新 provider，都尾随加入；用户成员
+	// （pa）保持在前，用户的展示名不动。
+	followed := out["auto-glm-5"]
+	if len(followed.Items) != 3 ||
+		followed.Items[0].PluginID != "pa" || followed.Items[1].PluginID != "pb" || followed.Items[2].PluginID != "pc" {
+		t.Fatalf("follow = %+v, want [pa, pb, pc]", followed.Items)
+	}
+	if followed.Display != "GLM" {
+		t.Fatalf("display = %q, want the user's", followed.Display)
+	}
+	if len(out["mine"].Items) != 1 {
+		t.Fatalf("user group must be untouched: %+v", out["mine"])
+	}
+}
+
+func TestMergeAutoBindingsPublishesFreshAutoGroups(t *testing.T) {
+	// 用户没存 auto- 组：自动组直接发布。
+	universe := []string{"pa/pro", "pb/pro"}
+	out := mergeAutoBindings(map[string]scheduler.Binding{}, universe)
+	if len(out["auto-pro"].Items) != 2 {
+		t.Fatalf("auto-pro = %+v", out["auto-pro"])
+	}
+	// 用户禁用了自己的 auto- 组（未发布）：同名自动组按现状发布。
+	disabled := []config.RoutingGroupConfig{{ID: "auto-pro", Match: []string{"pa/*"}, Disabled: true}}
+	published := resolveRoutingGroups(disabled, universe)
+	out = mergeAutoBindings(published, universe)
+	if len(out["auto-pro"].Items) != 2 {
+		t.Fatalf("disabled user group must free the name for the auto group: %+v", out["auto-pro"])
+	}
+}
+
+func TestSameModelKeyFoldsSpelling(t *testing.T) {
+	same := [][2]string{
+		{"deepseek-v4.1-flash", "DeepSeek-V4.1-Flash"},
+		{"deepseek-v4.1-flash", "deepseek_v4_1_flash"},
+	}
+	for _, pair := range same {
+		if a, b := sameModelKey(pair[0]), sameModelKey(pair[1]); a != b {
+			t.Fatalf("sameModelKey(%q)=%q != (%q)=%q", pair[0], a, pair[1], b)
+		}
+	}
+	if sameModelKey("deepseek-v4.1-flash") == sameModelKey("deepseek-v4.1-pro") {
+		t.Fatalf("different models folded together")
+	}
+}
+
+func idsOf(bindings map[string]scheduler.Binding) []string {
+	out := make([]string, 0, len(bindings))
+	for id := range bindings {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ── task-44：一键模板（strongest / cheapest / steady）──
+
+func templateTestCatalog() []model.ModelCatalogEntry {
+	return []model.ModelCatalogEntry{
+		{PluginID: "pa", ModelID: "pro", Multiplier: 2, ContextLength: 200000},
+		// flash-air 是 small 非 tiny；nano-tiny 是 tiny 且更便宜——用于钉住
+		// 「tiny 惩罚先于价格」（magpie grouptemplate.go:187-193）。
+		{PluginID: "pa", ModelID: "flash-air", Multiplier: 0.4, ContextLength: 128000},
+		{PluginID: "pa", ModelID: "nano-tiny", Multiplier: 0.1},
+		{PluginID: "pb", ModelID: "pro", Multiplier: 1.5, ContextLength: 200000},
+	}
+}
+
+func TestBuildRoutingTemplatesPicksStrongAndCheap(t *testing.T) {
+	out := buildRoutingTemplates(templateTestCatalog())
+	if len(out) != 3 {
+		t.Fatalf("templates = %d, want 3", len(out))
+	}
+	byKind := map[string]routingTemplateView{}
+	for _, tpl := range out {
+		byKind[tpl.Kind] = tpl
+	}
+	smart := byKind["smart-split"]
+	if smart.Why != "" {
+		t.Fatalf("smart why = %q", smart.Why)
+	}
+	if len(smart.Match) != 2 || smart.Match[0] != "pa/pro" || smart.Match[1] != "pa/flash-air" {
+		t.Fatalf("smart match = %v, want [pa/pro, pa/flash-air]", smart.Match)
+	}
+	if len(smart.Rules) != 1 || smart.Rules[0].Name != "easy-turn" ||
+		smart.Rules[0].Match[0] != "pa/flash-air" || smart.Rules[0].When.MaxChars != 2000 {
+		t.Fatalf("smart rule = %+v", smart.Rules)
+	}
+	thrifty := byKind["cheap-first"]
+	if len(thrifty.Match) != 2 || thrifty.Match[0] != "pa/flash-air" || thrifty.Match[1] != "pa/pro" {
+		t.Fatalf("thrifty match = %v, want [pa/flash-air, pa/pro]", thrifty.Match)
+	}
+	if len(thrifty.Rules) != 1 || thrifty.Rules[0].When.MinChars != 8000 {
+		t.Fatalf("thrifty rule = %+v", thrifty.Rules)
+	}
+	steady := byKind["never-stuck"]
+	if len(steady.Match) != 2 || steady.Match[0] != "pa/pro" || steady.Match[1] != "pb/pro" {
+		t.Fatalf("steady match = %v, want one strongest per plugin", steady.Match)
+	}
+}
+
+func TestBuildRoutingTemplatesNeedCheap(t *testing.T) {
+	catalog := []model.ModelCatalogEntry{
+		{PluginID: "pa", ModelID: "pro", Multiplier: 2},
+		{PluginID: "pb", ModelID: "pro-max", Multiplier: 1.9},
+	}
+	out := buildRoutingTemplates(catalog)
+	byKind := map[string]routingTemplateView{}
+	for _, tpl := range out {
+		byKind[tpl.Kind] = tpl
+	}
+	if byKind["smart-split"].Why == "" || byKind["cheap-first"].Why == "" {
+		t.Fatalf("no cheap model available: smart/cheap-first must carry a why")
+	}
+	// steady 不需要便宜模型：两家各取最强即可用。
+	if byKind["never-stuck"].Why != "" || len(byKind["never-stuck"].Match) != 2 {
+		t.Fatalf("steady = %+v", byKind["never-stuck"])
+	}
+}
+
+func TestBuildRoutingTemplatesNeedModels(t *testing.T) {
+	out := buildRoutingTemplates(nil)
+	for _, tpl := range out {
+		if tpl.Why == "" || len(tpl.Match) != 0 {
+			t.Fatalf("empty catalog: %s must be unavailable, got %+v", tpl.Kind, tpl)
+		}
 	}
 }

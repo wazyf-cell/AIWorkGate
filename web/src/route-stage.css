@@ -1,0 +1,156 @@
+/*
+ * route-stage.css — magpie Routing 页动效包的降级移植（task-47，零后端）。
+ *
+ * 来源：_magpie-src/magpie-main/internal/gui/assets/plugins/routing/routing.css
+ *   rtflow  :17,:25-26   rtlive :141-142   rthit :151-153   rttick :65-66
+ *   rtin    :152,:168-169  rtfound :458-460  拖拽排序 :560-563
+ * 变量映射：magpie var(--agent)→--accent、var(--card)→--surface、
+ *   var(--line)→--border、var(--line-2)→--border-strong、var(--fg)→--text。
+ *
+ * 性能教训（magpie client.js:1820-1846，800 条流动虚线/帧 → 31fps）：
+ *   - infinite 动画只允许挂在常驻且数量极少（本页 1 个）的元素上；
+ *   - 一次性动画（rtin/rtfound/rthit）在挂载时各跑一次即结束；
+ *   - rtflow（stroke-dashoffset 流动虚线）与 rttick 在本页无承载 DOM，
+ *     作为 keyframes 库保留，供后续 A 卡（实时流向图舞台）直接取用——
+ *     届时流动线必须画在独立 SVG 层并做视口裁剪，不得逐 DOM 挂载。
+ *
+ * 本文件不进 check-style-debt 扫描面（只扫 .vue），仍遵守同一 token 契约：
+ * 不写裸色值/裸字号，几何与颜色一律走 var(--*)。
+ */
+
+/* ── keyframes（名字与 magpie 保持一致，便于日后对照/续搬） ── */
+
+@keyframes rtflow {
+  to { stroke-dashoffset: -8; }
+}
+
+@keyframes rtlive {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 6px transparent; }
+}
+
+@keyframes rthit {
+  20% { translate: -5px; }
+  40% { translate: 4px; }
+  60% { translate: -2px; }
+  80% { translate: 1px; }
+}
+
+@keyframes rttick {
+  40% { transform: scale(1.04); }
+}
+
+@keyframes rtin {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
+@keyframes rtfound {
+  0%, 40% { box-shadow: inset 0 0 0 2px var(--accent); }
+  100% { box-shadow: inset 0 0 0 2px transparent; }
+}
+
+/* ── 挂载点（本页实际接线的类；数量见注释，遵守性能教训） ── */
+
+/* 存活点：自动分组卡的「随快照实时」指示。全页唯一 infinite 动画（1 个元素）。 */
+.rs-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: rtlive 1.8s ease-in-out infinite;
+}
+
+/* 新发现的自动组：内描边扫过一次（1.4s，一次性）。 */
+.rs-found {
+  animation: rtfound 1.4s ease-out;
+}
+
+/* 一次性上浮入场：模板行、自动组行（普通类）。
+ * `.rs-in-enter-active/-from` 是 Vue <Transition name="rs-in"> 的钩子，
+ * 供编辑器面板切换使用。 */
+.rs-in {
+  animation: rtin 0.4s ease-out;
+}
+
+.rs-in-enter-active {
+  animation: rtin 0.4s ease-out;
+}
+
+.rs-in-enter-from {
+  opacity: 0;
+}
+
+/* 保存成功的消息条：命中抖动一次（0.45s）。 */
+.rs-hit {
+  animation: rthit 0.45s;
+}
+
+/* ── 列表拖拽排序（TransitionGroup move = magpie :560-563 的曲线） ── */
+
+.rs-list-move {
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rs-list-enter-active {
+  animation: rtin 0.4s ease-out;
+}
+
+.rs-list-enter-from {
+  opacity: 0;
+}
+
+/* 离场行绝对定位，让 move 过渡不与其重叠跳位。 */
+.rs-list-leave-active {
+  position: absolute;
+  width: 100%;
+}
+
+.rs-list-leave-to {
+  opacity: 0;
+}
+
+/* 拖起的一行：抬升 + 关掉自身过渡（magpie :562 原样）。 */
+.rule-item.rs-dragging {
+  position: relative;
+  z-index: 2;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgba(20, 22, 30, 0.12), 0 0 0 1px var(--border-strong);
+  border-radius: 8px;
+  transition: none;
+}
+
+/* ── 展开折叠：grid-template-rows 0fr→1fr（替代 magpie 的 WAAPI grow） ── */
+
+.rs-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s cubic-bezier(0.3, 0, 0.2, 1);
+}
+
+.rs-fold.open {
+  grid-template-rows: 1fr;
+}
+
+.rs-fold-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── 无障碍：系统要求减少动效时全灭（magpie routing.css:224-225 白送） ── */
+
+@media (prefers-reduced-motion: reduce) {
+  .rs-dot,
+  .rs-found,
+  .rs-in,
+  .rs-hit,
+  .rs-list-enter-active {
+    animation: none;
+  }
+
+  .rs-list-move,
+  .rs-fold,
+  .rs-list-leave-active {
+    transition: none;
+  }
+}

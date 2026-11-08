@@ -5,6 +5,7 @@ package app
 // connection never touches the network.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -336,4 +337,62 @@ func redactConnectionKey(text, key string) string {
 	}
 	text = strings.ReplaceAll(text, "Bearer "+key, "Bearer ***")
 	return strings.ReplaceAll(text, key, "***")
+}
+
+// probeCustomEffort sends one max_tokens=1 request with the tier's wire value
+// to check whether the upstream accepts that reasoning tier (8.4). The tier
+// string is the protocol wire text from CMP's TIERS; "auto"/"" send nothing.
+func (a *App) probeCustomEffort(connectionID, modelID, tier string) (webui.CustomEffortProbe, error) {
+	conn, key, err := a.customConnectionForCall(connectionID)
+	if err != nil {
+		return webui.CustomEffortProbe{}, err
+	}
+	upstreamModel := strings.TrimSpace(modelID)
+	if upstreamModel == "" {
+		return webui.CustomEffortProbe{}, errors.New("模型名为空")
+	}
+	payload, err := customProbePayload(conn.Protocol, upstreamModel)
+	if err != nil {
+		return webui.CustomEffortProbe{}, err
+	}
+	tier = strings.TrimSpace(tier)
+	if tier != "" && tier != "auto" {
+		var root map[string]any
+		if err := json.Unmarshal(payload, &root); err != nil {
+			return webui.CustomEffortProbe{}, err
+		}
+		root["reasoning_effort"] = tier
+		if payload, err = json.Marshal(root); err != nil {
+			return webui.CustomEffortProbe{}, err
+		}
+	}
+	endpoint, err := gateway.CustomProtocolChatURL(conn.Protocol, conn.BaseURL, upstreamModel, false)
+	if err != nil {
+		return webui.CustomEffortProbe{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return webui.CustomEffortProbe{}, errors.New("接入的 API 地址无效")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	for name, value := range gateway.CustomProtocolHeaders(conn.Protocol, key) {
+		req.Header.Set(name, value)
+	}
+	client := newCustomAdminClient(customAdminTimeout)
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
+	if err != nil {
+		return webui.CustomEffortProbe{Supported: false, Error: "无法连接该接入（请检查地址、Key 与网络）"}, nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, customRemoteBodyBytes+1))
+	if err != nil {
+		return webui.CustomEffortProbe{Supported: false, Error: "读取上游响应失败"}, nil
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		return webui.CustomEffortProbe{Supported: true}, nil
+	}
+	reason := fmt.Sprintf("上游返回状态 %d：%s", resp.StatusCode, redactConnectionKey(errorSnippet(body), key))
+	return webui.CustomEffortProbe{Supported: false, Error: reason}, nil
 }

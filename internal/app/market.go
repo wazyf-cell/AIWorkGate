@@ -127,6 +127,118 @@ func (a *App) marketInstall(spec, source, localPath string) (any, error) {
 	return map[string]any{"ok": true, "id": rec.PluginID, "version": rec.Version}, nil
 }
 
+// marketUpdater is the rollback-capable apply seam (*plugins.Manager).
+type marketUpdater interface {
+	UpdateDirWithRollback(ctx context.Context, id, srcDir string) (bool, error)
+}
+
+// marketUpdatePreparer prepares a market package into a staging directory
+// (market.Installer implements it).
+type marketUpdatePreparer interface {
+	Prepare(ctx context.Context, spec string, opts market.Options) (*market.Prepared, error)
+	Cleanup(p *market.Prepared) error
+}
+
+// Seams: production uses the app's plugin manager and a real market installer;
+// tests inject fakes to drive the rollback branch without a network.
+var (
+	marketUpdaterFor = func(a *App) marketUpdater {
+		if a == nil || a.pluginMgr == nil {
+			return nil
+		}
+		return a.pluginMgr
+	}
+	marketUpdatePreparerFor = func(a *App) (marketUpdatePreparer, error) {
+		reg, err := a.marketRegistry()
+		if err != nil {
+			return nil, err
+		}
+		return market.NewInstaller(reg, filepath.Join(a.dataDir, "market-scratch")), nil
+	}
+)
+
+// marketUpdate applies one prepared update for a plugin id. It mirrors the
+// auto path of the update timer (plugins/update_timer.go applyAuto) exactly:
+// CheckUpdate resolves the diff, Prepare stages the new tarball, the rollback
+// primitive applies it (a failing health check restores the previous tree),
+// and only a healthy apply advances the market_installs record.
+//
+// Contract: unknown plugin → webui.ErrPluginNotFound (404), no update or a
+// non-registry package → webui.ErrInvalidRequest (400), anything else 500.
+func (a *App) marketUpdate(pluginID string) (webui.MarketUpdateResult, error) {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" {
+		return webui.MarketUpdateResult{}, fmt.Errorf("%w: plugin id is required", webui.ErrInvalidRequest)
+	}
+	rows, err := a.store.ListMarketInstalls()
+	if err != nil {
+		return webui.MarketUpdateResult{}, err
+	}
+	var row *store.MarketInstall
+	for i := range rows {
+		if rows[i].PluginID == pluginID {
+			row = &rows[i]
+			break
+		}
+	}
+	if row == nil {
+		return webui.MarketUpdateResult{}, fmt.Errorf("%w: no market install for plugin %q", webui.ErrPluginNotFound, pluginID)
+	}
+	pkg := strings.TrimSpace(row.Package)
+	// Only npm-shaped packages are update-checkable: a GitHub install
+	// (owner/repo, D-04) or a local directory has no registry entry.
+	if pkg == "" || (strings.Contains(pkg, "/") && !strings.HasPrefix(pkg, "@")) {
+		return webui.MarketUpdateResult{}, fmt.Errorf("%w: package %q has no registry entry", webui.ErrInvalidRequest, pkg)
+	}
+
+	reg, err := a.marketRegistry()
+	if err != nil {
+		return webui.MarketUpdateResult{}, err
+	}
+	info, err := market.CheckUpdate(context.Background(), reg, pkg, row.Version, market.UpdatePolicyPrompt)
+	if err != nil {
+		return webui.MarketUpdateResult{}, err
+	}
+	if !info.Available {
+		return webui.MarketUpdateResult{}, fmt.Errorf("%w: no update available for %s (%s -> %s)", webui.ErrInvalidRequest, pkg, info.From, info.To)
+	}
+
+	preparer, err := marketUpdatePreparerFor(a)
+	if err != nil {
+		return webui.MarketUpdateResult{}, err
+	}
+	bridgeExe, _ := a.bridgeExecutablePath() // 缺桥二进制也继续：只有需要生成桥 manifest 时才致命
+	prepared, err := preparer.Prepare(context.Background(), row.Package+"@"+info.To, market.Options{
+		Registry:         reg,
+		FinalPluginDir:   filepath.Join(a.dataDir, "plugins", pluginID),
+		BridgeExecutable: bridgeExe,
+	})
+	if err != nil {
+		return webui.MarketUpdateResult{}, fmt.Errorf("%w: prepare %s: %v", webui.ErrInvalidRequest, info.To, err)
+	}
+	defer preparer.Cleanup(prepared)
+
+	updater := marketUpdaterFor(a)
+	if updater == nil {
+		return webui.MarketUpdateResult{}, fmt.Errorf("app: market update: plugin manager is not available")
+	}
+	rolledBack, err := updater.UpdateDirWithRollback(context.Background(), pluginID, prepared.Root)
+	if err != nil {
+		return webui.MarketUpdateResult{}, fmt.Errorf("app: market update %s %s: apply failed (rolled back: %v): %w", pluginID, info.To, rolledBack, err)
+	}
+
+	if err := a.store.UpsertMarketInstall(store.MarketInstall{
+		PluginID: row.PluginID,
+		Package:  row.Package,
+		Source:   row.Source,
+		Version:  info.To,
+		SHA256:   prepared.Record.SHA256,
+	}); err != nil {
+		return webui.MarketUpdateResult{}, err
+	}
+	return webui.MarketUpdateResult{OK: true, From: info.From, To: info.To, RolledBack: rolledBack}, nil
+}
+
 // marketUpdates backs GET /api/market/updates: the from→to diff of every
 // recorded market install.
 func (a *App) marketUpdates() (any, error) {

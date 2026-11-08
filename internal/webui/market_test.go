@@ -126,6 +126,71 @@ func TestMarketInstallRoute(t *testing.T) {
 	}
 }
 
+func TestMarketUpdateRoute(t *testing.T) {
+	var gotID string
+	h := New(marketOptions(func(o *Options) {
+		o.MarketUpdate = func(id string) (MarketUpdateResult, error) {
+			gotID = id
+			return MarketUpdateResult{OK: true, From: "0.2.1", To: "0.2.30"}, nil
+		}
+	}))
+
+	rec := doRequest(t, h, http.MethodPost, "/api/market/update", `{"id":"opencode-trae-auth"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var payload MarketUpdateResult
+	decodeJSONBody(t, rec, &payload)
+	if !payload.OK || payload.From != "0.2.1" || payload.To != "0.2.30" || payload.RolledBack {
+		t.Fatalf("update payload = %+v", payload)
+	}
+	if gotID != "opencode-trae-auth" {
+		t.Fatalf("callback saw id %q", gotID)
+	}
+
+	// Contract violations and wrong methods.
+	if rec := doRequest(t, h, http.MethodPost, "/api/market/update", `{}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing id = %d, want 400", rec.Code)
+	}
+	if rec := doRequest(t, h, http.MethodPost, "/api/market/update", `{not json`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad json = %d, want 400", rec.Code)
+	}
+	if rec := doRequest(t, h, http.MethodPost, "/api/market/update", `{"id":"x","extra":1}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field = %d, want 400", rec.Code)
+	}
+	if rec := doRequest(t, h, http.MethodGet, "/api/market/update", ""); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET update = %d, want 405", rec.Code)
+	}
+}
+
+func TestMarketUpdateErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		cb   func(string) (MarketUpdateResult, error)
+		want int
+	}{
+		{"nil callback", nil, http.StatusNotImplemented},
+		{"unknown plugin", func(string) (MarketUpdateResult, error) {
+			return MarketUpdateResult{}, fmt.Errorf("%w: no market install for plugin", ErrPluginNotFound)
+		}, http.StatusNotFound},
+		{"no update available", func(string) (MarketUpdateResult, error) {
+			return MarketUpdateResult{}, fmt.Errorf("%w: no update available", ErrInvalidRequest)
+		}, http.StatusBadRequest},
+		{"host failure", func(string) (MarketUpdateResult, error) {
+			return MarketUpdateResult{}, errors.New("registry down")
+		}, http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := New(marketOptions(func(o *Options) { o.MarketUpdate = tc.cb }))
+			rec := doRequest(t, h, http.MethodPost, "/api/market/update", `{"id":"x"}`)
+			if rec.Code != tc.want {
+				t.Fatalf("code = %d, want %d (body %s)", rec.Code, tc.want, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestMarketInstallUnavailable(t *testing.T) {
 	h := New(marketOptions(nil))
 	rec := doRequest(t, h, http.MethodPost, "/api/market/install", `{"spec":"foo","source":"npm"}`)

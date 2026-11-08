@@ -342,7 +342,7 @@ onMounted(() => void load())
                       type="button"
                       class="btn sm"
                       :disabled="busy !== '' || settingsLoading || savingSettings"
-                      @click="openEditor(plugin)"
+                      @click="editingId === (plugin.manifest?.id ?? '') ? closeEditor() : openEditor(plugin)"
                     >
                       {{ editingId === (plugin.manifest?.id ?? '') ? '收起' : '编辑' }}
                     </button>

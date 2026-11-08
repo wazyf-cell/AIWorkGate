@@ -242,6 +242,8 @@ func (a *App) gatewayOptions(cfg config.Config, logger hostLogger) gateway.Optio
 		CustomModels:   a.gatewayCustomModels,
 		CustomModelKey: a.customModelKey,
 		Redact:         redactOptionsFromConfig(cfg),
+		// 问题6A：工具别名生效表（<dataDir>\tool-alias.json；保存即热替换）
+		ToolAlias: a.toolAliasTable(),
 	}
 	switch {
 	case a.gatewayPlugins != nil:

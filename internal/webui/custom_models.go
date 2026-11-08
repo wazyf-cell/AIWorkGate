@@ -481,3 +481,50 @@ func writeCustomModelError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusInternalServerError, "自定义模型操作失败: "+err.Error(), "internal_error")
 	}
 }
+
+// CustomEffortProbe is the result of a single max_tokens=1 probe against a
+// custom connection's model for one reasoning tier (8.4). Supported=false
+// carries the redacted upstream reason so the UI can uncheck that tier.
+type CustomEffortProbe struct {
+	Supported bool   `json:"supported"`
+	Error     string `json:"error,omitempty"`
+}
+
+type customEffortProbeRequest struct {
+	ConnectionID string `json:"connection_id"`
+	ModelID      string `json:"model_id"`
+	Tier         string `json:"tier"`
+}
+
+// handleCustomModelProbeEffort is POST /api/custom-models/probe-effort. The
+// host owns the actual upstream call; this layer only validates the shape.
+func (s *server) handleCustomModelProbeEffort(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodPost) {
+		return
+	}
+	if s.opts.ProbeCustomEffort == nil {
+		s.unavailable(w)
+		return
+	}
+	var body customEffortProbeRequest
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	body.ConnectionID = strings.TrimSpace(body.ConnectionID)
+	body.ModelID = strings.TrimSpace(body.ModelID)
+	body.Tier = strings.TrimSpace(body.Tier)
+	if body.ConnectionID == "" || body.ModelID == "" || body.Tier == "" {
+		writeError(w, http.StatusBadRequest, "connection_id、model_id、tier 均不能为空", "bad_request")
+		return
+	}
+	result, err := s.opts.ProbeCustomEffort(body.ConnectionID, body.ModelID, body.Tier)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "自定义模型不存在", "not_found")
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, CustomEffortProbe{Supported: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}

@@ -71,6 +71,7 @@ func (a *App) webOptions() webui.Options {
 		MarketSearch:  a.marketSearch,
 		MarketInstall: a.marketInstall,
 		MarketUpdates: a.marketUpdates,
+		MarketUpdate:  a.marketUpdate,
 
 		ModelOverrides:      a.store.GetModelOverrides,
 		PutModelOverride:    a.store.PutModelOverride,
@@ -108,6 +109,10 @@ func (a *App) webOptions() webui.Options {
 		DeleteRulePack: a.deleteRulePack,
 		ResetRulePack:  a.resetRulePack,
 		ReloadRules:    a.reloadRules,
+
+		// 问题6A（task-43）：工具别名指纹清洗（<dataDir>\tool-alias.json）
+		ToolAliasGet: a.toolAliasStatus,
+		ToolAliasSet: a.saveToolAlias,
 
 		Proxies:     a.listProxies,
 		SaveProxy:   a.saveProxy,
@@ -165,6 +170,7 @@ func (a *App) webOptions() webui.Options {
 		TestCustomConnection:         a.testCustomConnection,
 		FetchCustomConnectionModels:  a.fetchCustomConnectionModels,
 		ImportCustomConnectionModels: a.importCustomConnectionModels,
+		ProbeCustomEffort:            a.probeCustomEffort,
 
 		ProbeConnectivity: a.probeConnectivity,
 		ProbeHistory:      a.listConnectivityProbes,

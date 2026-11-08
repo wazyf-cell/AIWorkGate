@@ -37,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	"aiworkgate/internal/gateway/tool_alias"
 	"aiworkgate/internal/model"
 	"aiworkgate/internal/store"
 )
@@ -135,6 +136,9 @@ type Options struct {
 	// MarketUpdates returns the update report payload {{id,from,to,available},...}
 	// for every installed market package.
 	MarketUpdates func() (any, error)
+	// MarketUpdate applies one prepared update for a plugin id through the
+	// rollback primitive and reports the version diff it applied.
+	MarketUpdate func(id string) (MarketUpdateResult, error)
 
 	Accounts   func(pluginID string) any
 	Checkins   func(pluginID, from, to string) any
@@ -198,6 +202,11 @@ type Options struct {
 	// ReloadRules rewrites every rules file and reloads running plugins. It
 	// reports the reloaded plugin ids and, per plugin, the reload errors.
 	ReloadRules func() (reloaded []string, failed map[string]string, err error)
+
+	// 问题6A（task-43）：工具别名指纹清洗。Get 返回持久化状态（含默认表参考），
+	// Set 校验后落盘并热替换网关生效表（保存即生效）。nil 时端点答 501。
+	ToolAliasGet func() (ToolAliasStatus, error)
+	ToolAliasSet func(file tool_alias.File) error
 
 	Proxies     func() []model.Proxy
 	SaveProxy   func(model.Proxy) error
@@ -284,6 +293,9 @@ type Options struct {
 	TestCustomConnection         func(id string) (latencyMS int64, modelCount int, err error)
 	FetchCustomConnectionModels  func(id string) ([]RemoteModel, error)
 	ImportCustomConnectionModels func(id string, models []ImportModelInput) (ImportModelsResult, error)
+	// ProbeCustomEffort（8.4）：对自定义接入的某个模型发 max_tokens=1 的最小请求，
+	// 验证给定推理档位（协议 wire 文本）是否被上游接受。返回 supported 与错误详情。
+	ProbeCustomEffort func(connectionID, modelID, tier string) (CustomEffortProbe, error)
 
 	// Connectivity probes (Settings → 连通性自检). ProbeConnectivity runs one
 	// probe, persists it (success or failure) and returns the redacted result;
@@ -405,6 +417,7 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/plugins/install", s.handlePluginInstall)
 	mux.HandleFunc("/api/market/search", s.handleMarketSearch)
 	mux.HandleFunc("/api/market/install", s.handleMarketInstall)
+	mux.HandleFunc("/api/market/update", s.handleMarketUpdate)
 	mux.HandleFunc("/api/market/updates", s.handleMarketUpdates)
 	mux.HandleFunc("/api/plugins/{id}/{action}", s.handlePluginAction)
 	// The literal segment wins over {action} for every method, so POST here is
@@ -438,6 +451,8 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/rules/reload", s.handleRulesReload)
 	mux.HandleFunc("/api/rules/{name}", s.handleRulePack)
 	mux.HandleFunc("/api/rules/{name}/reset", s.handleRulePackReset)
+	// 问题6A（task-43）：工具别名指纹清洗（GET/PUT，保存即热替换）
+	mux.HandleFunc("/api/tool-alias", s.handleToolAlias)
 	mux.HandleFunc("/api/proxies", s.handleProxies)
 	mux.HandleFunc("/api/proxies/{id}", s.handleProxy)
 	mux.HandleFunc("/api/proxies/{id}/check", s.handleProxyCheck)
@@ -472,6 +487,7 @@ func New(opts Options) http.Handler {
 	mux.HandleFunc("/api/custom-models", s.handleCustomModels)
 	mux.HandleFunc("/api/custom-models/{id}", s.handleCustomModel)
 	mux.HandleFunc("/api/custom-models/{id}/test", s.handleCustomModelTest)
+	mux.HandleFunc("/api/custom-models/probe-effort", s.handleCustomModelProbeEffort)
 	mux.HandleFunc("/api/custom-connections", s.handleCustomConnections)
 	mux.HandleFunc("/api/custom-connections/{id}", s.handleCustomConnection)
 	mux.HandleFunc("/api/custom-connections/{id}/test", s.handleCustomConnectionTest)

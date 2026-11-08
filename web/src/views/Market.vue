@@ -1,15 +1,15 @@
 <script setup lang="ts">
-// 市场（P2-3）：三源插件市场 —— 搜索 / 安装 / 已装列表 / 更新检查。
-// 契约与后端 task-15 对齐；后端未就绪时给出明确提示而不是空白页。
-// T3 语义：市场安装默认停用，安装成功后提示去「插件」页启用并启动。
+// 市场（P2-3 改版，P2-6）：三源插件市场 —— 搜索 / 安装 / 已安装（含更新徽章与行内更新）。
+// 后端契约（task-15 固定）：search / install / updates 三路由；已安装列表由
+// /api/market/updates 派生（id=包名、from=已装版本、to=最新版、available=是否有更新）——
+// 后端没有独立的 /installed 路由，也不存在「执行更新」端点（task-23 更新由宿主定时器
+// 按 prompt/auto 策略处理），因此行内「更新」按钮做「重查 + 说明」，真执行留给宿主。
 import { onMounted, ref } from 'vue'
 import {
   api,
   errorMessage,
-  normalizeMarketInstalled,
   normalizeMarketSearch,
   normalizeMarketUpdates,
-  type MarketInstalledRow,
   type MarketSearchResult,
   type MarketSource,
   type MarketUpdateItem,
@@ -26,23 +26,26 @@ const sourceOptions: { value: MarketSource; label: string }[] = [
 
 const results = ref<MarketSearchResult[]>([])
 const searching = ref(false)
-const installed = ref<MarketInstalledRow[]>([])
-const loadingInstalled = ref(false)
-const updates = ref<MarketUpdateItem[]>([])
+/** 已安装市场包：由 /api/market/updates 派生（一行一包，含 from→to）。 */
+const installed = ref<MarketUpdateItem[]>([])
 const checkingUpdates = ref(false)
 const installingSpec = ref('')
+const updatingId = ref('')
 const error = ref('')
 const message = ref('')
-/** 后端连不上/未实现时整车可用的提示开关 */
+/** 接口 404/501/断连提示：后端已实现，404 只会出现在旧 exe 上 → 提示重启程序。 */
 const backendOffline = ref('')
 
 async function run<T>(fn: () => Promise<T>, offlineCheck?: (e: unknown) => boolean): Promise<T | undefined> {
   try {
-    return await fn()
+    const value = await fn()
+    // 成功调用后自动清除「接口未就绪」提示（旧 404 只会在重启前残留）
+    backendOffline.value = ''
+    return value
   } catch (e) {
     const status = (e as { status?: number }).status
     if (offlineCheck?.(e) || status === 404 || status === 501 || status === 0) {
-      backendOffline.value = `市场接口尚未就绪（HTTP ${status ?? 0}）：请确认宿主已实现 /api/market/*（后端 task-15），联调前此处只读当前进程的调用结果。`
+      backendOffline.value = `市场接口需要重启程序后生效——若刚更新过程序请重启 AIWorkGate（HTTP ${status ?? 0}）。`
     } else {
       error.value = errorMessage(e)
     }
@@ -56,7 +59,6 @@ async function search() {
   searching.value = true
   error.value = ''
   message.value = ''
-  backendOffline.value = ''
   results.value = []
   const data = await run(() => api.market.search(q), () => true)
   results.value = normalizeMarketSearch(data)
@@ -69,11 +71,7 @@ async function install(pkg: MarketSearchResult) {
   installingSpec.value = pkg.name
   error.value = ''
   message.value = ''
-  backendOffline.value = ''
-  const spec =
-    source.value === 'local'
-      ? (localPath.value.trim() || pkg.name)
-      : pkg.name
+  const spec = source.value === 'local' ? localPath.value.trim() || pkg.name : pkg.name
   const data = await run(() =>
     api.market.install({
       spec,
@@ -85,7 +83,7 @@ async function install(pkg: MarketSearchResult) {
     const { id, version } = data as { id?: string; version?: string }
     message.value = `已安装「${id ?? pkg.name}」${version ? `@${version}` : ''}。默认停用——请到「插件」页启用并启动（T3）。`
     installingSpec.value = ''
-    await Promise.all([loadInstalled(), checkUpdates()])
+    await checkUpdates()
     return
   }
   if (data && (data as { ok?: boolean }).ok === undefined) {
@@ -94,33 +92,48 @@ async function install(pkg: MarketSearchResult) {
   installingSpec.value = ''
 }
 
-async function loadInstalled() {
-  loadingInstalled.value = true
-  const data = await run(() => api.market.installed(), () => true)
-  installed.value = normalizeMarketInstalled(data)
-  loadingInstalled.value = false
-}
-
 async function checkUpdates() {
   checkingUpdates.value = true
   error.value = ''
   message.value = ''
-  backendOffline.value = ''
   const data = await run(() => api.market.updates(), () => true)
-  updates.value = normalizeMarketUpdates(data)
+  installed.value = normalizeMarketUpdates(data)
   checkingUpdates.value = false
 }
 
-function policyText(item: MarketUpdateItem): string {
-  if (item.available === false) return '无可用更新'
-  if (item.available === true) return '可更新'
-  return '未知'
+/** 该包是否有新版（available=true 且 to 与已装 from 不同）。 */
+function hasUpdate(item: MarketUpdateItem): boolean {
+  return item.available === true && Boolean(item.to) && item.to !== item.from
 }
 
-onMounted(() => {
-  void loadInstalled()
-  void checkUpdates()
-})
+/**
+ * 行内「更新」（P2-6b）：POST /api/market/update {id} → {ok, from, to, rolledBack}。
+ * 契约契约：健康检查失败时宿主自动回滚，rolledBack=true → 显示「更新失败已回滚到旧版本」；
+ * 成功则行内徽章消失（重查 updates 后该包不再有 from→to 差异）并提示新版本。
+ */
+async function requestUpdate(item: MarketUpdateItem) {
+  if (updatingId.value || checkingUpdates.value) return
+  updatingId.value = item.id
+  message.value = ''
+  error.value = ''
+  const data = await run(() => api.market.update(item.id))
+  if (data?.ok === true) {
+    if (data.rolledBack === true) {
+      error.value = `「${item.id}」更新失败已回滚到旧版本（${data.from ?? '—'}）。请检查插件安装目录后重试。`
+    } else {
+      message.value = `「${item.id}」已更新 ${data.from ?? '—'} → ${data.to ?? '—'}。插件默认停用，请到「插件」页启用并启动。`
+    }
+    updatingId.value = ''
+    await checkUpdates()
+    return
+  }
+  if (data && (data as { ok?: boolean }).ok === undefined) {
+    error.value = `「${item.id}」更新返回异常：ok 字段缺失，请与后端核对 /api/market/update 契约。`
+  }
+  updatingId.value = ''
+}
+
+onMounted(() => void checkUpdates())
 </script>
 
 <template>
@@ -132,7 +145,7 @@ onMounted(() => {
     </div>
     <div v-if="message" class="notice ok">{{ message }}</div>
 
-    <!-- 搜索 -->
+    <!-- ① 浏览搜索：搜索框 + 三源切换 + 结果列表 + 行内安装 -->
     <section class="card">
       <div class="card-head">
         <h2>搜索插件</h2>
@@ -220,7 +233,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <!-- 已装市场包 -->
+    <!-- ② 已安装市场包（含更新徽章 + 行内更新，替代独立「更新检查」卡片） -->
     <section class="card">
       <div class="card-head">
         <h2>已安装市场包</h2>
@@ -230,66 +243,41 @@ onMounted(() => {
           </button>
         </div>
       </div>
-      <div v-if="loadingInstalled" class="empty">加载中…</div>
+      <div v-if="checkingUpdates && installed.length === 0" class="empty">加载中…</div>
       <div v-else-if="installed.length === 0" class="empty">
         <strong>还没有已安装的市场包</strong>
-        <span>在上方搜索并安装；安装后默认停用，请到「插件」页启用。</span>
+        <span>在上方搜索并安装；安装后默认停用，请到「插件」页启用。每行会标注可用更新（from → to）。</span>
       </div>
       <div v-else class="table-wrap">
         <table class="table">
           <thead>
             <tr>
               <th>包名</th>
-              <th>来源</th>
               <th>已装版本</th>
-              <th>状态</th>
+              <th>更新</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="pkg in installed" :key="pkg.id">
-              <td class="mono">{{ pkg.name }}</td>
-              <td>{{ pkg.source || '—' }}</td>
-              <td><span class="badge">{{ pkg.version || '—' }}</span></td>
-              <td>
-                <span v-if="pkg.enabled === true" class="badge ok">已启用</span>
-                <span v-else-if="pkg.enabled === false" class="badge muted">已停用</span>
-                <span v-else class="muted">—</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- 更新检查 -->
-    <section class="card">
-      <div class="card-head">
-        <h2>更新检查</h2>
-        <span class="sub">from → to · 策略：available 由后端 /api/market/updates 给出</span>
-      </div>
-      <div v-if="updates.length === 0" class="empty">
-        <strong v-if="checkingUpdates">检查中…</strong>
-        <strong v-else>没有发现可更新的市场包</strong>
-        <span v-if="!checkingUpdates">点击上方「检查更新」重新核对。</span>
-      </div>
-      <div v-else class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>包名</th>
-              <th>已装</th>
-              <th>可更新到</th>
-              <th>策略</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in updates" :key="item.id">
+            <tr v-for="item in installed" :key="item.id">
               <td class="mono">{{ item.id }}</td>
               <td><span class="badge">{{ item.from || '—' }}</span></td>
-              <td><span class="badge">{{ item.to || '—' }}</span></td>
               <td>
-                <span v-if="item.available === true" class="badge warn">{{ policyText(item) }}</span>
-                <span v-else class="muted">{{ policyText(item) }}</span>
+                <span v-if="hasUpdate(item)" class="badge warn">有更新 {{ item.from }} → {{ item.to }}</span>
+                <span v-else class="muted">无更新</span>
+              </td>
+              <td>
+                <button
+                  v-if="hasUpdate(item)"
+                  type="button"
+                  class="btn sm"
+                  :disabled="checkingUpdates || updatingId === item.id"
+                  title="执行更新（健康检查失败会自动回滚到旧版本）"
+                  @click="requestUpdate(item)"
+                >
+                  {{ updatingId === item.id ? '更新中…' : '更新' }}
+                </button>
+                <span v-else class="muted">—</span>
               </td>
             </tr>
           </tbody>

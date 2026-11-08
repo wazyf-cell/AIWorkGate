@@ -3,12 +3,15 @@ import { computed, onMounted, ref } from 'vue'
 import {
   api,
   errorMessage,
+  type RoutingAutoGroup,
   type RoutingGroup,
   type RoutingGroupView,
   type RoutingGroupsResponse,
   type RoutingRule,
+  type RoutingTemplate,
   type RoutingWhen,
 } from '../api'
+import '../route-stage.css'
 
 interface RuleDraft {
   name: string
@@ -30,6 +33,7 @@ interface RouteDraft {
 }
 
 interface GroupDraft {
+  uid: number
   id: string
   display: string
   matchText: string
@@ -43,6 +47,10 @@ interface GroupDraft {
   routes: RouteDraft[]
 }
 
+/* uid 给 TransitionGroup 提供稳定 key：拖拽重排时 move 过渡按内容跟随，
+ * 而不是按下标抖动。 */
+let uidSeq = 0
+
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -50,6 +58,8 @@ const message = ref('')
 const drafts = ref<GroupDraft[]>([])
 const savedGroups = ref<RoutingGroupView[]>([])
 const upstreams = ref<RoutingGroupsResponse['decision_upstreams']>([])
+const templates = ref<RoutingTemplate[]>([])
+const autoGroups = ref<RoutingAutoGroup[]>([])
 const editing = ref(-1)
 const baseline = ref('')
 
@@ -70,7 +80,9 @@ function newRuleDraft(): RuleDraft {
 }
 
 function newDraft(): GroupDraft {
+  uidSeq += 1
   return {
+    uid: uidSeq,
     id: '',
     display: '',
     matchText: '',
@@ -89,9 +101,27 @@ function numberText(value?: number): string {
   return typeof value === 'number' ? String(value) : ''
 }
 
+function ruleToDraft(rule: RoutingRule): RuleDraft {
+  return {
+    name: rule.name ?? '',
+    matchText: (rule.match ?? []).join('\n'),
+    minChars: numberText(rule.when?.min_chars),
+    maxChars: numberText(rule.when?.max_chars),
+    minTokens: numberText(rule.when?.min_tokens),
+    maxTokens: numberText(rule.when?.max_tokens),
+    image: Boolean(rule.when?.image),
+    thinking: Boolean(rule.when?.thinking),
+    agent: rule.when?.agent ?? '',
+    startHour: numberText(rule.when?.start_hour),
+    endHour: numberText(rule.when?.end_hour),
+  }
+}
+
 function toDraft(group: RoutingGroupView): GroupDraft {
   const intent = group.intent
+  uidSeq += 1
   return {
+    uid: uidSeq,
     id: group.id,
     display: group.display ?? '',
     matchText: (group.match ?? []).join('\n'),
@@ -99,19 +129,7 @@ function toDraft(group: RoutingGroupView): GroupDraft {
     weightsText: Object.entries(group.weights ?? {})
       .map(([member, weight]) => `${member}=${weight}`)
       .join('\n'),
-    rules: (group.rules ?? []).map((rule) => ({
-      name: rule.name ?? '',
-      matchText: (rule.match ?? []).join('\n'),
-      minChars: numberText(rule.when?.min_chars),
-      maxChars: numberText(rule.when?.max_chars),
-      minTokens: numberText(rule.when?.min_tokens),
-      maxTokens: numberText(rule.when?.max_tokens),
-      image: Boolean(rule.when?.image),
-      thinking: Boolean(rule.when?.thinking),
-      agent: rule.when?.agent ?? '',
-      startHour: numberText(rule.when?.start_hour),
-      endHour: numberText(rule.when?.end_hour),
-    })),
+    rules: (group.rules ?? []).map(ruleToDraft),
     intentEnabled: Boolean(intent?.enabled),
     intentUpstream: intent?.upstream ?? '',
     intentProbeChars: numberText(intent?.probe_chars) || '2000',
@@ -238,6 +256,8 @@ const dirty = computed(() => {
 function apply(response: RoutingGroupsResponse) {
   savedGroups.value = response.groups ?? []
   upstreams.value = response.decision_upstreams ?? []
+  templates.value = response.templates ?? []
+  autoGroups.value = response.auto_groups ?? []
   drafts.value = savedGroups.value.map(toDraft)
   try {
     baseline.value = JSON.stringify(buildGroups())
@@ -295,12 +315,90 @@ function addRoute() {
   if (draft) draft.routes.push({ label: '', target: '' })
 }
 
+/** 唯一化组 id：模板/自动组名被占用时追加 -2、-3…，避免覆盖已有组。 */
+function uniqueDraftID(base: string): string {
+  let id = base
+  for (let n = 2; drafts.value.some((d) => d.id === id); n++) {
+    id = `${base}-${n}`
+  }
+  return id
+}
+
+/** task-44：把一个模板预填成草稿并打开编辑器；不自动保存。 */
+function applyTemplate(template: RoutingTemplate) {
+  if (template.why) return
+  const draft = newDraft()
+  draft.id = uniqueDraftID(template.kind)
+  draft.display = template.name
+  draft.matchText = (template.match ?? []).join('\n')
+  draft.rules = (template.rules ?? []).map(ruleToDraft)
+  drafts.value.push(draft)
+  editing.value = drafts.value.length - 1
+  message.value = `已按模板「${template.name}」预填草稿，检查成员与规则后点「保存全部」生效。`
+}
+
+/** task-44：把一个自动组转成可编辑草稿（成员写成精确 id 模式）。 */
+function saveAutoGroup(group: RoutingAutoGroup) {
+  if (group.edited) return
+  const draft = newDraft()
+  draft.id = uniqueDraftID(group.id)
+  draft.display = group.display || group.id
+  draft.matchText = group.members.join('\n')
+  drafts.value.push(draft)
+  editing.value = drafts.value.length - 1
+  message.value = '已把自动组转成可编辑草稿：可改名、加权重或配规则；保存同名组后该自动组由你的配置接管。'
+}
+
+/* ── task-47：左侧列表拖拽排序（曲线 = magpie routing.css:560-563）── */
+
+const dragIndex = ref(-1)
+
+function onDragStart(index: number, event: DragEvent) {
+  dragIndex.value = index
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(index))
+  }
+}
+
+/* dragover 即重排（sortable 惯例）：splices 草稿并随动 editing 下标，
+ * TransitionGroup 的 .rs-list-move 给其余行补 0.22s 位移动画。 */
+function onDragOver(index: number, event: DragEvent) {
+  const from = dragIndex.value
+  if (from < 0 || from === index) return
+  event.preventDefault()
+  reorder(from, index)
+  dragIndex.value = index
+}
+
+function reorder(from: number, to: number) {
+  if (from === to) return
+  const moved = drafts.value.splice(from, 1)[0]
+  if (!moved) return
+  drafts.value.splice(to, 0, moved)
+  // 编辑焦点跟随被拖的行，其余下标按搬移方向平移。
+  if (editing.value === from) editing.value = to
+  else if (from < editing.value && editing.value <= to) editing.value -= 1
+  else if (to <= editing.value && editing.value < from) editing.value += 1
+}
+
+function onDragEnd() {
+  dragIndex.value = -1
+}
+
 function membersOf(id: string): string[] {
   return savedGroups.value.find((group) => group.id === id)?.members ?? []
 }
 
 function membersLabel(id: string): string {
   const members = membersOf(id)
+  if (members.length === 0) return '未匹配任何模型'
+  const shown = members.slice(0, 3).join('、')
+  return members.length > 3 ? `${shown} 等 ${members.length} 个` : shown
+}
+
+/** task-44：自动组的成员摘要（成员列表直接给定，不走已保存组查找）。 */
+function membersLabelOf(members: string[]): string {
   if (members.length === 0) return '未匹配任何模型'
   const shown = members.slice(0, 3).join('、')
   return members.length > 3 ? `${shown} 等 ${members.length} 个` : shown
@@ -321,7 +419,7 @@ onMounted(load)
         <button type="button" class="btn sm ghost" :disabled="loading" @click="load">重新读取</button>
       </div>
     </div>
-    <div v-if="message" class="notice ok">{{ message }}</div>
+    <div v-if="message" class="notice ok rs-hit">{{ message }}</div>
 
     <section class="card">
       <div class="card-body tight">
@@ -341,11 +439,40 @@ onMounted(load)
       </div>
     </section>
 
+    <section class="card">
+      <div class="card-body tight">
+        <div class="row between">
+          <span class="field-label">一键模板</span>
+          <span class="small muted">按当前目录的费率与上下文自动挑模型，预填一个组草稿——不直接保存，检查后点「保存全部」。</span>
+        </div>
+        <div class="stack">
+          <div v-for="t in templates" :key="t.kind" class="row between rs-in">
+            <div class="stack">
+              <strong>{{ t.name }}</strong>
+              <span class="small muted" :class="{ 'text-danger': t.why }">{{ t.why || t.description }}</span>
+            </div>
+            <button
+              type="button"
+              class="btn sm"
+              :disabled="Boolean(t.why) || loading"
+              :title="t.why || t.description"
+              @click="applyTemplate(t)"
+            >
+              {{ t.why ? '不可用' : '使用模板' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <div class="rules-layout">
       <section class="card">
         <div class="card-head">
           <h2>已有路由组</h2>
           <span class="badge plain muted">{{ drafts.length }} 个</span>
+        </div>
+        <div class="card-body tight">
+          <span class="small muted">这是什么：每一行是一个会写进 config.json 的组草稿。拖动可调列表顺序（只影响展示与保存顺序，不影响路由）；点一行在右侧编辑，改动点「保存全部」前不生效。</span>
         </div>
         <div v-if="loading && drafts.length === 0" class="log-skeleton" aria-hidden="true">
           <span v-for="n in 4" :key="n" class="skeleton skeleton-line"></span>
@@ -354,14 +481,19 @@ onMounted(load)
           <strong>还没有路由组</strong>
           <span>新建一个，用 <code>*</code> 或 <code>plugin/model</code> 把成员圈进来。</span>
         </div>
-        <div v-else class="rule-list">
+        <TransitionGroup v-else tag="div" name="rs-list" class="rule-list">
           <button
             v-for="(draft, index) in drafts"
-            :key="index"
+            :key="draft.uid"
             type="button"
             class="rule-item"
-            :class="{ active: editing === index }"
+            :class="{ active: editing === index, 'rs-dragging': dragIndex === index }"
+            draggable="true"
             @click="editing = index"
+            @dragstart="onDragStart(index, $event)"
+            @dragover="onDragOver(index, $event)"
+            @dragend="onDragEnd"
+            @drop.prevent="onDragEnd"
           >
             <span class="rule-item-head">
               <strong>{{ draft.id || '未命名' }}</strong>
@@ -375,7 +507,7 @@ onMounted(load)
             </span>
             <span class="small muted mono">{{ membersLabel(draft.id) }}</span>
           </button>
-        </div>
+        </TransitionGroup>
       </section>
 
       <section class="card">
@@ -383,11 +515,15 @@ onMounted(load)
           <h2>{{ editing >= 0 ? '编辑路由组' : '路由组详情' }}</h2>
           <span v-if="editing >= 0 && dirty" class="badge plain muted">未保存的改动不生效</span>
         </div>
-        <div v-if="editing < 0" class="empty">
-          <strong>选择一个路由组</strong>
-          <span>左侧列表点一条开始编辑，或点右上角「新建路由组」。</span>
+        <div class="card-body tight">
+          <span class="small muted">这是什么：从上到下依次是 身份（ID/展示名）→ 成员匹配（用模式圈模型）→ 权重（成员分摊比例）→ 组规则（按请求特征临时换成员，首条命中）→ 意图规则（判据模型替你选组）。只填前两层组就能用，其余按需。</span>
         </div>
-        <div v-else class="card-body stack">
+        <Transition name="rs-in" mode="out-in">
+          <div v-if="editing < 0" class="empty" key="empty">
+            <strong>选择一个路由组</strong>
+            <span>左侧列表点一条开始编辑，或点右上角「新建路由组」。</span>
+          </div>
+          <div v-else class="card-body stack" :key="drafts[editing]?.uid">
           <div class="form-grid">
             <div class="field">
               <label :for="`group-id-${editing}`">ID（路由名）</label>
@@ -472,8 +608,10 @@ onMounted(load)
                 启用
               </label>
             </div>
-            <div v-if="drafts[editing].intentEnabled" class="stack">
-              <div class="form-grid">
+            <div class="rs-fold" :class="{ open: drafts[editing].intentEnabled }">
+              <div class="rs-fold-inner" :inert="!drafts[editing].intentEnabled">
+                <div class="stack">
+                  <div class="form-grid">
                 <div class="field">
                   <label>判据上游</label>
                   <select v-model="drafts[editing].intentUpstream" class="select">
@@ -510,9 +648,11 @@ onMounted(load)
                   <button type="button" class="btn sm ghost" @click="drafts[editing].routes.splice(routeIndex, 1)">删除</button>
                 </div>
               </div>
-              <span class="help">
-                判据请求最多等 3 秒；超时、上游报错或答案无法解析时走兜底组；同一段用户输入的判定结果缓存 10 分钟。
-              </span>
+                  <span class="help">
+                    判据请求最多等 3 秒；超时、上游报错或答案无法解析时走兜底组；同一段用户输入的判定结果缓存 10 分钟。
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -525,8 +665,31 @@ onMounted(load)
             <button type="button" class="btn sm danger" @click="removeDraft(editing)">删除该组</button>
             <span class="small muted">成员预览：{{ membersLabel(drafts[editing]?.id ?? '') }}</span>
           </div>
-        </div>
+          </div>
+        </Transition>
       </section>
     </div>
+
+    <section v-if="autoGroups.length > 0" class="card">
+      <div class="card-head">
+        <h2><span class="rs-dot" aria-hidden="true" title="随每次调度快照实时重新求解"></span> 自动分组</h2>
+        <span class="badge plain muted">{{ autoGroups.length }} 个</span>
+      </div>
+      <div class="card-body stack">
+        <span class="small muted rs-in">
+          这是什么：同一模型被两个及以上插件同时服务时，调度会在每次快照自动生成 auto- 开头的组并按插件顺序轮转——无需手工维护。要把某一个改成自己的（改名/权重/规则），点「存为可编辑组」：保存同名组后你的配置接管该名字，之后新插件服务同模型时会自动尾随加入你的成员之后。
+        </span>
+        <div v-for="g in autoGroups" :key="g.id" class="row between rs-found">
+          <span class="row">
+            <strong class="mono">{{ g.id }}</strong>
+            <span class="small muted mono">{{ membersLabelOf(g.members) }}</span>
+            <span v-if="g.edited" class="badge plain muted">已有同名自定义组接管</span>
+          </span>
+          <button type="button" class="btn sm" :disabled="g.edited || loading" @click="saveAutoGroup(g)">
+            {{ g.edited ? '已接管' : '存为可编辑组' }}
+          </button>
+        </div>
+      </div>
+    </section>
   </div>
 </template>

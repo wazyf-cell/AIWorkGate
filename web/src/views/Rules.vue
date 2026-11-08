@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, errorMessage, type PluginStatus, type RulePack } from '../api'
+import { api, errorMessage, type PluginStatus, type RulePack, type ToolAliasStatus } from '../api'
 
 interface RuleRow {
   id: number
@@ -11,6 +11,64 @@ interface RuleRow {
 interface StripRow {
   id: number
   pattern: string
+}
+
+// —— 问题6A（task-43）：视图切换 + 工具别名指纹清洗 ——
+type RulesView = 'packs' | 'alias'
+const view = ref<RulesView>('packs')
+const aliasLoading = ref(false)
+const aliasSaving = ref(false)
+const aliasStatus = ref<ToolAliasStatus | null>(null)
+const aliasEnabled = ref(false)
+const showDefaults = ref(false)
+const aliasRules = ref<Array<{ id: number; from: string; to: string }>>([])
+let aliasRowSeq = 0
+
+function newAliasRow(from = '', to = '') {
+  aliasRowSeq += 1
+  return { id: aliasRowSeq, from, to }
+}
+
+async function loadAlias() {
+  aliasLoading.value = true
+  error.value = ''
+  try {
+    const data = await api.toolAlias.status()
+    aliasStatus.value = data ?? null
+    aliasEnabled.value = data?.enabled ?? false
+    aliasRules.value = (data?.rules ?? []).map((rule) => newAliasRow(rule.from, rule.to))
+  } catch (e) {
+    error.value = errorMessage(e)
+  } finally {
+    aliasLoading.value = false
+  }
+}
+
+function switchView(next: RulesView) {
+  view.value = next
+  message.value = ''
+  if (next === 'alias' && aliasStatus.value === null) void loadAlias()
+}
+
+async function saveAlias() {
+  aliasSaving.value = true
+  error.value = ''
+  message.value = ''
+  warning.value = ''
+  try {
+    await api.toolAlias.save({
+      enabled: aliasEnabled.value,
+      rules: aliasRules.value
+        .map((row) => ({ from: row.from.trim(), to: row.to.trim() }))
+        .filter((row) => row.from !== ''),
+    })
+    await loadAlias()
+    message.value = '工具别名已保存，网关即时生效（无需重启）。'
+  } catch (e) {
+    error.value = errorMessage(e)
+  } finally {
+    aliasSaving.value = false
+  }
 }
 
 let rowSeq = 0
@@ -267,16 +325,32 @@ async function reloadPlugins() {
     <section class="card">
       <div class="card-body tight">
         <div class="toolbar">
+          <div class="row">
+            <button type="button" class="btn" :class="{ primary: view === 'packs' }" @click="switchView('packs')">
+              规则包
+            </button>
+            <button type="button" class="btn" :class="{ primary: view === 'alias' }" @click="switchView('alias')">
+              工具别名
+            </button>
+          </div>
           <div class="field grow">
-            <span class="field-label">共享规则包</span>
+            <span class="field-label">
+              {{ view === 'packs' ? '共享规则包' : '工具别名（指纹清洗）' }}
+            </span>
             <span class="small muted">
-              宿主保存并下发到插件数据目录；修改后需要重新加载插件才会生效。
+              {{
+                view === 'packs'
+                  ? '宿主保存并下发到插件数据目录；修改后需要重新加载插件才会生效。'
+                  : '网关进程内逐请求改写客户端独家工具名（上游只见语义保持的别名），响应侧自动换回原名；保存即生效。'
+              }}
             </span>
           </div>
-          <button type="button" class="btn primary" @click="startNew">新建规则包</button>
-          <button type="button" class="btn" :disabled="reloading" @click="reloadPlugins">
-            {{ reloading ? '重新加载中…' : '重新加载插件规则' }}
-          </button>
+          <template v-if="view === 'packs'">
+            <button type="button" class="btn primary" @click="startNew">新建规则包</button>
+            <button type="button" class="btn" :disabled="reloading" @click="reloadPlugins">
+              {{ reloading ? '重新加载中…' : '重新加载插件规则' }}
+            </button>
+          </template>
           <button type="button" class="btn" :disabled="loading" @click="loadPacks">
             {{ loading ? '刷新中…' : '刷新' }}
           </button>
@@ -284,7 +358,82 @@ async function reloadPlugins() {
       </div>
     </section>
 
-    <div class="rules-layout">
+    <!-- 问题6A：工具别名 -->
+    <section v-if="view === 'alias'" class="card">
+      <div class="card-head">
+        <h2>工具别名</h2>
+        <span v-if="aliasStatus" class="badge plain muted">
+          内置默认 {{ aliasStatus.defaults ?? 0 }} 条 · 自定义 {{ aliasRules.length }} 条
+        </span>
+      </div>
+      <div class="card-body stack">
+        <div v-if="aliasLoading && !aliasStatus" class="log-skeleton" aria-hidden="true">
+          <span v-for="n in 4" :key="n" class="skeleton skeleton-line"></span>
+        </div>
+        <template v-else>
+          <div class="field">
+            <label class="check-row">
+              <input v-model="aliasEnabled" type="checkbox" />
+              <span>启用工具别名改写</span>
+            </label>
+            <span class="help">
+              内置默认表（{{ aliasStatus?.defaults ?? 0 }} 条）全量生效；下方自定义规则按工具名覆盖内置别名，
+              别名填空即停用该工具的改写。改写要求请求/响应双向一致，因此不支持多候选。
+            </span>
+          </div>
+
+          <div v-if="aliasStatus?.warnings?.length" class="notice warn">
+            {{ aliasStatus.warnings.join('；') }}
+          </div>
+
+          <div class="field">
+            <span class="field-label">自定义规则（{{ aliasRules.length }} 条）</span>
+            <div v-if="aliasRules.length === 0" class="small muted">
+              还没有自定义规则；内置默认表仍生效，添加规则可覆盖或新增。
+            </div>
+            <div v-for="(row, index) in aliasRules" :key="row.id" class="rule-row">
+              <input v-model="row.from" class="input mono" type="text" placeholder="真实工具名（逐字）" spellcheck="false" />
+              <span class="rule-arrow small muted">→</span>
+              <input v-model="row.to" class="input mono" type="text" placeholder="别名（留空 = 停用）" spellcheck="false" />
+              <button type="button" class="btn sm ghost" @click="aliasRules.splice(index, 1)">删除</button>
+            </div>
+            <div>
+              <button type="button" class="btn sm" @click="aliasRules.push(newAliasRow())">添加一条</button>
+            </div>
+          </div>
+
+          <div class="row between">
+            <div class="btn-row">
+              <button type="button" class="btn primary" :disabled="aliasSaving" @click="saveAlias">
+                {{ aliasSaving ? '保存中…' : '保存并生效' }}
+              </button>
+              <button type="button" class="btn" :disabled="aliasLoading" @click="loadAlias">刷新</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <button type="button" class="btn sm ghost" @click="showDefaults = !showDefaults">
+              {{ showDefaults ? '收起内置默认表' : `查看内置默认表（${aliasStatus?.defaults ?? 0} 条，只读）` }}
+            </button>
+            <div v-if="showDefaults" class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr><th>真实工具名</th><th>别名</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="rule in aliasStatus?.default_rules ?? []" :key="rule.from">
+                    <td class="mono small">{{ rule.from }}</td>
+                    <td class="mono small">{{ rule.to }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <div v-else class="rules-layout">
       <section class="card">
         <div class="card-head">
           <h2>规则包</h2>

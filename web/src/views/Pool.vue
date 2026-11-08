@@ -1616,8 +1616,8 @@ onBeforeUnmount(() => {
 
     <!-- 编辑元数据：人工覆盖层（展示名/厂商/上下文/视觉/思考/倍率/免费） -->
     <Transition name="drawer">
-    <div v-if="editingModel" class="drawer-backdrop" @click.self="closeOverrideEditor">
-      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="override-title">
+    <div v-if="editingModel" class="modal-backdrop" @click.self="closeOverrideEditor">
+      <aside class="modal" role="dialog" aria-modal="true" aria-labelledby="override-title">
         <header class="drawer-head">
           <div>
             <h2 id="override-title">编辑模型元数据</h2>

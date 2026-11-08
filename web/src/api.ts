@@ -894,6 +894,28 @@ export interface RoutingGroupsResponse {
   groups: RoutingGroupView[]
   universe: string[]
   decision_upstreams: { id: string; protocol: string; model_id: string }[]
+  /** task-44 一键模板：按当前目录费率/上下文预选的组草稿，why 非空 = 出不了该模板。 */
+  templates?: RoutingTemplate[]
+  /** task-44 自动分组：同模型跨插件自动生成的 auto- 组（只读预览）。 */
+  auto_groups?: RoutingAutoGroup[]
+}
+
+/** magpie 式一键模板：预填草稿，由编辑器确认后保存，不直接落盘。 */
+export interface RoutingTemplate {
+  kind: string
+  name: string
+  description?: string
+  match: string[]
+  rules?: RoutingRule[]
+  why?: string
+}
+
+/** 快照时按「同模型跨 ≥2 插件」自动生成的组；edited = 用户已有同名组接管。 */
+export interface RoutingAutoGroup {
+  id: string
+  display?: string
+  members: string[]
+  edited: boolean
 }
 
 /** One slice of a pasted request's estimated input tokens (D-55). */
@@ -1003,6 +1025,35 @@ export type UsageSessionsParams = UsageFilterParams & {
   page_size?: number
   /** D-32③：按会话过滤逐请求列表（聚合视图展开用）。 */
   conversation_id?: string
+}
+
+/** 问题6A（task-43）工具别名规则：from 逐字精确匹配真实工具名，to 非空别名（空串 = 停用）。 */
+export interface ToolAliasRule {
+  from: string
+  to: string
+}
+
+/** PUT /api/tool-alias 的请求体。 */
+export interface ToolAliasFile {
+  enabled: boolean
+  rules: ToolAliasRule[]
+  updated_at?: number
+}
+
+/** GET /api/tool-alias 的响应体（含内置默认表只读参考与合并告警）。 */
+export interface ToolAliasStatus {
+  enabled?: boolean
+  rules?: ToolAliasRule[]
+  updated_at?: number
+  defaults?: number
+  default_rules?: ToolAliasRule[]
+  warnings?: string[]
+}
+
+export interface ToolAliasSaveResult {
+  ok?: boolean
+  enabled?: boolean
+  count?: number
 }
 
 /** D-32③ 会话真聚合：一条聚合行 = 一个 conversation_id（跨 provider 归并）。 */
@@ -1283,7 +1334,7 @@ export interface PoolSettings {
   conv_sticky_ttl: number
   /** Milliseconds, 0 = disabled. */
   hedge_ms: number
-  default_reasoning: boolean
+  default_reasoning: string
   background_downgrade: boolean
   longctx_downgrade: boolean
   /** "HH:MM" local time for the daily catalog sync; "" disables it. */
@@ -1307,7 +1358,7 @@ export function emptyPoolSettings(): PoolSettings {
     pool_sticky_ttl: 300,
     conv_sticky_ttl: 1800,
     hedge_ms: 8000,
-    default_reasoning: false,
+    default_reasoning: '',
     background_downgrade: false,
     longctx_downgrade: false,
     model_sync_time: '',
@@ -1334,7 +1385,7 @@ export function normalizePoolSettings(raw: Partial<PoolSettings> | null | undefi
     pool_sticky_ttl: numberOr(raw.pool_sticky_ttl, base.pool_sticky_ttl),
     conv_sticky_ttl: numberOr(raw.conv_sticky_ttl, base.conv_sticky_ttl),
     hedge_ms: numberOr(raw.hedge_ms, base.hedge_ms),
-    default_reasoning: Boolean(raw.default_reasoning),
+    default_reasoning: ['', 'off', 'low', 'medium', 'high'].includes(String(raw.default_reasoning ?? '')) ? String(raw.default_reasoning) : '',
     background_downgrade: Boolean(raw.background_downgrade),
     longctx_downgrade: Boolean(raw.longctx_downgrade),
     model_sync_time: typeof raw.model_sync_time === 'string' ? raw.model_sync_time.trim() : '',
@@ -1895,6 +1946,19 @@ export interface CustomModelPatch {
 export interface CustomModelTestResult {
   ok: boolean
   latency_ms: number
+  error?: string
+}
+
+/** 8.4：逐档探测请求体（connection_id/model_id/tier 为后端约定字段名）。 */
+export interface CustomEffortProbeInput {
+  connection_id: string
+  model_id: string
+  tier: string
+}
+
+/** 8.4：逐档探测结果；supported=false 时 error 为脱敏后的上游原因。 */
+export interface CustomEffortProbeResult {
+  supported: boolean
   error?: string
 }
 
@@ -2529,6 +2593,19 @@ export const api = {
     },
   },
 
+  // —— 问题6A（task-43）：工具别名指纹清洗（网关保存即生效） ——
+  toolAlias: {
+    status(): Promise<ToolAliasStatus> {
+      return request<ToolAliasStatus>('/tool-alias')
+    },
+    save(file: ToolAliasFile): Promise<OkResponse> {
+      return request<ToolAliasSaveResult>('/tool-alias', {
+        method: 'PUT',
+        body: JSON.stringify(file),
+      })
+    },
+  },
+
   checkins(plugin: string, from: string, to: string): Promise<CheckinData> {
     return request<CheckinData>(`/checkin${qs({ plugin, from, to })}`)
   },
@@ -2789,6 +2866,13 @@ export const api = {
         body: '{}',
       })
     },
+    /** 8.4 档位探测：POST /api/custom-models/probe-effort（max_tokens=1 最小请求验证上游是否接受该档位）。 */
+    probeEffort(body: CustomEffortProbeInput): Promise<CustomEffortProbeResult> {
+      return request<CustomEffortProbeResult>('/custom-models/probe-effort', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+    },
   },
 
   /** 模型真发测试（P12-1/D-39）：对插件模型逐个发送最小 chat 请求。 */
@@ -2964,6 +3048,17 @@ export const api = {
     updates(): Promise<MarketUpdatesResponse> {
       return request<MarketUpdatesResponse>('/market/updates')
     },
+    /**
+     * 执行一次更新（P2-6b，与 host-opchost 契约）：POST /api/market/update
+     * body {"id":"<plugin_id>"}，返回 {ok, from, to, rolledBack}；
+     * 健康检查失败时宿主自动回滚，rolledBack=true。
+     */
+    update(id: string): Promise<MarketUpdateResponse> {
+      return request<MarketUpdateResponse>('/market/update', {
+        method: 'POST',
+        body: JSON.stringify({ id }),
+      })
+    },
     /** 已装市场包列表（形状未定稿时宽容解析）；后端未提供时回空数组。 */
     installed(): Promise<{ packages?: MarketInstalledRow[]; items?: MarketInstalledRow[] }> {
       return request<{ packages?: MarketInstalledRow[]; items?: MarketInstalledRow[] }>('/market/installed')
@@ -3012,6 +3107,18 @@ export interface MarketUpdateItem {
 export interface MarketUpdatesResponse {
   updates?: MarketUpdateItem[]
   items?: MarketUpdateItem[]
+}
+
+/**
+ * POST /api/market/update 的响应（P2-6b 契约）：health 失败时宿主自动回滚，
+ * rolledBack=true（前端须显示「更新失败已回滚到旧版本」警告）。
+ */
+export interface MarketUpdateResponse {
+  ok?: boolean
+  id?: string
+  from?: string
+  to?: string
+  rolledBack?: boolean
 }
 
 /** 已装市场包的一行；后端未定稿，字段宽容读取。 */
@@ -3067,4 +3174,17 @@ export function normalizeMarketInstalled(
     })
   }
   return rows
+}
+
+/** 8.4 推理档位探测：对自定义接入的某模型发 max_tokens=1 的最小请求。 */
+export interface CustomEffortProbeInput {
+  connection_id: string
+  model_id: string
+  /** 协议 wire 文本（如 openai 的 reasoning_effort 取值）；由前端 tierWire() 换算。 */
+  tier: string
+}
+
+export interface CustomEffortProbeResult {
+  supported: boolean
+  error?: string
 }

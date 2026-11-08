@@ -14,6 +14,7 @@ import {
   type ModelBindingSource,
   type PluginStatus,
   type PoolSettings,
+  type PoolStrategy,
   type PromptComposition,
   type SchedulerCandidate,
   type SchedulerExplainRequest,
@@ -90,6 +91,19 @@ const PRESETS: PresetItem[] = [
   },
 ]
 
+/* 预设未覆盖的 5 个池内策略（侦察结论：9 策略全可达，但只有 4 个出现在预设里）。
+   这里给出一键入口：点击只改全局默认的池内策略，不动池间策略、不动已有池的其余字段。 */
+const EXTRA_STRATEGIES: PoolStrategy[] = ['expiring_first', 'free', 'pace', 'random', 'p2c']
+
+/* default_reasoning 现为五值字符串枚举（4.3 select 改动），摘要文案据此显示标签。 */
+const REASONING_LABELS: Record<string, string> = {
+  '': '跟随默认',
+  off: '关',
+  low: '低',
+  medium: '中',
+  high: '高',
+}
+
 /* ------------------------------------------------------------------ */
 /* State                                                               */
 /* ------------------------------------------------------------------ */
@@ -108,6 +122,7 @@ const globalSaving = ref(false)
 const poolDrafts = reactive<Record<string, PoolDraft>>({})
 const poolBusy = reactive<Record<string, boolean>>({})
 const presetBusy = ref<SchedulerPreset | ''>('')
+const strategyBusy = ref<PoolStrategy | ''>('')
 
 /* Model bindings */
 const bindingOpen = ref(false)
@@ -432,7 +447,7 @@ function settingsChanges(prefix: string, before: PoolSettings, after: PoolSettin
     parts.push(`${prefix}对冲 → ${after.hedge_ms > 0 ? `${after.hedge_ms}ms` : '关闭'}`)
   }
   if (before.default_reasoning !== after.default_reasoning) {
-    parts.push(`${prefix}深度思考 → ${after.default_reasoning ? '开' : '关'}`)
+    parts.push(`${prefix}深度思考 → ${REASONING_LABELS[after.default_reasoning] ?? after.default_reasoning}`)
   }
   if (before.background_downgrade !== after.background_downgrade) {
     parts.push(`${prefix}后台降级 → ${after.background_downgrade ? '开' : '关'}`)
@@ -491,6 +506,30 @@ async function applyPreset(preset: PresetItem) {
     toast(errorMessage(e), 'error')
   } finally {
     presetBusy.value = ''
+  }
+}
+
+/* 额外池内策略一键入口：以当前全局默认为基底只换 strategy，池间策略与
+   已有池的其余字段原样随包提交（后端逐字段指针覆盖，未变的字段不生效变化）。 */
+async function applyStrategy(strategy: PoolStrategy) {
+  if (strategyBusy.value !== '' || presetBusy.value !== '') return
+  const current = state.value
+  if (!current) return
+  const before = snapshotState()
+  strategyBusy.value = strategy
+  try {
+    await api.scheduler.saveGlobal({
+      inter_pool: current.global.inter_pool,
+      defaults: { ...settingsOf(current.global.defaults), strategy },
+    })
+    await load()
+    const changes = diffChanges(before, state.value)
+    const summary = changes.length > 0 ? changes.join('；') : '配置已一致，无需变更'
+    toast(`默认池内策略 → ${POOL_STRATEGY_LABELS[strategy]}：${summary}`)
+  } catch (e) {
+    toast(errorMessage(e), 'error')
+  } finally {
+    strategyBusy.value = ''
   }
 }
 
@@ -953,7 +992,13 @@ async function runExplain() {
               <span class="field-label">默认降档与思考</span>
               <div class="mini-checks">
                 <label class="mini-check">
-                  <input v-model="globalDraft.defaults.default_reasoning" type="checkbox" />
+                  <select v-model="globalDraft.defaults.default_reasoning" class="select">
+                    <option value="">跟随默认</option>
+                    <option value="off">关</option>
+                    <option value="low">低</option>
+                    <option value="medium">中</option>
+                    <option value="high">高</option>
+                  </select>
                   默认深度思考
                 </label>
                 <label class="mini-check">
@@ -988,6 +1033,12 @@ async function runExplain() {
           <span class="sub">一键写入所有池，应用后自动刷新</span>
         </div>
         <div class="card-body">
+          <p class="help strategy-relations">
+            预设 = 一键组合，同时覆盖三层（池间策略、全局默认与每个池的池内参数）；
+            池间策略决定跨池怎么选路（智能 / 便宜 / 固定）；
+            默认池内策略决定单个池里怎么选账号（九选一）。
+            在下方或各池里手动调整的，属于池内策略层，预设不会自动再覆盖你之后的改动。
+          </p>
           <div class="preset-grid">
             <button
               v-for="preset in PRESETS"
@@ -1002,6 +1053,21 @@ async function runExplain() {
                 <span v-if="preset.tag" class="preset-tag">{{ preset.tag }}</span>
               </span>
               <span class="preset-desc">{{ preset.desc }}</span>
+            </button>
+          </div>
+          <div class="row strategy-extras">
+            <span class="sub">更多池内策略（改全局默认；不动池间策略，也不改动已有池的其余参数）：</span>
+            <button
+              v-for="strategy in EXTRA_STRATEGIES"
+              :key="strategy"
+              type="button"
+              class="btn sm"
+              :class="{ primary: state?.global.defaults.strategy === strategy }"
+              :disabled="strategyBusy !== '' || presetBusy !== '' || !state"
+              :title="`把全局默认池内策略设为「${POOL_STRATEGY_LABELS[strategy]}」`"
+              @click="applyStrategy(strategy)"
+            >
+              {{ strategyBusy === strategy ? '应用中…' : POOL_STRATEGY_LABELS[strategy] }}
             </button>
           </div>
         </div>
@@ -1129,7 +1195,13 @@ async function runExplain() {
                 <td>
                   <div class="mini-checks">
                     <label class="mini-check">
-                      <input v-model="poolDrafts[pool.plugin_id].default_reasoning" type="checkbox" />
+                      <select v-model="poolDrafts[pool.plugin_id].default_reasoning" class="select">
+                        <option value="">跟随默认</option>
+                        <option value="off">关</option>
+                        <option value="low">低</option>
+                        <option value="medium">中</option>
+                        <option value="high">高</option>
+                      </select>
                       思考
                     </label>
                     <label class="mini-check">

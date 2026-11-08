@@ -1783,8 +1783,8 @@ async function saveLanPassword() {
     </section>
 
     <!-- 编辑客户端 Key：改名、启停、模型范围、绑定插件、每日配额 -->
-    <div v-if="editingKey" class="drawer-backdrop" @click.self="closeKeyEditor">
-      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="key-edit-title">
+    <div v-if="editingKey" class="modal-backdrop" @click.self="closeKeyEditor">
+      <aside class="modal" role="dialog" aria-modal="true" aria-labelledby="key-edit-title">
         <header class="drawer-head">
           <div>
             <h2 id="key-edit-title">编辑客户端 Key</h2>

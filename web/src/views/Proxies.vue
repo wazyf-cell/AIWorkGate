@@ -163,7 +163,7 @@ function checkLine(proxy: Proxy): string {
       <span>操作失败（保存、删除或连通性检测未完成），请重试；下面是详细原因：{{ error }}</span>
       <button type="button" class="btn sm ghost" @click="load">重试</button>
     </div>
-    <div v-if="message" class="notice ok">{{ message }}</div>
+    <div v-if="message" :class="message.startsWith('检测失败') ? 'notice warn' : 'notice ok'">{{ message }}</div>
 
     <div class="row between">
       <p class="small muted proxy-intro">
@@ -287,7 +287,7 @@ function checkLine(proxy: Proxy): string {
                   <button
                     type="button"
                     class="btn sm"
-                    :disabled="testing[proxy.id] || !proxy.host"
+                    :disabled="testing[proxy.id]"
                     :title="proxy.host ? '' : '还没有可测试的地址'"
                     @click="check(proxy)"
                   >

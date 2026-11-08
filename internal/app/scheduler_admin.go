@@ -200,7 +200,7 @@ func (a *App) saveSchedulerGlobal(update webui.SchedulerGlobalUpdate) (any, erro
 	if update.InterPool != nil {
 		mode = strings.ToLower(strings.TrimSpace(*update.InterPool))
 		if !scheduler.ValidInterPool(mode) {
-			return nil, fmt.Errorf("%w: inter_pool must be smart or fixed", webui.ErrInvalidRequest)
+			return nil, fmt.Errorf("%w: inter_pool must be smart, cheap or fixed", webui.ErrInvalidRequest)
 		}
 	}
 	var settings *model.PoolSettings

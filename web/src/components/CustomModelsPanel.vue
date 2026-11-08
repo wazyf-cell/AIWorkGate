@@ -10,6 +10,7 @@ import {
   type CustomModelInput,
   type CustomModelPatch,
   type CustomProtocol,
+  type CustomEffortProbeResult,
   type CustomReasoningTier,
   type ImportModelInput,
   type ImportSkip,
@@ -435,6 +436,8 @@ const editingModel = ref<CustomModel | null>(null)
 const modelConnId = ref('')
 const modelFormError = ref('')
 const modelSaving = ref(false)
+const effortProbeBusy = ref(false)
+const effortProbeNote = ref('')
 const modelDraft = reactive({
   name: '',
   upstream_model: '',
@@ -445,6 +448,49 @@ const modelDraft = reactive({
   reasoning_tiers: [] as CustomReasoningTier[],
   default_reasoning: '' as CustomReasoningTier | '',
 })
+
+/** 8.4：对已勾选的推理档位逐个发 max_tokens=1 探测；不支持的自动取消勾选。 */
+async function probeEfforts() {
+  if (effortProbeBusy.value) return
+  const conn = modelConnId.value
+  const upstream = modelDraft.upstream_model.trim()
+  if (!conn || !upstream) {
+    effortProbeNote.value = '先填好模型与所属接入，再探测。'
+    return
+  }
+  const tiers = [...modelDraft.reasoning_tiers]
+  if (tiers.length === 0) {
+    effortProbeNote.value = '没有已勾选的档位可探测。'
+    return
+  }
+  effortProbeBusy.value = true
+  effortProbeNote.value = '探测中…（每档一条 max_tokens=1 的最小请求）'
+  const rejected: string[] = []
+  try {
+    for (const tier of tiers) {
+      try {
+        const result: CustomEffortProbeResult = await api.customModels.probeEffort({
+          connection_id: conn,
+          model_id: upstream,
+          tier,
+        })
+        if (!result.supported) rejected.push(tier + (result.error ? '：' + result.error : ''))
+      } catch (e) {
+        rejected.push(tier + '：' + errorMessage(e))
+      }
+    }
+    if (rejected.length > 0) {
+      modelDraft.reasoning_tiers = modelDraft.reasoning_tiers.filter(
+        (t) => !rejected.some((r) => r.startsWith(t)),
+      )
+      effortProbeNote.value = '上游不支持的档位已取消勾选：' + rejected.join('；')
+    } else {
+      effortProbeNote.value = '全部 ' + tiers.length + ' 个档位均被上游接受。'
+    }
+  } finally {
+    effortProbeBusy.value = false
+  }
+}
 
 const activeConnection = computed<CustomConnection | null>(
   () => connections.value.find((item) => item.id === modelConnId.value) ?? null,
@@ -891,8 +937,8 @@ async function importSelected() {
     </div>
 
     <!-- 接入编辑：一个端点 + Key + 协议，其下模型共享 -->
-    <div v-if="connEditorOpen" class="drawer-backdrop" @click.self="closeConnectionEditor">
-      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="conn-editor-title">
+    <div v-if="connEditorOpen" class="modal-backdrop" @click.self="closeConnectionEditor">
+      <aside class="modal" role="dialog" aria-modal="true" aria-labelledby="conn-editor-title">
         <header class="drawer-head">
           <div>
             <h2 id="conn-editor-title">{{ editingConn ? '编辑接入' : '新建接入' }}</h2>
@@ -980,8 +1026,8 @@ async function importSelected() {
     </div>
 
     <!-- 模型编辑：接入与上游 ID 创建后固定，其余参数可改 -->
-    <div v-if="modelEditorOpen" class="drawer-backdrop" @click.self="closeModelEditor">
-      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="model-editor-title">
+    <div v-if="modelEditorOpen" class="modal-backdrop" @click.self="closeModelEditor">
+      <aside class="modal" role="dialog" aria-modal="true" aria-labelledby="model-editor-title">
         <header class="drawer-head">
           <div>
             <h2 id="model-editor-title">{{ editingModel ? '编辑模型' : '添加模型' }}</h2>
@@ -1102,6 +1148,12 @@ async function importSelected() {
             <span class="help">
               全部不勾 = 不限制档位；右侧是当前协议（{{ protocolLabel(modelEditorProtocol) }}）的上游取值。
             </span>
+            <div class="btn-row">
+              <button type="button" class="btn sm" :disabled="effortProbeBusy || modelSaving" @click="probeEfforts">
+                {{ effortProbeBusy ? '探测中…' : '逐档探测' }}
+              </button>
+              <span v-if="effortProbeNote" class="help">{{ effortProbeNote }}</span>
+            </div>
           </div>
           <div class="field">
             <label for="model-default">默认档位</label>
@@ -1140,8 +1192,8 @@ async function importSelected() {
     </div>
 
     <!-- 拉取上游模型：勾选后批量导入，名称由宿主清理并去重 -->
-    <div v-if="importOpen && importConn" class="drawer-backdrop" @click.self="closePullModels">
-      <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="pull-models-title">
+    <div v-if="importOpen && importConn" class="modal-backdrop" @click.self="closePullModels">
+      <aside class="modal" role="dialog" aria-modal="true" aria-labelledby="pull-models-title">
         <header class="drawer-head">
           <div>
             <h2 id="pull-models-title">拉取上游模型</h2>
