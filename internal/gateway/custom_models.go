@@ -43,6 +43,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"aiworkgate/internal/scheduler"
 )
 
 const (
@@ -178,6 +180,13 @@ func (g *Gateway) handleCustomModel(w http.ResponseWriter, r *http.Request, rec 
 	}
 	cm, ok := g.customModelFor(meta.model)
 	if !ok {
+		// task-83（方案 A'）：请求名不是启用的 custom 裸名时，先看它是不是
+		// 一个「成员全部为自定义连接」的路由组——那种组不经调度器（custom:
+		// 命名空间没有调度池），按成员顺序直发。非全 custom 组在这里返回
+		// false 交还正常调度链，body 由调用方恢复。
+		if g.handleCustomGroup(w, r, rec, path, meta, body) {
+			return true
+		}
 		restoreBody(r, body)
 		return false
 	}
@@ -202,8 +211,16 @@ func (g *Gateway) handleCustomModel(w http.ResponseWriter, r *http.Request, rec 
 
 	// D-56: the inbound face selects the outbound protocol slot; the legacy
 	// single-protocol fields are the fallback slot for every face.
-	face := customFaceForPath(path)
+	g.relayCustomModel(w, r, rec, cm, path, body)
+	return true
+}
 
+// relayCustomModel runs the per-face custom dispatch shared by the bare-name
+// path (handleCustomModel) and the all-custom group path (handleCustomGroup):
+// the face is derived from the inbound path, and the body is the already-read
+// request payload whose model field the sender rewrites per member.
+func (g *Gateway) relayCustomModel(w http.ResponseWriter, r *http.Request, rec *reqRecord, cm CustomModel, path string, body []byte) {
+	face := customFaceForPath(path)
 	switch path {
 	case "/v1/messages":
 		// The converter is shared with the plugin path; the sender is the only
@@ -219,7 +236,6 @@ func (g *Gateway) handleCustomModel(w http.ResponseWriter, r *http.Request, rec 
 	default:
 		g.forwardCustom(w, r, rec, cm, face, body)
 	}
-	return true
 }
 
 // forwardCustomEnvelope relays a completions/Responses request through the
@@ -231,6 +247,101 @@ func (g *Gateway) forwardCustomEnvelope(w http.ResponseWriter, r *http.Request, 
 	ew.Header().Set(sourceHeader, rec.source)
 	defer ew.finish()
 	g.relayEnvelope(ew, rec, body, kind, g.customSender(r, rec, cm, face))
+}
+
+// ── task-83（方案 A'）：全 custom 路由组直发 ──
+//
+// 组 Binding 的成员全部落在 custom: 命名空间时，调度器没有对应的池
+// （plan() 会以 "unknown plugin pool custom:<conn>" 拒绝，scheduler.go:1782），
+// 因此这样的组在网关入口就被拦下，按成员顺序取第一个启用的自定义模型走
+// 既有直发链路；调度层零改动。
+
+// customPluginPrefix is the D-37 catalog namespace of custom connections
+// (store.CustomModelPluginID); group members carrying it bypass the scheduler.
+const customPluginPrefix = "custom:"
+
+// customGroupMembers returns the sources of one all-custom routing group.
+// ok=false when the model is not a binding, the binding has no members, or
+// any member is a plugin source — those stay on the scheduled path untouched.
+func (g *Gateway) customGroupMembers(ctx context.Context, model string) ([]scheduler.Source, bool) {
+	if g == nil || g.snapshot == nil {
+		return nil, false
+	}
+	snap, err := g.snapshot(ctx)
+	if err != nil || snap == nil {
+		return nil, false
+	}
+	binding, ok := snap.Bindings[model]
+	if !ok || len(binding.Items) == 0 {
+		return nil, false
+	}
+	for _, item := range binding.Items {
+		if !strings.HasPrefix(item.PluginID, customPluginPrefix) {
+			return nil, false
+		}
+	}
+	return binding.Items, true
+}
+
+// customModelForSource resolves one "custom:<conn>/<name>" member onto its
+// enabled custom model. Unlike customModelFor it pins the connection: two
+// connections may expose the same bare name, and the group member names its
+// own.
+func (g *Gateway) customModelForSource(src scheduler.Source) (CustomModel, bool) {
+	conn := strings.TrimSpace(strings.TrimPrefix(src.PluginID, customPluginPrefix))
+	key := CanonicalModelID(src.Model)
+	if conn == "" || key == "" {
+		return CustomModel{}, false
+	}
+	for _, cm := range g.customModelList() {
+		if !cm.Enabled || (cm.ConnectionID != "" && !cm.ConnectionEnabled) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(cm.ConnectionID), conn) && CanonicalModelID(cm.Name) == key {
+			return cm, true
+		}
+	}
+	return CustomModel{}, false
+}
+
+// handleCustomGroup serves a request whose model is an all-custom routing
+// group: the first enabled member in binding order goes through the existing
+// direct path, disabled members are skipped, and a group with none available
+// fails with an explicit 400 instead of the scheduler's unknown-pool answer.
+// It reports false (caller restores the body) when the request does not name
+// an all-custom group.
+func (g *Gateway) handleCustomGroup(w http.ResponseWriter, r *http.Request, rec *reqRecord, path string, meta requestMeta, body []byte) bool {
+	members, ok := g.customGroupMembers(r.Context(), meta.model)
+	if !ok {
+		return false
+	}
+	// A key bound to one plugin keeps its binding semantics (the same rule as
+	// the bare-name path): its bare model names are rewritten and therefore
+	// never reach a custom upstream.
+	if kr, found := keyRecordFrom(r.Context()); found && strings.TrimSpace(kr.BindPool) != "" {
+		return false
+	}
+	for _, member := range members {
+		cm, ok := g.customModelForSource(member)
+		if !ok {
+			continue
+		}
+		g.prepareRecord(rec, r, body, meta)
+		rec.model = strings.TrimSpace(meta.model)
+		rec.source = "custom:" + cm.ID
+		// The key's model scope accepts the group id or the member's bare
+		// name — the user may have scoped either spelling.
+		if kr, found := keyRecordFrom(r.Context()); found &&
+			!modelInScope(kr.ModelScope, rec.model, strings.TrimSpace(member.Model)) {
+			g.failKeyScope(w, rec, rec.model, "该模型不在该 Key 的模型范围内")
+			return true
+		}
+		g.relayCustomModel(w, r, rec, cm, path, body)
+		return true
+	}
+	g.fail(w, rec, http.StatusBadRequest, "invalid_request_error", "no_usable_group_member",
+		fmt.Sprintf("路由组 %s 的自定义模型成员均不可用（模型或所属连接未启用）", strings.TrimSpace(meta.model)))
+	return true
 }
 
 // customSender is the custom-upstream side of the chatSender seam: one

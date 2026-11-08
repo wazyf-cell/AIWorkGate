@@ -57,7 +57,15 @@ if ($null -ne $newest -and $newest.LastWriteTimeUtc -gt $exeTime) {
 # ---- 目标解析 ----
 switch -Wildcard ($Target) {
     'preview' { $dataDir = Join-Path $repo 'runtime\preview-appdata\AIWorkGate' }
-    'formal'  { Write-Error "formal 实例目录尚未定址：确定后在本脚本补 'formal' 分支"; exit 4 }
+    'formal'  {
+        # task-82：正式实例 DataDir = %APPDATA%\AIWorkGate（task-81 实测
+        # config port=17865；单实例 mutex 与预览互斥，落盘后由 Lead 择机启动）。
+        # manifest 的 --plugin-dir 将指向正式目录绝对路径，绝不复用预览路径。
+        $dataDir = Join-Path $env:APPDATA 'AIWorkGate'
+        if (-not (Test-Path (Join-Path $dataDir 'config.json'))) {
+            Write-Error "formal 实例目录异常：$dataDir 下没有 config.json（确认这是正式实例的 DataDir？）"; exit 4
+        }
+    }
     default   {
         if ([IO.Path]::IsPathRooted($Target) -and (Test-Path $Target)) { $dataDir = $Target }
         else { Write-Error "Target '$Target' 不是 preview/formal，也不是存在的绝对路径"; exit 4 }

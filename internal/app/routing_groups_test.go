@@ -2,12 +2,20 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"aiworkgate/internal/config"
 	"aiworkgate/internal/model"
+	"aiworkgate/internal/plugins"
 	"aiworkgate/internal/scheduler"
+	"aiworkgate/internal/store"
+	"aiworkgate/internal/webui"
 )
 
 func TestResolveRoutingGroupsPatterns(t *testing.T) {
@@ -400,5 +408,86 @@ func TestValidateRoutingIntentDescriptions(t *testing.T) {
 	// 描述可以只覆盖部分标签（缺省回落 label 名）。
 	if err := validateRoutingGroups(base(map[string]string{"hard": "复杂任务"})); err != nil {
 		t.Fatalf("partial descriptions rejected: %v", err)
+	}
+}
+
+// ── task-83（方案 A'）：混合组成员保存侧 400 ──
+
+// routingCompositionApp 装一个 mock 插件（目录含一条启用模型）与一个启用的
+// custom 连接模型，让 routingGroupUniverse 同时含两类成员。
+func routingCompositionApp(t *testing.T) *App {
+	t.Helper()
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "plugins", "mock")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugin: %v", err)
+	}
+	raw, err := json.Marshal(model.Manifest{
+		ID: "mock", Name: "Mock", Version: "0.0.1", APILevel: 1,
+		Startup: model.StartupConfig{Mode: model.StartupOnDemand},
+		Entry:   model.Entry{Exe: "mock.exe"},
+	})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, plugins.ManifestFileName), raw, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "mock.exe"), []byte("MZ"), 0o644); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+	mgr := plugins.New(plugins.Options{
+		DataDir: dir,
+		Config:  func() config.Config { return config.Default() },
+	})
+	t.Cleanup(func() { _ = mgr.Close() })
+	if err := mgr.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	st, err := store.Open(filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.ReplaceModelCatalog("mock", []model.ModelCatalogEntry{{ModelID: "m1", Enabled: true}}); err != nil {
+		t.Fatalf("ReplaceModelCatalog: %v", err)
+	}
+	conn, err := st.UpsertCustomConnection(store.CustomConnection{
+		ID: "cc-1", Label: "测试连接", Protocol: "openai", BaseURL: "https://a.example", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertCustomConnection: %v", err)
+	}
+	if _, err := st.UpsertCustomModel(store.CustomModel{
+		Name: "x", ConnectionID: conn.ID, UpstreamModel: "vendor-x",
+		BaseURL: "https://a.example", Protocol: "openai", Enabled: true,
+	}); err != nil {
+		t.Fatalf("UpsertCustomModel: %v", err)
+	}
+	return &App{store: st, dataDir: dir, pluginMgr: mgr, cfg: config.Default()}
+}
+
+func TestSaveRoutingGroupsRejectsMixedComposition(t *testing.T) {
+	app := routingCompositionApp(t)
+	// 混编：match 同时命中插件模型与 custom 连接模型 → 400。
+	_, err := app.saveRoutingGroups(json.RawMessage(
+		`[{"id":"mixed","match":["mock/m1","custom:cc-1/x"]}]`))
+	if !errors.Is(err, webui.ErrInvalidRequest) || !strings.Contains(err.Error(), "混编") {
+		t.Fatalf("mixed group error = %v, want ErrInvalidRequest mentioning 混编", err)
+	}
+	// 规则成员混编同样拒绝。
+	_, err = app.saveRoutingGroups(json.RawMessage(
+		`[{"id":"g","match":["mock/m1"],"rules":[{"name":"r","match":["custom:cc-1/x"]}]}]`))
+	if !errors.Is(err, webui.ErrInvalidRequest) || !strings.Contains(err.Error(), "混编") {
+		t.Fatalf("mixed rule error = %v, want ErrInvalidRequest mentioning 混编", err)
+	}
+	// 全 custom 组合法保存；全插件组也合法。
+	if _, err := app.saveRoutingGroups(json.RawMessage(
+		`[{"id":"all-custom","match":["custom:cc-1/x"]}]`)); err != nil {
+		t.Fatalf("all-custom group rejected: %v", err)
+	}
+	if _, err := app.saveRoutingGroups(json.RawMessage(
+		`[{"id":"all-plugin","match":["mock/m1"]}]`)); err != nil {
+		t.Fatalf("all-plugin group rejected: %v", err)
 	}
 }

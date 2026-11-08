@@ -432,6 +432,9 @@ func (a *App) saveRoutingGroups(raw json.RawMessage) (any, error) {
 	if err := validateRoutingGroups(groups); err != nil {
 		return nil, err
 	}
+	if err := a.validateRoutingGroupComposition(groups); err != nil {
+		return nil, err
+	}
 	next := a.configSnapshot()
 	next.RoutingGroups = groups
 	next.Normalize()
@@ -443,6 +446,47 @@ func (a *App) saveRoutingGroups(raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return a.routingGroupsView()
+}
+
+// validateRoutingGroupComposition rejects a group whose members mix custom
+// connection models with plugin models (task-83, 方案 A'): an all-custom group
+// is served through the gateway's direct path, a plugin group goes through the
+// scheduler, and the mixed semantics are deliberately undefined for now — the
+// editor blocks the combination instead of letting an unknowable binding reach
+// the request path. Stores without a universe (bare unit tests) skip the check.
+func (a *App) validateRoutingGroupComposition(groups []config.RoutingGroupConfig) error {
+	universe := a.routingGroupUniverse()
+	if len(universe) == 0 {
+		return nil
+	}
+	for _, group := range groups {
+		if group.Disabled {
+			continue
+		}
+		// The composition check is group-level: the binding's main members and
+		// every rule's members form one resolved set at request time, so a rule
+		// that only names custom members still makes the group mixed when the
+		// main match names plugin models (or vice versa).
+		hasCustom, hasPlugin := false, false
+		consider := func(field string, patterns []string) {
+			for _, item := range resolveGroupMatch(patterns, universe) {
+				if strings.HasPrefix(item.PluginID, "custom:") {
+					hasCustom = true
+				} else {
+					hasPlugin = true
+				}
+			}
+		}
+		consider("match", group.Match)
+		for _, rule := range group.Rules {
+			consider("规则 "+rule.Name, rule.Match)
+		}
+		if hasCustom && hasPlugin {
+			return fmt.Errorf("%w: 路由组 %q 的成员同时命中自定义连接模型与插件模型，暂不支持混编（两者执行路径不同，待后续拆分）；请拆成两个组",
+				webui.ErrInvalidRequest, group.ID)
+		}
+	}
+	return nil
 }
 
 func validateRoutingGroups(groups []config.RoutingGroupConfig) error {
